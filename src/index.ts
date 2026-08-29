@@ -205,6 +205,15 @@ const P9_CONSENSUS_DEFER_MARGIN_PCT = (() => {
   // 攻擊輪 clamp: [0.3, 5]——<0.3 太鬆（任何浮盈都延遲 = 無限 hold）, >5 太緊（閘失效）
   return Number.isFinite(raw) && raw >= 0.3 && raw <= 5 ? raw : 0.5;
 })();
+/** v2.0.873-P9-holdmin（主神 2026-08-29「SILVER buy/sell 都蝕錢,出場時機很差」）:
+ *  新倉 holdMin 保護——開倉 <15min 唔可以俾 consensus close 過早切走
+ *  （<15min consensus close 15 單中 12 單有鎖利空間,合共 −17.89% 被過早平倉）。
+ *  env P9_HOLD_MIN_MINUTES 可調（回滾 0 = 關閉）。 */
+const P9_HOLD_MIN_MINUTES = (() => {
+  const raw = Number(process.env['P9_HOLD_MIN_MINUTES']);
+  // clamp [0, 60]——0 = 關閉, 15 = 預設, >60 太長（止血優先）
+  return Number.isFinite(raw) && raw >= 0 && raw <= 60 ? raw : 15;
+})();
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
@@ -5726,6 +5735,51 @@ ${recentExamples}
     } catch { return ''; }
   }
 
+  /** v2.0.873-P9-shadowvoice（主神 2026-08-28「8 資產 24 小時冇開倉」）:
+   *  Shadow 統計層 voice——per-symbol×side shadow WR/EV + 即時倉位方向。
+   *  Shadow 引擎一直 run(60 倉),但 agents context 完全睇唔到 → 淨係見到
+   *  OLR 已證偽/FP 0pp/Direction RED → 全部 HOLD。注入統計令 LLM 有參考。
+   *  純 context——唔 hard block,唔改執行邏輯。 */
+  private buildShadowVoiceBlock(): string {
+    try {
+      const syms = new Set<string>([normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '')]);
+      for (const m of (this.tradingMarkets ?? [])) syms.add(normalizeSymbol(m));
+      if (syms.size === 0) return '';
+      const stats = this.shadowEngine.getStats();
+      const openPos = this.shadowEngine.getOpenPositions();
+      const lines: string[] = ['=== SHADOW STATISTICS (統計層參考——shadow 模擬成交,非實時信號) ==='];
+      for (const sym of syms) {
+        const s = stats.find((x) => x.symbol.toLowerCase() === sym.toLowerCase());
+        if (!s) continue;
+        // 即時 shadow 倉位方向
+        const open = openPos.filter((p) => normalizeSymbol(p.symbol ?? '') === sym);
+        const openBuy = open.filter((p) => p.side === 'buy').length;
+        const openSell = open.filter((p) => p.side === 'sell').length;
+        const dir = openSell > openBuy ? 'SELL-lean' : openBuy > openSell ? 'BUY-lean' : '均衡';
+        const buyWr = (s.longWinRate * 100).toFixed(0) + '%';
+        const sellWr = (s.shortWinRate * 100).toFixed(0) + '%';
+        const buyEv = (s.longSumPnlPct * 100).toFixed(2) + '%';
+        const sellEv = (s.shortSumPnlPct * 100).toFixed(2) + '%';
+        // 明確 lean 建議——shadow 統計層有樣本支持嘅方向,直接話俾 LLM 聽(唔好淨係俾數據
+        // 等佢自己估)。統計: WR 高 + EV 正 = 統計層 lean;兩邊都正 → 取 EV 較高側;
+        // 兩邊都負 → 唔 lean(保守)。n 太少(<20)標「樣本少」。
+        let leanNote = '';
+        const buyN = s.longWins + s.longLosses;
+        const sellN = s.shortWins + s.shortLosses;
+        const buyScore = s.longWinRate > 0.55 && s.longSumPnlPct > 0;
+        const sellScore = s.shortWinRate > 0.55 && s.shortSumPnlPct > 0;
+        if (buyScore && !sellScore) leanNote = `——統計層 lean BUY`;
+        else if (sellScore && !buyScore) leanNote = `——統計層 lean SELL`;
+        else if (buyScore && sellScore) leanNote = `——兩側都正,取 EV 較高側(${s.longSumPnlPct > s.shortSumPnlPct ? 'BUY' : 'SELL'})`;
+        else leanNote = `——兩側統計都負/弱,唔 lean(保守)`;
+        if (buyN < 20 && sellN < 20) leanNote += '（樣本少）';
+        lines.push(`  ${sym}: shadow 即時倉 ${openBuy}B/${openSell}S (${dir}) | BUY WR ${buyWr} EV ${buyEv} (n=${buyN.toFixed(0)}) | SELL WR ${sellWr} EV ${sellEv} (n=${sellN.toFixed(0)})${leanNote}`);
+      }
+      if (lines.length === 1) return '';
+      return '\n' + lines.join('\n');
+    } catch { return ''; }
+  }
+
   private buildDirectionHealthForSymbol(sym: string): string {
     try {
       // 1. Per-symbol combo history (side × regime)
@@ -5805,6 +5859,32 @@ ${recentExamples}
         }
       } catch { /* non-fatal */ }
 
+      // ── v2.0.873-P9-shadowvoice-fix（主神 2026-08-28「8 資產 24 小時冇開倉」）──
+      // Shadow 統計層 lean——直接注入 direction health(agents 已確認有 quote 呢個 block)。
+      // 統計: shadow 每側 WR + EV(decayed)——WR>55% + EV>0 = 統計層 lean 該側。
+      // 目的: agents 見到「direction health red」就 HOLD,但 shadow 統計可能 lean 另一側——
+      // 直接話俾佢聽統計層點睇,唔好淨係靠獨立 shadow voice block(可能被忽略)。
+      try {
+        // A2(攻擊輪四 2026-08-29): 大小階統一——normalizeSymbol('BTC')='BTC' ≠ 'btc',
+        // shadow stats 若大階就 match 唔到(agents 一直冇 quote SHADOW LEAN 可能就係呢個)。
+        // 用 lowercase 比較(同其他 call site 一致)。
+        const sg = this.shadowEngine.getStats().find(s => s.symbol.toLowerCase() === sym.toLowerCase());
+        if (sg) {
+          const buyN = sg.longWins + sg.longLosses;
+          const sellN = sg.shortWins + sg.shortLosses;
+          const buyLean = sg.longWinRate > 0.55 && sg.longSumPnlPct > 0;
+          const sellLean = sg.shortWinRate > 0.55 && sg.shortSumPnlPct > 0;
+          if (buyLean && !sellLean) {
+            warnings.push(`💠 [SHADOW LEAN BUY] ${sym}: 統計層 shadow BUY WR ${(sg.longWinRate*100).toFixed(0)}% EV ${(sg.longSumPnlPct*100).toFixed(2)}% (n=${buyN.toFixed(0)})——統計層 lean BUY(唔好淨係因為 direction red 就 HOLD)。`);
+          } else if (sellLean && !buyLean) {
+            warnings.push(`💠 [SHADOW LEAN SELL] ${sym}: 統計層 shadow SELL WR ${(sg.shortWinRate*100).toFixed(0)}% EV ${(sg.shortSumPnlPct*100).toFixed(2)}% (n=${sellN.toFixed(0)})——統計層 lean SELL(唔好淨係因為 direction red 就 HOLD)。`);
+          } else if (buyLean && sellLean) {
+            const better = sg.longSumPnlPct > sg.shortSumPnlPct ? 'BUY' : 'SELL';
+            warnings.push(`💠 [SHADOW LEAN ${better}] ${sym}: 兩側 shadow 統計都正(BUY EV ${(sg.longSumPnlPct*100).toFixed(2)}% / SELL EV ${(sg.shortSumPnlPct*100).toFixed(2)}%)——取 EV 較高側 ${better}。`);
+          }
+        }
+      } catch { /* non-fatal */ }
+
       // ── v2.0.873-P9-sealarm（主神 2026-08-28「5min + 15m 級急跌觸發 is important」）──
       // 短線急跌 SELL 警報——邏輯實驗（96h 多 symbol）: 15m 急跌 >0.3% 後 3 支 15m 內
       // short 有利潤率 91-100%; 關鍵係「5m 續跌確認」——有確認 → 3 支後 −30.7%(short 賺),
@@ -5827,25 +5907,31 @@ ${recentExamples}
       } catch { /* non-fatal */ }
       } // sellAlertConfig.enabled
 
-      // ── v2.0.873-P9-unblock（主神 2026-08-28「大半日冇開倉,根源解決咗未」）──
-      // 方案 B: 兩邊都紅時提供「相對 lean」——269 單實測全部 symbol 近期 SELL WR=0%、
-      // BUY WR 33-67%——「兩邊都紅」係錯覺,實際係「一側全紅、另一側部分正常」。
-      // agents 見到兩邊都紅就 HOLD,浪費正常側嘅開倉機會。
-      // 呢度用 perSide 7d 數據提供相對方向: 高 WR/高 PnL 側 = 相對 lean。
+      // ── v2.0.873-P9-unblock-fix（主神 2026-08-28「8 資產 24 小時冇開倉」）──
+      // 方案 B 修正: RELATIVE LEAN 原本要求「兩邊 n≥3」——但 SELL 樣本永遠係 0
+      // （系統 24h 冇開 SELL → 冇 SELL 樣本 → 永遠觸發唔到）= chicken-and-egg。
+      // 放寬: 一側 n≥3 且另一側 <3（零樣本唔係「差」,係「冇數據」）都出 lean——
+      // 起碼 agents 有方向,唔會兩邊都紅就 HOLD。
       try {
         const buyS = perSide['buy'];
         const sellS = perSide['sell'];
-        if (buyS && sellS && buyS.n >= 3 && sellS.n >= 3) {
-          const buyWr = buyS.wins / buyS.n;
-          const sellWr = sellS.wins / sellS.n;
+        const buyN = buyS?.n ?? 0;
+        const sellN = sellS?.n ?? 0;
+        if (buyN >= 3 || sellN >= 3) {
+          const buyWr = buyN > 0 ? (buyS!.wins / buyN) : 0.5;   // 零樣本 → 0.5（唔當差）
+          const sellWr = sellN > 0 ? (sellS!.wins / sellN) : 0.5;
           const diff = buyWr - sellWr;
           const hasRedBuy = warnings.some(w => w.startsWith('🔴 BUY'));
           const hasRedSell = warnings.some(w => w.startsWith('🔴 SELL'));
-          if (hasRedBuy && hasRedSell && Math.abs(diff) >= 0.2) {
-            const lean = diff > 0 ? 'BUY' : 'SELL';
-            const leanWr = (diff > 0 ? buyWr : sellWr) * 100;
-            const otherWr = (diff > 0 ? sellWr : buyWr) * 100;
-            warnings.push(`🧭 [RELATIVE LEAN] ${sym}: 兩邊歷史都差,但近期相對強度明顯偏 ${lean}（${lean} WR ${leanWr.toFixed(0)}% vs 另一側 ${otherWr.toFixed(0)}%, 7d n=${diff > 0 ? buyS.n : sellS.n}/${diff > 0 ? sellS.n : buyS.n}）——若無新 catalyst 逆轉,傾向 ${lean}（但保持細倉/嚴 SL）。`);
+          // 至少一側有樣本 + 另一側零樣本 → 都 lean 有樣本側（零樣本唔 block）
+          const oneSideZero = (buyN >= 3 && sellN === 0) || (sellN >= 3 && buyN === 0);
+          if (oneSideZero || (hasRedBuy && hasRedSell && Math.abs(diff) >= 0.2)) {
+            const lean = diff >= 0 ? 'BUY' : 'SELL';
+            const leanWr = (lean === 'BUY' ? buyWr : sellWr) * 100;
+            const otherWr = (lean === 'BUY' ? sellWr : buyWr) * 100;
+            const leanN = lean === 'BUY' ? buyN : sellN;
+            const otherN = lean === 'BUY' ? sellN : buyN;
+            warnings.push(`🧭 [RELATIVE LEAN] ${sym}: ${leanN === 0 ? '另一側' : lean} 有近期樣本（WR ${leanWr.toFixed(0)}% n=${leanN}）${otherN === 0 ? '；另一側 7d 零樣本（唔係差,係冇數據——唔應該因為冇樣本而 block 呢側）' : ` vs 另一側 WR ${otherWr.toFixed(0)}% n=${otherN}`}——若無新 catalyst 逆轉,傾向 ${lean}（但保持細倉/嚴 SL）。`);
           }
         }
       } catch { /* non-fatal */ }
@@ -9428,6 +9514,15 @@ ${recentExamples}
         marketDesc += `\n${directionHealthBlock}`;
       }
 
+      // v2.0.873-P9-shadowvoice（主神 2026-08-28「8 資產接近 24 小時冇開倉」）:
+      // Shadow 統計層 voice——shadow 引擎有完整 per-symbol×side WR/EV 數據 + 即時
+      // 倉位方向,但 agents context 完全睇唔到(淨係見到 OLR 已證偽/FP 0pp/Direction
+      // RED → 全部 HOLD)。注入 shadow 統計令 LLM 有統計參考。純 context——唔 hard block。
+      const shadowVoiceBlock = this.buildShadowVoiceBlock();
+      if (shadowVoiceBlock) {
+        marketDesc += `\n${shadowVoiceBlock}`;
+      }
+
       // v2.0.870-sell-decay-attack G2: Side-Balance 警告（每 20 cycle throttle）——
       // 單向失衡（如 90 單零 SELL）要 LOUD,唔可以靜靜咁持續。
       const sideBalanceWarning = this.checkSideBalanceWarning();
@@ -12131,6 +12226,45 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               continue; // 跳過呢個 symbol 嘅 close——下個 cycle 再驗證
             }
             if (deferrals > 0) this.consensusCloseDeferrals.delete(ccKey);
+          } catch { /* 非致命——close 照行 */ }
+
+          // ── v2.0.873-P9-holdmin（主神 2026-08-29「SILVER buy/sell 都蝕錢,出場時機很差」）──
+          // holdMin 保護: 開倉 <15min 嘅新倉,consensus close 延遲——俾 thesis 同
+          // 鎖利管道有時間證明。實證: <15min consensus close 15 單中 12 單有 MFE≥0.5%
+          // 鎖利空間,實際 PnL 合共 −17.89%(全部被過早平倉)。
+          // 例外: SL hit(結構確認——市場已判死罪)/ 嚴重虧損(<−3% margin)/浮盈延遲已用緊。
+          try {
+            // A1(攻擊輪四 2026-08-29 CRITICAL): openedAt 未來值(1e308 注入)→ holdMinNow 負數
+            // → 永遠 <15min → consensus close 無限延遲 = DoS(持倉永不 close)。
+            // 修正: openedAt > now+5min(未來)或 <=0 → 當垃圾 → 999(唔觸發保護)。
+            const holdNowTs = Date.now();
+            const holdOpenValid = pos && Number.isFinite(pos.openedAt) && (pos.openedAt as number) > 0 && (pos.openedAt as number) <= holdNowTs + 300_000;
+            const holdMinNow = holdOpenValid ? (holdNowTs - (pos!.openedAt as number)) / 60_000 : 999;
+            const unrealizedNow = typeof pos?.unrealizedPnlPct === 'number' && Number.isFinite(pos.unrealizedPnlPct) ? pos.unrealizedPnlPct : 0;
+            // SL hit 檢查(用 pos 自己嘅 SL——唔依賴後面先宣告嘅變數)
+            const holdSlPrice = pos?.stopLossPrice ?? 0;
+            const holdCurPrice = pos?.currentPrice ?? 0;
+            const slHitNow = holdSlPrice > 0 && holdCurPrice > 0 &&
+              ((isBuySide(pos!.side) && holdCurPrice <= holdSlPrice) ||
+               (isSellSide(pos!.side) && holdCurPrice >= holdSlPrice));
+            if (pos && holdMinNow < P9_HOLD_MIN_MINUTES && !slHitNow && unrealizedNow > -0.03) {
+              // 同步 patch _pendingAnalyses(同浮盈 defer 一致——客戶端唔可以 split)
+              const holdPatch = this._pendingAnalyses?.find((a: any) => normalizeSymbol(a.symbol) === normalizeSymbol(psc.symbol));
+              if (holdPatch) {
+                holdPatch.consensus.action = 'hold';
+                holdPatch.metadata = {
+                  execution: {
+                    finalAction: 'hold',
+                    blocked: true,
+                    blockedBy: 'gate',
+                    blockedReason: `consensus-close deferred — position held ${holdMinNow.toFixed(0)}min < ${P9_HOLD_MIN_MINUTES}min (P9 holdMin protection)`,// 唔好俾 consensus 過早切走 thesis 未證明嘅倉
+                    gates: [{ gate: 'p9-holdmin-protection', passed: false, reason: `held ${holdMinNow.toFixed(0)}min < ${P9_HOLD_MIN_MINUTES}min` }],
+                  },
+                } as any;
+              }
+              log.info(`⏳ [P9-holdmin] ${psc.symbol}: 持倉 ${holdMinNow.toFixed(0)}min < ${P9_HOLD_MIN_MINUTES}min → 延遲 consensus close（俾 thesis/鎖利證明——15 單實證 −17.89% 過早平倉）`);
+              continue; // 跳過 close
+            }
           } catch { /* 非致命——close 照行 */ }
           // v2.0.143: Capture the close rationale as exitThesis BEFORE closing.
           // This must happen before closePosition()/closeExchangePosition()
