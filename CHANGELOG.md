@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-signal-pwin: asset_analyses signal 層——pwin 由已證偽 OLR 改 Shadow WR(主神 2026-08-29「asset_analyses 嘅 signal 有冇跟隨更新」)
+
+**主神質疑**: 「asset_analyses 嘅 signal 有冇跟隨更新？需唔需要作出修改？」
+
+**診斷**: `consensus.pwin`(signal 主欄位)一直 output **已證偽 OLR**(ρ=+0.02 零預測力)——OLR/Q-RL audit 後 agents context 已標記,但 **signal 層未跟住更新**——客戶端/UI 會見到「OLR P(win)」做主訊號。
+
+**修正(production grade)**: `consensus.pwin` 由 OLR 改 **Shadow WinRate**(ρ=+0.106 唯一有預測力入場特徵)——兩條路徑都改: ①主 buildAssetAnalysis(10461)→ shadowStats.long/shortWinRate;②execution update 路徑(14002)→ precomputed shadow / shadowStats,clamp [0,1] + 冇數據中性 0.5。`asset_analyses.md` 契約同步(pwin 語義 + 版本記錄)。
+
+**幻覺修正不變式**: 已證偽源(OLR/Q-RL/FP)唔可以喺任何 signal 層做主訊號;edge_report 內部 OLR 係 report-only 已知。
+
+**驗證**: 新測試 4/4(p9-signal-pwin);全量 3810 pass + 13 pre-existing(零新增);tsc clean。
+
+---
+
 ## v2.0.873-P9-sllock: exit-price-lock 單位 bug 修復——threshold floor 放大 100 倍(「why only earn so little」根因)(主神 2026-08-29「SILVER buy/sell 都蝕錢,出場時機很差」)
 
 **主神質疑**: 「why only earn so little」——GOLD SELL MFE +3.0% 但只賺 +2.1%,Post-Review 話鎖利回吐 0.9pp。

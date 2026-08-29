@@ -10457,12 +10457,15 @@ ${recentExamples}
             const psc = pscList.find(p => normalizeSymbol(p.symbol) === sym);
             const ms = this.marketState.getState(sym);
             // OLR P(win) for this symbol (best-effort; 0.5 cold-start default).
+            // v2.0.873-P9-sllock-fix（主神 2026-08-29）: pwin 唔可以再用已證偽 OLR
+            // （ρ=+0.02 零預測力——signal 層輸出 OLR 會誤導客戶端）。改用 shadow WR
+            // （ρ=+0.106 唯一有預測力入場特徵）; 冇 shadow 數據 → 中性 0.5。
             let pwin = 0.5;
             try {
-              const ctx = this.lastCycleShadowContexts.get(sym);
-              if (ctx?.features && Object.keys(ctx.features).length > 0) {
-                const olrRes = this.olrEngine.query(sym, ctx.features, psc?.action === 'sell' ? 'sell' : 'buy', this.totalCycles);
-                if (Number.isFinite(olrRes.pWin)) pwin = olrRes.pWin;
+              const shadowStats = this.shadowEngine?.getStats()?.find(s => s.symbol.toLowerCase() === sym.toLowerCase());
+              if (shadowStats) {
+                const swr = (psc?.action === 'sell' ? shadowStats.shortWinRate : shadowStats.longWinRate);
+                if (Number.isFinite(swr)) pwin = Math.max(0, Math.min(1, swr));
               }
             } catch { /* cold-start safe */ }
             const votes = result.consensus.votes ?? [];
@@ -13996,7 +13999,22 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               action: finalAction,
               confidence: execConf,
               thesis: execThesis,
-              pwin: safeNum(entryOlrPWin, 0.5),
+              // v2.0.873-P9-sllock-fix（主神 2026-08-29）: pwin 唔可以再用已證偽 OLR
+              // （ρ=+0.02 零預測力——signal 層仍然輸出 OLR 會誤導客戶端）。改用 shadow WR
+              // （ρ=+0.106 唯一有預測力入場特徵）; 冇 shadow 數據 → 中性 0.5（唔誤導）。
+              pwin: (() => {
+                try {
+                  const pre = this.precomputedEntryFeatures?.get(`${execSym}:${finalAction}`) as
+                    { shadowWinRate?: number } | undefined;
+                  if (pre && Number.isFinite(pre.shadowWinRate)) return Math.max(0, Math.min(1, pre.shadowWinRate ?? 0.5));
+                  const shadowStats = this.shadowEngine?.getStats()?.find(s => s.symbol.toLowerCase() === execSym.toLowerCase());
+                  if (shadowStats) {
+                    const swr = finalAction === 'sell' ? shadowStats.shortWinRate : shadowStats.longWinRate;
+                    if (Number.isFinite(swr)) return Math.max(0, Math.min(1, swr));
+                  }
+                  return 0.5;
+                } catch { return 0.5; }
+              })(),
               agentsAligned: 0,
               agentsTotal: 0,
               stopLoss: execSL,
