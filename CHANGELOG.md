@@ -4,6 +4,47 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-attack-round4: 攻擊輪四——holdMin 未來 ts DoS + SHADOW LEAN 大小階（主神 2026-08-29「不擇手段攻擊 holdmin/shadowvoice」）
+
+**攻擊矩陣**: A1(CRITICAL) **`openedAt` 未來值(1e308 注入)→ holdMinNow 負數 → 永遠 <15min → consensus close 無限延遲 = DoS(持倉永不 close)**;A2(CRITICAL) **SHADOW LEAN/voice 大小階 match**——`normalizeSymbol('BTC')='BTC'` ≠ `'btc'`,shadow stats 若大階就 match 唔到(agents 一直冇 quote SHADOW LEAN 可能就係呢個根因);A3 catch 吞 error(靜默失敗,唔 crash)。
+
+**修復（production grade）**: ① A1——`openedAt` 加合理範圍檢查(`>0 且 ≤ now+5min` 先計,否則 999 唔觸發保護);② A2——SHADOW LEAN + voice match 改 lowercase 比較(`s.symbol.toLowerCase() === sym.toLowerCase()`,同其他 call site 一致);③ A3——catch 保留(靜默失敗但唔 crash,可接受)。
+
+**驗證**: 攻擊測試 6/6(p9-attack-round4);全量 3803 pass + 13 pre-existing(零新增);tsc clean。
+
+---
+
+## v2.0.873-P9-holdmin: 過早 consensus 平倉保護 + SL floor 修正方向撤銷（主神 2026-08-29「SILVER buy/sell 都蝕錢,出場時機很差」）
+
+**主神質疑**: 「SILVER buy/sell 都蝕錢!!! 出場時機很差」——SILVER BUY −16%(margin)、SELL −3.7%,多筆浮盈但鎖唔住。
+
+**邏輯實驗（先證後改,本座中途修正方向）**: 
+① **SL floor 校準 counterfactual**: 降低 SL floor(3-10% margin)→ **誤傷大 winner(MAE>5% 贏單平均 +11.2%,淨 ΔPnL −97.9%)= 錯誤方向** → **revert**(floor 唔係問題);② **SILVER −16% 解剖**: SL=None(HL DEX 冇 set SL 就被 consensus close)、4 分鐘持倉、closeReason=consensus(唔係 sl_tp)——**SL 未 set 就被平**;③ **<15min consensus close**: 15 單中 12 單有 MFE≥0.5% 鎖利空間,**實際合共 −17.89% 被過早平倉**;④ 持倉時間 vs PnL: >4h +1.29% vs <10min −0.30%。
+
+**修正（production grade, env 可回滾）**: `P9_HOLD_MIN_MINUTES`(預設 15min, 0 = 關閉, clamp [0,60])——新倉 <15min 唔可以俾 consensus close 過早切走(除 SL hit/虧損 <−3% margin),同步 patch `_pendingAnalyses`(防 split-brain)。**呢個同時修 SILVER −16%**: 開倉 4min 唔會俾 consensus 平 → SL placement 有時間完成 → SL 觸發止血。
+
+**幻覺修正不變式**: 唔係放緩止血——SL hit 同大蝕(>3% margin)照樣即時 close;只係唔俾 consensus 喺 thesis 未證明前切走。
+
+**驗證**: 新測試 3/3(p9-holdmin);全量 3797 pass + 13 pre-existing(零新增);tsc clean。
+
+---
+
+## v2.0.873-P9-shadowvoice: Shadow 統計層 voice——agents 終於見到統計參考（主神 2026-08-28「8 個資產接近二十四小時冇開倉,shadow trade & cycle 亦一直在 run,但就是沒有新倉開」）
+
+**主神質疑（TG）**: 「8 個資產接近二十四小時冇開倉絕對係問題,就算一路在修,shadow trade & cycle 亦一直在run,但就是沒有新倉開。」
+
+**診斷（系統真係 run 但決策層斷裂）**: ① shadow 引擎一直開倉(60 個 shadow 倉,全面 SELL-lean)——統計層偵測到跌市;② cycle 一直跑(lastUpdated 每 3 分鐘更新);③ **但 agents context 完全冇 shadow 統計**——淨係見到「OLR 已證偽(ρ=+0.02)、FP 0pp、Direction RED」→ 全部 HOLD (0B/0S/7H)→ 零開倉。
+
+**Shadow 統計揭示（agents 即將見到）**: `btc SELL WR 86% EV +1.22%` / `dram SELL 72% EV +0.54%` / `gold SELL 53% EV +0.44%` vs **BUY 全負 EV**(btc −2.11%/gold −6.79%/skhx −64.6%)——**統計層好清楚話「應該 SELL」,但 agents 完全唔知**。
+
+**修正（production grade）**: 新 `buildShadowVoiceBlock()`——per-symbol×side shadow WR/EV(decayed)+ 即時 shadow 倉位方向(BUY-lean/SELL-lean),注入 marketDesc(directionHealthBlock 之後)。**純 context——唔 hard block,唔改執行邏輯**——agents 有統計參考,唔再喺「OLR 已證偽」真空度度 HOLD。
+
+**幻覺修正不變式**: shadow 統計係資訊性(agents 參考),唔係硬 gate;shadow-gate(執行層 block/boost)保留;SL 唔收窄。
+
+**驗證**: 新測試 5/5(p9-shadowvoice);全量 3794 pass + 13 pre-existing(零新增);tsc clean。
+
+---
+
 ## v2.0.873-P9-attack-round3: 攻擊輪三——SELL-ALERT env gate 缺失 + NaN 源頭防禦（主神 2026-08-28「不擇手段攻擊 sealarm + unblock 新 code」）
 
 **攻擊矩陣**: A1(CRITICAL) **`SELL_ALERT_ENABLED` env gate 缺失**——文檔承諾可回滾但 code 冇 gate(同 KLINE_BLOCK_ENABLED 對照組不一致,所有 context 注入都應有回滾掣);A3 perSide pnl NaN 污染(`NaN ?? 0 = NaN`,?? 只擋 null/undefined);A2 RELATIVE LEAN startsWith 匹配驗證(實際格式 match ✓);A4 15m fetch 失敗 silent skip(安全);A5 robustMomentumPct 極限(2 支/1 支/null/負價格全部安全)。
