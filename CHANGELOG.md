@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-sllock: exit-price-lock 單位 bug 修復——threshold floor 放大 100 倍(「why only earn so little」根因)(主神 2026-08-29「SILVER buy/sell 都蝕錢,出場時機很差」)
+
+**主神質疑**: 「why only earn so little」——GOLD SELL MFE +3.0% 但只賺 +2.1%,Post-Review 話鎖利回吐 0.9pp。
+
+**根因(雙重單位 bug)**: 
+① **threshold floor 寫成 `0.3`(30%)而唔係 `0.003`(0.3%)**——鎖利 threshold 高 100 倍,正常單 MFE(0.2-3%)永遠到唔到 30% → 鎖利管道形同虛設;② **`liveMfe`(%)同 `converted.mfePricePct`(fraction)單位唔一致**——`Math.max` 揀咗放大 100 倍嘅 liveMfe。GOLD 觸發係「兩個放大 100 倍巧合通過」,實際鎖利點已回吐。
+
+**修正(production grade)**: 
+① `threshold = Math.max(0.003, ...)`(floor 0.3% fraction);② `mfePricePct = Math.max(converted.mfePricePct, liveMfe/100)`(統一 fraction)。
+
+**驗證**: 新測試 3/3(p9-sllock——threshold floor 0.3% vs 30% 確認 + GOLD 0.34% 觸發 + liveMfe 單位統一);全量 3806 pass + 13 pre-existing(零新增);tsc clean。
+
+---
+
 ## v2.0.873-P9-attack-round4: 攻擊輪四——holdMin 未來 ts DoS + SHADOW LEAN 大小階（主神 2026-08-29「不擇手段攻擊 holdmin/shadowvoice」）
 
 **攻擊矩陣**: A1(CRITICAL) **`openedAt` 未來值(1e308 注入)→ holdMinNow 負數 → 永遠 <15min → consensus close 無限延遲 = DoS(持倉永不 close)**;A2(CRITICAL) **SHADOW LEAN/voice 大小階 match**——`normalizeSymbol('BTC')='BTC'` ≠ `'btc'`,shadow stats 若大階就 match 唔到(agents 一直冇 quote SHADOW LEAN 可能就係呢個根因);A3 catch 吞 error(靜默失敗,唔 crash)。
