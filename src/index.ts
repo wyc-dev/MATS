@@ -3923,7 +3923,11 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // 盤中 peak 由 trackMAEMFE(每 cycle currentPrice 抽查)錯過 → PAEL 鎖利同 reversal
         // 睇唔到真 MFE → 回吐先補(太遲)。而家用 1h candle high 計即時 price MFE。
         const liveMfe = this.computeLiveMfePricePct(sym, pos.side, pos.averageEntryPrice, pos.openedAt ?? 0);
-        const mfePricePct = Math.max(converted.mfePricePct, liveMfe ?? 0);
+        // v2.0.873-P9-sllock（主神 2026-08-29「why only earn so little」）:
+        // 單位 bug——computeLiveMfePricePct 返回 %(0.344=0.344%),convertToPriceExtremes
+        // 返回 fraction(0.0034)——Math.max 揀咗放大 100 倍嘅 liveMfe → 鎖利 MFE 虛高 100 倍。
+        // 統一 fraction: liveMfe/100。
+        const mfePricePct = Math.max(converted.mfePricePct, (liveMfe ?? 0) / 100);
 
         const regime = this.marketState.getState(normalizeSymbol(sym))?.regime ?? 'unknown';
         const isTrending = regime.includes('trending');
@@ -3943,7 +3947,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // v2.0.868-fix(主神 GOLD 調查):threshold floor 0.3%——低波動 symbol
         // (GOLD p75×0.8 = 0.24%)一有少少順向就鎖——thesis 目標($4430 +0.5%)
         // 一半都未到——鎖完 thesis 未失效 → re-open 循環(fee 浪費)
-        let threshold = Math.max(0.3, (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8)) + slippagePct;
+        // v2.0.873-P9-sllock（主神 2026-08-29）: threshold floor 單位 bug——0.3 應該係
+        // 0.003(0.3% fraction),寫成 0.3(=30%)→ 鎖利 threshold 高 100 倍 → 正常單永遠
+        // 唔到 threshold(靠放大 liveMfe 巧合通過)→ 賺得少嘅根因。
+        let threshold = Math.max(0.003, (isTrending ? profile.mfeP90 : profile.mfeP75 * 0.8)) + slippagePct;
         if (this.closeCalibrator && closeCalibConfig.enabled) {
           try {
             // v2.0.868-attack4:trend 來源必須同 recordClose 一致(trend1h——
