@@ -130,3 +130,6 @@ PLAN_lightloss-protection.md
 # 離場研究實驗（scripts + 真實交易數據——labels/fills 含敏感市場數據）
 scripts/exit-gate-experiment/
 PLAN_exit-5m-gate.md
+# F1 死權重重新分配（主神 2026-08-30——驗證完成,gitignore）
+PLAN_F1-deadweight-realloc.md
+scripts/edge-realloc-experiment/

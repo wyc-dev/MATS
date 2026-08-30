@@ -15052,17 +15052,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         ? (shadowStats ? shadowStats.longWins + shadowStats.longLosses : 0)
         : (shadowStats ? shadowStats.shortWins + shadowStats.shortLosses : 0);
 
-      // 2. OLR P(win) (already calibrated by caller if exec-tracker is warm)
-      let olrPWin = 0.5;
-      let olrSamples = 0;
-      try {
-        const ctx = this.lastCycleShadowContexts.get(normalizeSymbol(sym));
-        if (ctx?.features && Object.keys(ctx.features).length > 0) {
-          const olrRes = this.olrEngine.query(sym, ctx.features, side, this.totalCycles);
-          if (Number.isFinite(olrRes.pWin)) olrPWin = olrRes.pWin;
-          olrSamples = olrRes.effectiveSamples ?? 0;
-        }
-      } catch { /* cold-start */ }
+      // 2. OLR P(win)——v2.0.873-P9-edt-fix: REMOVED(edge 不再消費, 已證偽源零 query
+      //    成本——唔再為一個中性 0.5 嘅分量白白 query 已證偽 OLR 模型)
 
       // 3. Combo WR (Wilson LB)
       let comboWilsonLB = 0.5;
@@ -15075,15 +15066,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
       } catch { /* cold-start */ }
 
-      // 4. First-Passage P(TP before SL)
-      let firstPassageP = 0.5;
-      try {
-        const fp = this.lastFirstPassage;
-        if (fp) {
-          firstPassageP = side === 'buy' ? fp.longPWin : fp.shortPWin;
-          if (!Number.isFinite(firstPassageP)) firstPassageP = 0.5;
-        }
-      } catch { /* cold-start */ }
+      // 4. First-Passage P(TP before SL)——v2.0.873-P9-edt-fix: REMOVED
+      //    (FP 已證偽 claimed≥95% 實際 39.1%——edge 唔再消費, 零 query 成本)
 
       // 5. Realized WR + Sharpe from trade history
       const recentTrades = this.evolution.tradeHistory.getRecent(100).filter(
@@ -15107,15 +15091,14 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       // 7. Execution friction
       const execStats = this.edgeExecTracker.getStats(sym, side);
 
-      // Calibrate OLR PnL label with execution friction (if warm enough)
-      const calibratedPWin = this.edgeExecTracker.calibratePnlLabel(sym, side, olrPWin, 60);
-
+      // v2.0.873-P9-edt-fix: OLR 已證偽——edge 唔再消費; input 用中性 0.5 佔位(向後兼容)
+      // calibratePnlLabel 亦不再需要(佢 calibrate OLR——而 OLR 已退出)
       const input: EdgeCalcInput = {
         symbol: sym, side, regime,
         shadowWinRate, shadowSamples,
-        olrPWin: calibratedPWin, olrSamples,
+        olrPWin: 0.5, olrSamples: 0,
         comboWilsonLB, comboSamples,
-        firstPassageP,
+        firstPassageP: 0.5,
         realizedWinRate, realizedSamples, realizedSharpe,
         perturbation: stability.perturbation, crossTime: stability.crossTime,
         avgSlippageBps: execStats.avgSlippageBps,
