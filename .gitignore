@@ -133,3 +133,6 @@ PLAN_exit-5m-gate.md
 # F1 死權重重新分配（主神 2026-08-30——驗證完成,gitignore）
 PLAN_F1-deadweight-realloc.md
 scripts/edge-realloc-experiment/
+PLAN_trade-history-archive.md
+scripts/trade-history-archive/
+data/archive/

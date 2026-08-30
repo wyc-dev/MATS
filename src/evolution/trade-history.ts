@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../observability/logger.ts';
 import type { TradingDecision, MarketRegime } from '../types/index.ts';
 import { edgeConfig } from '../edge/edge-config.ts';
+import { getSharedArchive } from './trade-history-archive.ts';
 
 const log = createLogger({ phase: 'trade-history' });
 
@@ -78,6 +79,12 @@ export class TradeHistory {
 
     // Prune oldest if over limit
     if (this.entries.length > this.maxEntries) {
+      // v2.0.873-P9-th-archive: 被剔嘅 entries 先歸檔再刪——永續保存 decision
+      // context(confidence/regime/trend/thesis/closeReason——realTrades 冇)。
+      // 核心 zero-impact: archive 永唔入決策路徑, ring buffer 照樣運作。
+      const overflow = this.entries.length - this.maxEntries;
+      const evicted = this.entries.slice(0, overflow);
+      try { getSharedArchive().append(evicted); } catch { /* 非致命 */ }
       this.entries = this.entries.slice(-this.maxEntries);
     }
 
