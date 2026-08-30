@@ -4,6 +4,44 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-edt-fix: 已證偽源退出 edge score + F1 死權重重新分配 + 攻擊輪(主神 2026-08-30「check mats_web_app 同步」+「不擇手段攻擊」+「F1 計劃」)
+
+**本版三件事(全部先證後改,數據話事)**:
+
+### ① P9-edt-fix: edge_report 已證偽源退出(架構漏洞修復)
+
+**問題**: contract 聲稱「edge_report 內部 OLR 係 report-only 已知」,但實際 code:
+- `learnedEdge = clamp01(input.olrPWin)` + `pathEdge = clamp01(input.firstPassageP)`(兩者已證偽: OLR ρ=+0.02 / FP claimed≥95% 實際 39.1%)
+- **合共佔 edgeScore 權重 trending 30% / mean-rev 40%**
+- 而 `recommendation='skip'` → **HARD HOLD matrix action**(analysis-matrix.ts:66)——即已證偽源透過 edgeScore 影響決策,唔係 report-only
+
+**修正(production grade)**: learnedEdge/pathEdge 固定中性 0.5 + `confidenceFromSamples` 唔再收 olr 樣本(已證偽源唔提供信心)+ index.ts 移除 OLR/FP 死 query(零成本)。
+
+**同步 mats_web_app**: 「P(win) OLR」→「P(win)」(pwin 已由 Shadow WR ρ=+0.106 主導)、「Learned (OLR, post-friction)」→「Learned (decayed WR)」——已證偽源唔喺 UI 扮有效訊號。
+
+### ② P9-edt-fix-attack: 攻擊輪(23/23, 1 真漏洞)
+
+| 攻擊 | 漏洞 | 修復 |
+|:-----|:-----|:-----|
+| D1 HIGH | `regime` 非 string(null/undefined)→ `regime.toLowerCase()` TypeError **crash 成個 cycle** | typeof guard → fallback unknown weights |
+| B1-B4 | 中性化承諾確認——olrPWin/FP 任何垃圾值(0/1/NaN/1e308)→ learned/path 永遠 0.5 零影響 | ✅ 已內建 |
+| A2 | ±Infinity → 中性 0.5(唔 clamp 1——垃圾唔可以撐高 edge) | ✅ 保守正確 |
+
+### ③ F1: 死權重重新分配(盈利提升——把確定有效信號放大)
+
+**問題**: learned/path 中性化後,佢哋嘅 config 權重份額(30-40%)變成**死地板**——永遠貢獻 `0.5×w` 常數,稀釋有效源(shadow WR ρ=+0.106 唯一有預測力)敏感度。
+
+**邏輯實驗(先證後改, 3 項全過)**:
+- **實驗 A 真實數據**(shadow/combo/realTrades 重建 22 cells): V2 零 trade→skip 誤傷,只有 caution→skip(正確收緊弱訊號);chaotic 靠 realized 開 1 trade
+- **實驗 B 蒙地卡羅**(10,000 點): 動態範圍 0.481 vs 0.321 = **×1.501**(更 sharp——強弱分離更明顯)
+- **實驗 C threshold 中心性**: 中性 0.5→**0.500 零偏**;全1→1.000;全0→0.000(死 floor 消除)
+
+**實作**: `reallocateWeights()` 純函數(方案 V2——按有效源原比例放大,唔改變相對權重)+ computeEdgeReport 接入;learned/path 權重**永遠 0**(已證偽不變式);env `EDGE_REALLOC=false` 回滾。
+
+**驗證**: 新測試 23(edt-fix-attack)+ 11(F1)+ edge-attack 斷言更新;全量 **3888 pass + 13 pre-existing(零新增)**;tsc clean。
+
+---
+
 ## v2.0.873-P9-llpp-edt: 輕虧損過早保護(LLPP) + SL/TP 持久化 + closeReason 統一 + Phase C 否決(主神 2026-08-30「LLPP 係點解?」+「不擇手段攻擊」+「Phase A/C」)
 
 **本版四件事(全部先證後改,數據話事)**:
