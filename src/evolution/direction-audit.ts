@@ -52,7 +52,7 @@ function readChangelogFixes(): string {
 // dataLines mark them [SYS-CLOSE] to stop the LLM misflagging invalidation+
 // small-positive-PnL as a data-quality bug. Hoisted to module scope (was
 // recreated per-record inside the .map() callback — O(n) allocations).
-const SYS_CLOSE_EXIT_TYPES = new Set(['thesis_invalidation', 'consensus_reversal', 'reversal_point', 'manual', 'consensus']);
+const SYS_CLOSE_EXIT_TYPES = new Set(['thesis_invalidation', 'consensus_reversal', 'reversal_point', 'reversal_point_exit', 'manual', 'consensus']);
 
 export interface AuditIncident {
   severity: 'critical' | 'warning' | 'info';

@@ -60,6 +60,12 @@ export function buildTradeRow(
     min_value_reached: num(t['minValueReached']),
     max_value_reached: num(t['maxValueReached']),
     agent_id: str(t['agentId'], 64),
+    // v2.0.873-P0-4: SL/TP 價同步上雲——離場研究（SL-aware replay）需要歷史 SL
+    original_stop_loss_price: num(t['originalStopLossPrice']),
+    final_stop_loss_price: num(t['finalStopLossPrice']),
+    original_take_profit_price: num(t['originalTakeProfitPrice']),
+    final_take_profit_price: num(t['finalTakeProfitPrice']),
+    sl_narrowed: typeof t['slNarrowed'] === 'boolean' ? t['slNarrowed'] : null,
   };
 }
 

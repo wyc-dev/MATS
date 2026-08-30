@@ -150,6 +150,14 @@ export interface PortfolioSnapshot {
     postReview?: string;
     minValueReached?: number;
     maxValueReached?: number;
+    closeReason?: string;
+    exitType?: string;
+    // v2.0.226 SL/TP 價(v2.0.873-P0-4 修正:白名單漏咗 → realTrades 0/292 有 SL)
+    originalStopLossPrice?: number;
+    finalStopLossPrice?: number;
+    originalTakeProfitPrice?: number;
+    finalTakeProfitPrice?: number;
+    slNarrowed?: boolean;
   }>;
   /** v2.0.38: Persisted real (exchange) trades — stored separately from
    *  paper trades so they survive restarts but don't pollute paper stats.
@@ -174,6 +182,14 @@ export interface PortfolioSnapshot {
     postReview?: string;
     minValueReached?: number;
     maxValueReached?: number;
+    closeReason?: string;
+    exitType?: string;
+    // v2.0.226 SL/TP 價(v2.0.873-P0-4 修正:白名單漏咗 → realTrades 0/292 有 SL)
+    originalStopLossPrice?: number;
+    finalStopLossPrice?: number;
+    originalTakeProfitPrice?: number;
+    finalTakeProfitPrice?: number;
+    slNarrowed?: boolean;
   }>;
   /** v2.0.160: Persisted real positions — survive restart with thesis + MAE/MFE */
   realPositions?: Array<{
@@ -400,6 +416,13 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       maeMfeHealed: (t as any).maeMfeHealed,
       maeMfeHealError: (t as any).maeMfeHealError,
       maeMfeHealAttempts: (t as any).maeMfeHealAttempts,
+      // v2.0.873-P0-4: SL/TP 價持久化——closePosition 有填但白名單漏咗，
+      // restart 後 realTrades 0/292 有 SL——離場研究（SL-aware replay）樽頸。
+      originalStopLossPrice: (t as any).originalStopLossPrice,
+      finalStopLossPrice: (t as any).finalStopLossPrice,
+      originalTakeProfitPrice: (t as any).originalTakeProfitPrice,
+      finalTakeProfitPrice: (t as any).finalTakeProfitPrice,
+      slNarrowed: (t as any).slNarrowed,
     })) : undefined;
 
     // v2.0.38: Serialize real (exchange) trades separately so they survive
@@ -439,6 +462,13 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       maeMfeHealed: (t as any).maeMfeHealed,
       maeMfeHealError: (t as any).maeMfeHealError,
       maeMfeHealAttempts: (t as any).maeMfeHealAttempts,
+      // v2.0.873-P0-4: SL/TP 價持久化——closePosition 有填但白名單漏咗，
+      // restart 後 realTrades 0/292 有 SL——離場研究（SL-aware replay）樽頸。
+      originalStopLossPrice: (t as any).originalStopLossPrice,
+      finalStopLossPrice: (t as any).finalStopLossPrice,
+      originalTakeProfitPrice: (t as any).originalTakeProfitPrice,
+      finalTakeProfitPrice: (t as any).finalTakeProfitPrice,
+      slNarrowed: (t as any).slNarrowed,
     })) : undefined;
 
     // v2.0.160: Serialize real positions so they survive restart with thesis + MAE/MFE

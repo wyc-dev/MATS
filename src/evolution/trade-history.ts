@@ -36,7 +36,7 @@ export interface TradeHistoryEntry {
   /** v2.0.139: How the position was closed — thesis_invalidation losses are
    *  excluded from the conviction-gate winRate so the gate only tightens on
    *  real market-risk losses (SL hit), not thesis-system force-closes. */
-  closeReason?: 'sl_tp' | 'tp_hit' | 'consensus' | 'consensus_reversal' | 'manual' | 'reconciliation' | 'exchange_closed' | 'thesis_invalidation' | 'exit_price_lock' | 'regime_reversal_lock' | 'reversal_point' | 'profit_lock';
+  closeReason?: 'sl_tp' | 'tp_hit' | 'consensus' | 'consensus_reversal' | 'manual' | 'reconciliation' | 'exchange_closed' | 'thesis_invalidation' | 'exit_price_lock' | 'regime_reversal_lock' | 'reversal_point' | 'reversal_point_exit' | 'profit_lock';
 }
 
 /**
