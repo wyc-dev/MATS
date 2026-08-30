@@ -678,6 +678,9 @@ export class APIServer {
               // v2.0.870-pnl-range: 2 WEEK + 1 MONTH
               week2: { ...emptyDay, principal: { paper: 1000, real: 0 } },
               month1: { ...emptyDay, principal: { paper: 1000, real: 0 } },
+              // v2.0.873-P9-th-archive: 3 MONTH + 1 YEAR
+              month3: { ...emptyDay, principal: { paper: 1000, real: 0 } },
+              year1: { ...emptyDay, principal: { paper: 1000, real: 0 } },
             };
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(data));
