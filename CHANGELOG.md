@@ -4,6 +4,45 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-th-archive: 決策歷史永續歸檔 + PNL 3 MONTH/1 YEAR(主神「無限期儲存交易紀錄」+「PNL 加時段」)
+
+**本版三件事(全部先證後改)**:
+
+### ① P9-th-archive: 交易歷史永續歸檔(先歸檔再刪,核心零改動)
+
+**問題**: `trade-history` 10000 條 ring buffer **已滿**——10000 條只係覆蓋 **31 日**(rate ≈ 323 條/日,每 cycle 1 條,包括 HOLD)。最舊 decision context(confidence/regime/trend/thesis/closeReason)被 `slice(-10000)` **靜靜丟棄**;`realTrades`(交易正本)零 cap 無限保存,但**冇 decision context——被剔歷史無法重構**。
+
+**邏輯實驗(先證後改, A-D 全過)**:
+```
+A 零丟失:   archive ∪ ring = 12000 條完整(by id)——零缺失零重複 ✅
+B zero-impact: 讀 archive 唔影響 ring(archive 永唔入決策路徑)✅
+C crash-safe:  partial line(截斷 JSON)skip, 前面照讀 ✅
+D 真實重放:  evolution-state 10000 條重放——ring 保持 10000, archive 0 ✅
+```
+
+**實作**: `src/evolution/trade-history-archive.ts`(`TradeHistoryArchive`——append-only JSONL,異步 fire-and-forget append,失敗唔影響決策;`readAll`/`readSince` 重放研究用)+ `trade-history.ts` `record()` 接入(eviction 前 `archive.append(evicted)` 先歸檔再刪)。**核心 zero-impact**: ring buffer 照樣 10000 cap,learning 組件照讀 `this.entries`。env `TRADE_ARCHIVE_ENABLED=false` 回滾。
+
+**Backfill(主神指令)**: `scripts/trade-history-archive/13-backfill.ts`——現有 10000 條複製去 `data/archive/trade-history-archive.jsonl`(7.3MB,10002 條含 2 新 evicted,全部 unique id)。途中修正 bug: 用同一個 `seen` set 做內部去重同 archive 去重 → `toWrite` 永遠 0;分開 `localSeen`/`archiveSeen` 後正確。
+
+### ② PNL 頁面新增 3 MONTH & 1 YEAR(主神「PNL 加時段」)
+
+**後端**(`src/index.ts` + `api-server.ts`): `computeDailyPnl()` 加 `month3`(90 日)+ `year1`(365 日);api-server fallback 同步。實測: `month3: trades=295 date=2026-06-03` / `year1: trades=295 date=2025-09-01`。
+
+**前端**(`PNL/pnl.html`): 按鈕 `1 YEAR → 3 MONTH → 1 MONTH → 2 WEEK → 1 WEEK → YESTERDAY → TODAY`;periodTitles/periodLabelMap/chartTitles/日期間隔(3M 每 10 日、1Y 每 30 日)/按鈕事件全同步。
+
+### ③ PNL 佈局調整(主神「PAPER/REAL 同 $/%/Refresh 同行」)
+
+`mode-switch`(PAPER/REAL)由 Row 1 搬到 Row 2——同 `$/%/Refresh/Capture` 並排:
+```
+Row 1: [1 YEAR | 3 MONTH | 1 MONTH | 2 WEEK | 1 WEEK | YESTERDAY | TODAY]
+Row 2: [PAPER | REAL] [$ | %] Refresh Capture ▾
+```
+JS 零改動(靠 element id,唔依賴 DOM 位置)。
+
+**驗證**: tsc clean · 括號平衡 778/778 · 全量 3895 + 13 pre-existing(零新增)。
+
+---
+
 ## v2.0.873-P9-edt-fix: 已證偽源退出 edge score + F1 死權重重新分配 + 攻擊輪(主神 2026-08-30「check mats_web_app 同步」+「不擇手段攻擊」+「F1 計劃」)
 
 **本版三件事(全部先證後改,數據話事)**:

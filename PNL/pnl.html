@@ -148,18 +148,21 @@
 </div>
 
 <div class="controls">
-  <div class="switch-group" id="mode-switch">
-    <button class="switch-btn" data-mode="paper" id="btn-paper">PAPER</button>
-    <button class="switch-btn" data-mode="real" id="btn-real">REAL</button>
-  </div>
   <div class="switch-group" id="period-switch">
+    <button class="switch-btn" id="btn-year1">1 YEAR</button>
+    <button class="switch-btn" id="btn-month3">3 MONTH</button>
     <button class="switch-btn" id="btn-month1">1 MONTH</button>
     <button class="switch-btn" id="btn-week2">2 WEEK</button>
     <button class="switch-btn" id="btn-weekly">1 WEEK</button>
     <button class="switch-btn" id="btn-yesterday">YESTERDAY</button>
     <button class="switch-btn active-period2" id="btn-today">TODAY</button>
   </div>
-  <div style="flex-basis:100%;height:0;"></div><!-- v2.0.870-pnl-range: 換行——unit/Refresh/Capture 落下一行 -->
+  <div style="flex-basis:100%;height:0;"></div><!-- v2.0.870-pnl-range: 換行——unit/mode/Refresh/Capture 落下一行 -->
+  <!-- v2.0.873: mode(PAPER/REAL)搬落第二行——同 $/%/Refresh/Capture 同行(主神) -->
+  <div class="switch-group" id="mode-switch">
+    <button class="switch-btn" data-mode="paper" id="btn-paper">PAPER</button>
+    <button class="switch-btn" data-mode="real" id="btn-real">REAL</button>
+  </div>
   <div class="switch-group" id="unit-switch">
     <button class="switch-btn" id="btn-usd">$</button>
     <button class="switch-btn active-unit2" id="btn-pct">%</button>
@@ -212,7 +215,7 @@
 // ═══ State ═══
 let data = null;
 let mode = 'real';      // paper | real——v2.0.870-P80: 預設 real（而家主要 real 交易——paper 冇 trade 會顯示「冇資料」）
-let period = 'today';    // today | yesterday | weekly | week2 | month1——v2.0.870-pnl-range: 2 WEEK + 1 MONTH
+let period = 'today';    // today | yesterday | weekly | week2 | month1 | month3 | year1——v2.0.873: 3 MONTH + 1 YEAR
 // v2.0.870-P80: 讀取 localStorage 持久化嘅 mode（用戶上次選擇）
 try { const saved = localStorage.getItem('pnlMode'); if (saved === 'paper' || saved === 'real') mode = saved; } catch { /* non-fatal */ }
 // v2.0.870-pnl-range-fix: 初始化時同步按鈕顯示——HTML 硬編碼 active-paper 會令
@@ -243,7 +246,7 @@ function render() {
   // v2.0.870-pnl-title(主神):標題顯示實際日期/時期範圍——render 每次更新
   updateTitleDate(period);
   const p = data[period] || { date: '', paper: {}, real: {} };
-  const periodTitles = { weekly: 'LAST 7 DAYS', week2: 'LAST 14 DAYS', month1: 'LAST 30 DAYS' };
+  const periodTitles = { weekly: 'LAST 7 DAYS', week2: 'LAST 14 DAYS', month1: 'LAST 30 DAYS', month3: 'LAST 90 DAYS', year1: 'LAST 365 DAYS' };
   const periodTitle = periodTitles[period];
   document.getElementById('date-label').textContent = periodTitle ? `${periodTitle} (GMT+8)` : `${p.date} (GMT+8)`;
   const d = p[mode] || { points: [], total: 0, trades: 0, wins: 0 };
@@ -263,7 +266,7 @@ function renderSummary(d) {
   const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
   const maxWin = wins.length ? Math.max(...wins) : 0;
   const maxLoss = losses.length ? Math.min(...losses) : 0;
-  const periodLabelMap = { weekly: '1 WEEK', week2: '2 WEEK', month1: '1 MONTH', today: 'TODAY', yesterday: 'YESTERDAY' };
+  const periodLabelMap = { weekly: '1 WEEK', week2: '2 WEEK', month1: '1 MONTH', month3: '3 MONTH', year1: '1 YEAR', today: 'TODAY', yesterday: 'YESTERDAY' };
   const periodLabel = periodLabelMap[period] || period.toUpperCase();
   const modeLabel = `${mode === 'paper' ? 'PAPER' : 'REAL'} · ${periodLabel}`;
   // % 模式:Avg/Best/Worst 用 pnl/principal(對比本金——主神 v2.0.868 指正)
@@ -421,7 +424,7 @@ function renderChart(d) {
   ctx.fillStyle = '#e4e4e7';
   ctx.font = 'bold 12px monospace';
   ctx.textAlign = 'center';
-  const chartTitles = { weekly: 'LAST 7 DAYS (GMT+8)', week2: 'LAST 14 DAYS (GMT+8)', month1: 'LAST 30 DAYS (GMT+8)' };
+  const chartTitles = { weekly: 'LAST 7 DAYS (GMT+8)', week2: 'LAST 14 DAYS (GMT+8)', month1: 'LAST 30 DAYS (GMT+8)', month3: 'LAST 90 DAYS (GMT+8)', year1: 'LAST 365 DAYS (GMT+8)' };
   ctx.fillText(chartTitles[period] || `${periodDate || ''} (GMT+8)`, W / 2, 12);
 
   // peak / trough 標注(最高/最低累計點)——v2.0.868-fix:用 toVal 後值(% 模式顯示百分比)
@@ -450,12 +453,13 @@ function renderChart(d) {
     const dt = new Date(t);
     return `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
   };
-  if (period === 'weekly' || period === 'week2' || period === 'month1') {
+  if (period === 'weekly' || period === 'week2' || period === 'month1' || period === 'month3' || period === 'year1') {
     // v2.0.868-fix:多日範圍顯示日期標記(每日一個日期——唔係淨係 HH:MM)
     // v2.0.870-pnl-range: 2 WEEK / 1 MONTH 間隔顯示（2 WEEK 每 2 日、1 MONTH 每 5 日）
+    // v2.0.873: 3 MONTH 每 10 日、1 YEAR 每 30 日
     const DAY = 24 * 3600 * 1000;
-    const days = period === 'weekly' ? 7 : period === 'week2' ? 14 : 30;
-    const stepDays = period === 'weekly' ? 1 : period === 'week2' ? 2 : 5;
+    const days = period === 'weekly' ? 7 : period === 'week2' ? 14 : period === 'month1' ? 30 : period === 'month3' ? 90 : 365;
+    const stepDays = period === 'weekly' ? 1 : period === 'week2' ? 2 : period === 'month1' ? 5 : period === 'month3' ? 10 : 30;
     for (let i = 0; i < days; i += stepDays) {
       const t = tMin + i * DAY;
       if (t > tMax) break;
@@ -526,6 +530,8 @@ function renderChart(d) {
 // ═══ Mode switch ═══
 document.getElementById('btn-paper').addEventListener('click', () => setMode('paper'));
 document.getElementById('btn-real').addEventListener('click', () => setMode('real'));
+document.getElementById('btn-year1').addEventListener('click', () => setPeriod('year1'));
+document.getElementById('btn-month3').addEventListener('click', () => setPeriod('month3'));
 document.getElementById('btn-month1').addEventListener('click', () => setPeriod('month1'));
 document.getElementById('btn-week2').addEventListener('click', () => setPeriod('week2'));
 document.getElementById('btn-weekly').addEventListener('click', () => setPeriod('weekly'));

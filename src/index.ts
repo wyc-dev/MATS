@@ -15812,6 +15812,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     // v2.0.870-pnl-range: 2 WEEK（14 日）+ 1 MONTH（30 日）
     week2: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
     month1: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
+    // v2.0.873-P9-th-archive: 3 MONTH（90 日）+ 1 YEAR（365 日）
+    month3: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
+    year1: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
   } {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -15893,6 +15896,20 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         principal: { paper: paperPrincipal, real: realPrincipal },
         paper: toSeries(paperAll, todayStart - 29 * DAY, todayStart + DAY),
         real: toSeries(realAll, todayStart - 29 * DAY, todayStart + DAY),
+      },
+      // v2.0.873-P9-th-archive: 最近 90 日（3 MONTH）
+      month3: {
+        date: fmt(todayStart - 89 * DAY),
+        principal: { paper: paperPrincipal, real: realPrincipal },
+        paper: toSeries(paperAll, todayStart - 89 * DAY, todayStart + DAY),
+        real: toSeries(realAll, todayStart - 89 * DAY, todayStart + DAY),
+      },
+      // v2.0.873-P9-th-archive: 最近 365 日（1 YEAR）
+      year1: {
+        date: fmt(todayStart - 364 * DAY),
+        principal: { paper: paperPrincipal, real: realPrincipal },
+        paper: toSeries(paperAll, todayStart - 364 * DAY, todayStart + DAY),
+        real: toSeries(realAll, todayStart - 364 * DAY, todayStart + DAY),
       },
     };
   }
