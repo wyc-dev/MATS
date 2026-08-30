@@ -4,6 +4,72 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-llpp-edt: 輕虧損過早保護(LLPP) + SL/TP 持久化 + closeReason 統一 + Phase C 否決(主神 2026-08-30「LLPP 係點解?」+「不擇手段攻擊」+「Phase A/C」)
+
+**本版四件事(全部先證後改,數據話事)**:
+
+### ① P0-4: SL/TP 價持久化(離場研究樽頸解除)
+
+**根因**: `closePosition` 一直有填 5 個 SL/TP 字段(original/final stop+take + slNarrowed),但:
+- `serializedRealTrades` 白名單(persistence.ts:407)漏咗 → save 時被剝走
+- `PortfolioSnapshot.realTrades` type 都漏咗 → restart 後 **realTrades 0/292 有 SL**
+- open positions(`serializedRealPositions`)反而有——「開倉有、平倉冇」數據斷層
+
+**修正(production grade 四層)**: type(paper+real)補 5 字段 + serialize 白名單補 5 字段 + Supabase buildTradeRow(含垃圾值防禦 NaN→null)+ migration 23(`add column if not exists` × 5)。
+
+**backfill(主神提點「record 中應有真實 SL」)**: 292/292 覆蓋——92 真實(sl_tp exit 46 + logs SL/TP set 46)+ 200 per-symbol 中位數近似(來源①統計)。真實 SL re-verify LLPP replay: defer2 +15.36pp / defer3 +37.36pp(SL 止蝕參與,下行有限)。
+
+**驗證**: 新測試 4/4(P0-4 round-trip: save→load 保留 + restore 唔剝 + Supabase 輸出 + 垃圾防禦;發現 `lockedWrite` async queue + `dailyPnlResetDate` string schema 兩陷阱);全量 3814 pass + 13 pre-existing(零新增);tsc clean。
+
+### ② P9-llpp: 輕虧損過早保護(Light-Loss Premature Protection)
+
+**問題根源**: consensus close 輕虧損倉(-3%~0% margin)有 **32% 過早**(close 後 6×15m 價格反彈 ≥0.5%)——呢個係機制真空區(浮盈≥1%→P9-defer / <15min→holdmin / 大蝕>/SL→止血,但「輕虧損 + 持倉>15min」冇機制保護)。
+
+**邏輯實驗(先證後改,兩輪 SL-aware replay)**:
+- Step 6 scenario sweep: defer2 燭 +15.23pp / defer3 +28.22pp / defer6 +47.78pp
+- Step 8 backfill 真實 SL re-verify: defer2 +15.36pp / defer3 +37.36pp / defer6 +48.36pp,SL 止蝕 3-5 單,漏洞 0
+- Step 9 條件式 counterfactual(關鍵架構修正): **「續跌確認 cut」係過度設計**(cut 咗本應反彈嘅單,Δ 跌到盲 hold 38%)→ 改 **純延遲模型**(P9-defer 鏡像: SL 兜底 + 回升救返 + 到期再決定)——條件式 = 盲 hold = +48.36pp ✅
+- 參數敏感性: maxDefer=6(30min @5min cycle)+ resume=0.005 最穩健
+
+**實作(production grade)**:
+- `src/analysis/light-loss-protection.ts` 純函數: `decideLightLossProtection`(決策樹)+ `createLLPPConfig`(env clamp 防攻擊)+ `computeLLPPMaxDefer`(per-symbol 過早率條件化——量化金融: 條件概率條件化,高過早率 ×2 延長 / 低 ×0.5 縮短)
+- index.ts 接駁(P9-holdmin 後): llppDeferrals Map(side+openedAt 綁定,防 close→re-open 污染)+ pendingAnalyses patch(重現 P9-attack V1 教訓,零 split-brain)+ GateOutcomeTracker 閉環(`gate='p9-llpp'` hit-rate 自動量度)
+- env 回滾: `P9_LIGHTLOSS_PROTECT=false`
+- 測試 14/14(全條件組合 + 邊界 ±3%/15min + 冷啟動 + 攻擊 clamp)
+
+**P9-llpp-attack 攻擊輪(主神「不擇手段攻擊」, 26/26 全過, 5 真漏洞全修)**:
+| 攻擊 | 漏洞 | 修復 |
+|:-----|:-----|:-----|
+| NaN pnl 注入 | NaN 穿越範圍檢查落入 defer → 無限延遲 DoS | 入口 finite guard |
+| NaN deferCount | `NaN >= maxDefer` 永遠 false → 永久延遲 | NaN → 視為 expired(照 close) |
+| NaN holdMin | 穿越 <15 檢查誤 defer | finite guard |
+| SL hit + NaN pnl | SL 檢查喺 sanitize 之後 → 止血可 bypass | SL hit 移至最前(不變式) |
+| expired 後 delete key | count reset → 下 cycle 又 defer → consensus close 永遠執行唔到 | expired 唔 delete(保留 count=6) |
+| Map 殘留 | position close 後 key 殘留 → 同 5-min bucket re-open 繼承舊 count | 每 cycle 殘留清理(getPosition 唔存在 → delete) |
+
+### ③ P9-edt: Phase A——closeReason 統一(EDT 重構,標籤分裂消除)
+
+**問題**: 三重鎖利機制(PAEL L2 profile / mfeLock ATR 基準 / reversal-TP 保守底線)用三個 label(`exit_price_lock`/`consensus`/`reversal_point`)+ 唔同 learning-weight(0.5/1.0/0.3)→ 歸因層無法分辨「過早鎖利」vs「正確止蝕」。
+
+**修正(8 文件,純標記 migration)**: 所有鎖利 → **`exit_price_lock`**(0.5);止血拆分獨立 **`reversal_point_exit`**(新,0.3)——types/trade-history/learning-weight/portfolio 白名單/evolution-utils(SYSTEM_DECISION_EXIT_TYPES)/direction-audit/thesis-experience(COARSE_EXIT_TYPES)/close-decision-calibrator。
+
+**架構判斷**: 「統一鎖利閾值」**冇做**——三機制係互補唔係冗餘(PAEL 數據驅動 / mfeLock 波動率適應 / reversal-TP 保守底線),一刀切合併會令冷啟動 symbol 失去保護;統一 label 已解決歸因污染(核心問題),機制保留互補(唔犧牲成效)。
+
+### ④ Phase C(5m 出場方向確認)——NOT DOING(實驗推翻,誠實記錄)
+
+**假設**: 「逆 5m 離場 = 過早」(對稱主神入場規則「5m 跌禁 BUY」)。
+
+**實驗**(10-exit-5m.ts, 97 單 close 前 5m candles):
+- 原始: 逆 5m premature 25% vs 順 5m 39%——**完全反轉**(-14.3pp)
+- 控制盈虧(關鍵): 虧損 close 順/逆無分別(42% vs 47%);盈利 close 順 5m 25%(**n=4**)vs 逆 5m 12%
+- 結論: 原始「反轉」係盈虧分佈不均嘅**混淆假象**(順 5m 組 24/28 係虧損單,虧損 close 本身 premature 高);「順 5m 盈利應 hold」有 hint 但 n=4 樣本唔夠
+
+**判決**: ❌ 唔實作——避免加「基於錯誤假設嘅組件」(OLR/Q-RL 教訓);復活條件: 盈利 close × 5m 方向樣本 ≥50 先再驗。
+
+**驗證(全版)**: 新測試 26(attack)+ 14(LLPP)+ 4(P0-4);全量 **3854 pass + 13 pre-existing(零新增)**;tsc clean。
+
+---
+
 ## v2.0.873-P9-signal-pwin: asset_analyses signal 層——pwin 由已證偽 OLR 改 Shadow WR(主神 2026-08-29「asset_analyses 嘅 signal 有冇跟隨更新」)
 
 **主神質疑**: 「asset_analyses 嘅 signal 有冇跟隨更新？需唔需要作出修改？」

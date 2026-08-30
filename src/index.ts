@@ -94,6 +94,7 @@ import { computePersistenceScore, computePersistenceDual, classifyPersistenceDua
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
+import { decideLightLossProtection, createLLPPConfig, computeLLPPMaxDefer } from './analysis/light-loss-protection.ts';
 import { shouldBlock5mDirection, DEFAULT_GATE_5M_KSIGMA, DEFAULT_GATE_5M_FLOOR_BPS, DEFAULT_GATE_5M_CAP_BPS, DEFAULT_GATE_5M_CANDLES } from './analysis/momentum-5m-gate.ts';
 import { classifySuccessPattern } from './analysis/success-pattern.ts';
 import { SuccessPatternTracker } from './evolution/success-pattern-tracker.ts';
@@ -214,6 +215,13 @@ const P9_HOLD_MIN_MINUTES = (() => {
   // clamp [0, 60]——0 = 關閉, 15 = 預設, >60 太長（止血優先）
   return Number.isFinite(raw) && raw >= 0 && raw <= 60 ? raw : 15;
 })();
+/** v2.0.873-P9-llpp（主神 2026-08-30）: 輕虧損過早保護——consensus close 輕虧損倉
+ *  （-3%~0% margin）延遲 maxDefer cycles, 俾價格時間走返（SL 兜底）。
+ *  實驗支持（PLAN_lightloss-protection.md）: 32% premature, SL-aware replay
+ *  真實 SL → defer6 cycles Δ+48.36pp, SL 止蝕 5, 漏洞 0。
+ *  架構 = P9-defer 鏡像（純延遲, 冇主動 cut——系統每 cycle 自行重新評估）。
+ *  env 回滾: P9_LIGHTLOSS_PROTECT=false */
+const llppConfig = createLLPPConfig(process.env as NodeJS.ProcessEnv);
 /** v2.0.863-attack: K-LINE fetch TTL cache — 防 cycle period 縮短/多 call 令
  *  candleSnapshot 頻繁 fetch。5 分鐘 cycle 每 cycle 一次;cycle < TTL 時用 cache。 */
 const KLINE_CACHE_TTL_MS = 120_000; // 2 分鐘
@@ -3904,7 +3912,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         if (!profile) {
           const liveMfeP = this.computeLiveMfePricePct(sym, isSellSide(pos.side) ? 'sell' : 'buy', pos.averageEntryPrice, pos.openedAt ?? 0);
           if (shouldColdStartLock(liveMfeP, pos.unrealizedPnl, pos.leverage)) {
-            await this.closeTrade(sym, `[PAEL-FALLBACK LOCK] ${sym}: cold-start profile, live MFE ${liveMfeP!.toFixed(2)}%(price) × ${safeLeverage(pos.leverage)}x ≥ 0.5% margin → 鎖利`, 'profit_lock');
+            await this.closeTrade(sym, `[PAEL-FALLBACK LOCK] ${sym}: cold-start profile, live MFE ${liveMfeP!.toFixed(2)}%(price) × ${safeLeverage(pos.leverage)}x ≥ 0.5% margin → 鎖利`, 'exit_price_lock');
             log.info(`🔒 [pael-fallback] CLOSED ${sym} @ live MFE ${liveMfeP!.toFixed(2)}% (no profile)`);
           }
           continue;
@@ -4000,7 +4008,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
                 log.info(`🔓 [trailing-pending] ${sym} 創新高 → 取消 pending（趨勢繼續，唔誤鎖 winner）`);
               } else if (shouldConfirmTrailingLock(existing, this.totalCycles, 12)) {
                 this._pendingTrailingLocks.delete(symNorm);
-                const okT = await this.closeTrade(sym, `[TRAILING LOCK] ${sym} ${pos.side.toUpperCase()}: MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% 確認(60min 冇新高) → 鎖利`, 'profit_lock');
+                const okT = await this.closeTrade(sym, `[TRAILING LOCK] ${sym} ${pos.side.toUpperCase()}: MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% 確認(60min 冇新高) → 鎖利`, 'exit_price_lock');
                 if (okT) {
                   const rcT = buildCooldownEntry(pos.side, Date.now(), Number(process.env['REENTRY_COOLDOWN_MIN'] ?? '60') * 60_000);
                   if (rcT) this.lockReentryCooldowns.set(normalizeSymbol(sym), rcT);
@@ -5414,6 +5422,8 @@ ${recentExamples}
   private persistenceUpdating = false; // 併發 guard——fetch 慢時下個 cycle 唔重複跑
   private persistenceStaleWarned = new Set<string>(); // LOUD once per symbol
   private consensusCloseDeferrals = new Map<string, number>(); // v2.0.872-P9 組件1: consensus close 延遲計數
+  // v2.0.873-P9-llpp: 輕虧損過早保護延遲計數（key 綁定 side+openedAt——防 close→re-open 殘留污染新倉）
+  private llppDeferrals = new Map<string, number>();
 
   /** v2.0.870-reentry-cooldown（主神 2026-08-25）: PAEL/profit_lock close 後
    *  1h 唔准開同一方向——斬斷「鎖完又追」loop（DRAM 鎖 3.0% → 追高 → SL -7.3%）。 */
@@ -12179,7 +12189,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               // E2: per-symbol MFE 鎖利閾值——高波動 symbol 鎖利目標遠啲（唔會太早鎖利）
               if (shouldLockProfitOnMaeMfe({ unrealizedPnlPct, maePct, mfePct, holdMin, perSymbolMfeP50 })) {
                 log.info(`🟢 [reversal-point-lock] ${psc.symbol}: MFE ${(mfePct * 100).toFixed(1)}% 回吐至 ${(unrealizedPnlPct * 100).toFixed(1)}% — 提早鎖利`);
-                await this.closeTrade(psc.symbol, `Reversal-point lock: MFE ${(mfePct * 100).toFixed(1)}% retraced to ${(unrealizedPnlPct * 100).toFixed(1)}% (≥30% giveback)`, 'reversal_point');
+                await this.closeTrade(psc.symbol, `Reversal-point lock: MFE ${(mfePct * 100).toFixed(1)}% retraced to ${(unrealizedPnlPct * 100).toFixed(1)}% (≥30% giveback)`, 'exit_price_lock');
                 continue; // 倉位已 close,skip 成個 loop
               }
 
@@ -12187,7 +12197,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               const maeMfe = shouldExitOnMaeMfeReversal({ unrealizedPnlPct, maePct, mfePct, holdMin, perSymbolMaeP50, trendAligned });
               if (maeMfe.exit) {
                 log.warn(`🔻 [reversal-point-exit] ${psc.symbol}: MAE ${(maePct * 100).toFixed(1)}% vs MFE ${(mfePct * 100).toFixed(1)}% — 水下 ${(unrealizedPnlPct * 100).toFixed(1)}% 接近 MAE（結構反轉）`);
-                await this.closeTrade(psc.symbol, `Reversal-point exit: MAE ${(maePct * 100).toFixed(1)}% dominates MFE ${(mfePct * 100).toFixed(1)}%, underwater ${(unrealizedPnlPct * 100).toFixed(1)}% near MAE`, 'reversal_point');
+                await this.closeTrade(psc.symbol, `Reversal-point exit: MAE ${(maePct * 100).toFixed(1)}% dominates MFE ${(mfePct * 100).toFixed(1)}%, underwater ${(unrealizedPnlPct * 100).toFixed(1)}% near MAE`, 'reversal_point_exit');
                 continue; // 倉位已 close,skip 成個 loop
               }
             }
@@ -12276,6 +12286,103 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               continue; // 跳過 close
             }
           } catch { /* 非致命——close 照行 */ }
+
+          // ── v2.0.873-P9-llpp（主神 2026-08-30「輕虧損過早保護」）──
+          // consensus close 輕虧損倉（-3%~0% margin）延遲 maxDefer cycles——俾價格時間
+          // 走返（SL 兜底）。實驗支持: 32% premature, SL-aware replay 真實 SL →
+          // defer6 cycles Δ+48.36pp（PLAN_lightloss-protection.md）。
+          // 架構 = P9-defer 鏡像（純延遲——系統每 cycle 自行重新評估, 冇主動 cut）。
+          // 唔變式: SL hit / 大蝕（<-3%）/ 非虧損 / holdmin（<15min）唔 apply（止血 / 正交）。
+          try {
+            if (llppConfig.enabled) {
+              // ── 殘留清理（P9-llpp-attack 2026-08-30）: position 已不存在（任何原因
+              // close）→ 清除 llppDeferrals 殘留——防「同 5-min bucket 內 re-open 新倉」
+              // 繼承舊 count（新倉即刻 expired 無保護 / count 污染）。同
+              // _pendingTrailingLocks 清理 pattern 一致（index.ts:3901）。
+              for (const k of this.llppDeferrals.keys()) {
+                // key 格式: `${sym}|llpp|${side}|${openedAtBucket}`——sym 係第一個 | 前
+                const kSym = k.split('|')[0];
+                if (kSym && !this.portfolio.getPosition(kSym)) this.llppDeferrals.delete(k);
+              }
+            }
+            if (llppConfig.enabled && pos) {
+              // key 綁定 side+openedAt——防 close→re-open 殘留污染新倉（同 P9-defer A6 一致）
+              const llppSide = pos.side === 'sell' ? 'sell' : 'buy';
+              const llppOpened = typeof pos.openedAt === 'number' && Number.isFinite(pos.openedAt) ? Math.floor(pos.openedAt / 300_000) : 0;
+              const llppKey = `${normalizeSymbol(psc.symbol)}|llpp|${llppSide}|${llppOpened}`;
+              const llppCount = this.llppDeferrals.get(llppKey) ?? 0;
+              const llppPnl = typeof pos.unrealizedPnlPct === 'number' && Number.isFinite(pos.unrealizedPnlPct) ? pos.unrealizedPnlPct : 0;
+              // SL hit 判定（同 holdmin 一致——用 pos 自己嘅 SL）
+              const llppSl = pos.stopLossPrice ?? 0;
+              const llppCur = pos.currentPrice ?? 0;
+              const llppSlHit = llppSl > 0 && llppCur > 0 &&
+                ((isBuySide(pos.side) && llppCur <= llppSl) || (isSellSide(pos.side) && llppCur >= llppSl));
+              const llppHoldMin = (Date.now() - (pos.openedAt ?? 0)) / 60_000;
+              // ── per-symbol 條件化（P9-llpp 2026-08-30 —— 量化金融: 條件概率條件化）──
+              // 用 close-decision-calibrator 嘅 symbol×side 歷史過早率調整 effective maxDefer:
+              //   高過早率 symbol（close 後價格繼續走 = 平倉過早）→ 延遲耐啲（×2）
+              //   低過早率 symbol（準確離場）→ 縮短（×0.5）——唔無謂 hold
+              const llppPremRate = this.closeCalibrator?.getAggregatePrematureRate(
+                normalizeSymbol(psc.symbol), llppSide, false,  // wasProfitable=false = 輕虧損倉
+              );
+              const llppEffectiveMax = computeLLPPMaxDefer(
+                llppConfig.maxDefer,
+                llppPremRate?.rate,
+                llppPremRate?.total,
+              );
+              const llppEffCfg = { ...llppConfig, maxDefer: llppEffectiveMax };
+              const llppDecision = decideLightLossProtection({
+                unrealizedPnlPct: llppPnl,
+                holdMin: llppHoldMin,
+                side: llppSide,
+                currentPrice: llppCur,
+                stopLossPrice: llppSl,
+                deferCount: llppCount,
+                isSLHit: llppSlHit,
+                config: llppEffCfg,
+              });
+              if (llppDecision.defer) {
+                this.llppDeferrals.set(llppKey, llppDecision.nextDeferCount);
+                // Gate Outcome Tracker 閉環（P9-llpp 2026-08-30）: 記錄攔截——
+                // 之後價格繼續走返（hit）/ 續跌（miss）由 gate-outcome-tracker
+                // 每 cycle check 自動量度——唔可以零 validation（同 trend-hold/sentinel 一致）
+                try {
+                  if (Number.isFinite(llppCur) && llppCur > 0) {
+                    this.gateOutcomeTracker.record({
+                      symbol: psc.symbol,
+                      gate: 'p9-llpp',
+                      direction: 'close',
+                      side: llppSide,
+                      entryPrice: llppCur,
+                      cycle: this.totalCycles,
+                    });
+                  }
+                } catch { /* 非致命 */ }
+                // 同步 patch _pendingAnalyses（同 P9-defer/holdmin 一致——客戶端唔可以 split-brain）
+                const llppPatch = this._pendingAnalyses?.find((a: any) => normalizeSymbol(a.symbol) === normalizeSymbol(psc.symbol));
+                if (llppPatch) {
+                  llppPatch.consensus.action = 'hold';
+                  llppPatch.metadata = {
+                    execution: {
+                      finalAction: 'hold',
+                      blocked: true,
+                      blockedBy: 'gate',
+                      blockedReason: llppDecision.reason,
+                      gates: [{ gate: 'p9-llpp-protection', passed: false, reason: llppDecision.reason }],
+                    },
+                  } as any;
+                }
+                log.info(`⏳ [P9-llpp] ${psc.symbol}: ${llppDecision.reason}`);
+                continue; // 跳過 close——下 cycle 再驗證
+              }
+              // 唔再 defer：
+              //  - expired（decision.expired=true）→ **唔 delete key**（保留 count=6）——
+              //    防「expired → delete → 下 cycle count=0 → 又 defer」無限循環
+              //    （P9-llpp-attack 2026-08-30: consensus close 永遠執行唔到 = DoS）
+              //  - 價格已走返 / 非輕虧損（defer=false 且未 expired）→ delete（正常 reset）
+              if (!llppDecision.expired && llppCount > 0) this.llppDeferrals.delete(llppKey);
+            }
+          } catch { /* 非致命——LLPP 失敗照 close */ }
           // v2.0.143: Capture the close rationale as exitThesis BEFORE closing.
           // This must happen before closePosition()/closeExchangePosition()
           // because those methods delete the position from the map.

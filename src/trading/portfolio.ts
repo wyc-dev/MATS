@@ -137,6 +137,10 @@ export const VALID_CLOSE_REASONS = new Set([
   // + position underwater. Structure-first (ATH/ATL pullback, candle shape),
   // complements consensus_reversal (LLM consensus, slower).
   'reversal_point',
+  // v2.0.873-P9-edt（Phase A 2026-08-30）: reversal-point 止血離場獨立標籤——
+  // 舊版 reversal_point 同時用於「鎖利」同「止血」（標籤分裂——歸因層無法分辨
+  // 過早鎖利 vs 正確止蝕）。統一: 鎖利 → exit_price_lock, 止血 → reversal_point_exit。
+  'reversal_point_exit',
 ] as const);
 
 /**

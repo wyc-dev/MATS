@@ -117,3 +117,16 @@ PLAN_fix-exit-price-lock.md
 asset_analyses.md
 scripts/trend-aware-counter.ts
 PLAN_exploration-dual.md
+
+# Zeabur 部署文檔（主神 2026-08-29——含私鑰處置/Ollama key/架構資訊,gitignore）
+DEPLOY_ZEABUR.md
+
+# v2.0.873-P9-llpp 系列（主神 2026-08-30——驗證完成/內部藍圖,gitignore）
+# 說明文檔 + 計劃文件（Phase A/B 完成後保留喺本地作參考）
+EVO-upgrade.md
+GATE-INTEGRATION.md
+PLAN_exit-embedding-gate.md
+PLAN_lightloss-protection.md
+# 離場研究實驗（scripts + 真實交易數據——labels/fills 含敏感市場數據）
+scripts/exit-gate-experiment/
+PLAN_exit-5m-gate.md

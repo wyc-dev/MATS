@@ -31,8 +31,11 @@ export function computeLearningWeight(
   // never applies (the original bug: `if (isWin) return 1.0` ran first).
   switch (closeReason) {
     case 'reversal_point':
+    case 'reversal_point_exit':
       // v2.0.870-P78-E1: reversal-point structure exit——即時結構判斷反轉
       // （ATH/ATL 回落 + 蠟燭形態），系統決策，唔係純市場風險訊號 → 0.3
+      // v2.0.873-P9-edt（Phase A）: reversal_point_exit 係止血拆分後嘅獨立標籤
+      // （鎖利統一入 exit_price_lock）——同 reversal_point 一樣系統決策 → 0.3
       return 0.3;
     case 'consensus_reversal':
       // v2.0.870-P47: 共識反轉離場——系統判斷趨勢反轉,同 thesis_invalidation
