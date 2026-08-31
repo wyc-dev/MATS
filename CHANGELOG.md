@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-reentry-attack: 連蝕 cooldown 攻擊輪（主神 2026-08-31「不擇手段攻擊啱啱修葺嘅 code」）
+
+**紅先 11 攻擊測試——1 個真漏洞全修 + 2 個量化提升驗證**:
+
+### ① V1（CRITICAL）: `__proto__` prototype pollution 假造連蝕
+`updateCooldownOnClose` 讀 `state.streak` 經 prototype chain 攞到污染值（`{__proto__:{streak:5}}` → streak=5 → 蝕 1 次變 6 → **假 cooldown 凍結開倉**）。
+**修復**: 所有 state 讀取改 `hasOwnProperty` own-check（streak/cooldownUntil——update + shouldBlock 兩處）——prototype 污染值唔可以入 cooldown 狀態。
+
+### ② 量化提升驗證（有數據話事）
+- **GOT 閉環接駁**: cooldown block 記錄 `gate='reentry-cooldown'` → live 量度 hit rate（被抑方向價格續走=hit）——實時校準 N/HOURS
+- **「過期後首單」假設推翻**: cooldown 過期後首單 avg **+3.17%** WR 61%（好過其他單 1.01%）——「首單縮 size」Δ−49.2% ❌ 唔實作——cooldown 過期=結構斷裂已過 6h——恢復交易正確（自適應正常, 避免負 EV 組件）
+- **自適應確認**: cooldown 過期後再蝕 → streak 續增即時再觸發（結構斷裂持續→反覆鎖; 贏→reset）
+
+**驗證**: 新攻擊測試 11（prototype pollution/Symbol/BigInt/時鐘/持久化污染/語義邊界）; 全量 **3988 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
 ## v2.0.873-P9-reentry-cooldown: 同 symbol 同向連蝕 hard cooldown（DRAM 5 次 SELL 防禦——主神 2026-08-31）
 
 **問題**: DRAM 2 小時 5 次 SELL（W L L W L W——23:32 蝕→00:07 蝕→01:12 蝕）——「見底反彈」結構斷裂, 系統連環追跌（現有 lossStreakTracker 喺 v2.0.732 後已閹割成 soft +15% conviction——DRAM 冇被 block 正因為佢）。
