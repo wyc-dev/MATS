@@ -90,6 +90,8 @@ import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
+import { computeMom24PctFromCandles, mom24EnvThresholds, shouldBlockMom24, shouldBlockChaseTail } from './analysis/mom24-guard.ts';
+import { shouldDeferToBoundary } from './analysis/boundary-align.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
@@ -123,7 +125,7 @@ export interface PnlSeries {
 }
 import { supabaseTradeWriter } from './services/supabase-trade-writer.ts';
 import { CloseDecisionCalibrator } from './analysis/close-decision-calibrator.ts';
-import { getHealConfig, healMaeMfeBatch } from './trading/mae-mfe-healer.ts';
+import { getHealConfig, healMaeMfeBatch, sleep } from './trading/mae-mfe-healer.ts';
 import type { CandleLike } from './trading/mae-mfe-healer.ts';
 import { ProfitabilityAnalyzer } from './analysis/profitability-analyzer.ts';
 import { EntryQuality, checkConfirmation } from './analysis/entry-quality.ts';
@@ -5583,6 +5585,36 @@ ${recentExamples}
           return { confidence: sg.confidence, blocked: sg.blocked, reason: sg.reason ?? r, size: sg.size };
         }
       }
+      // v2.0.873-P9-mom24-guard: 精確 24h 動量 BUY filter（831.md §6.2 六關全過 Δ+140.7%）
+      // 只 block BUY 兩個「接刀區」: mom24<−0.5%（逆勢買跌中）或 0≤mom24<+0.5%（由正轉弱初期）
+      // 保留: −0.5≤mom24<0（跌到底反彈 +2.83% WR 68%）同 mom24≥+0.5%（順勢）
+      // 同 F1 零重疊: F1 管 |mom|≥1.5% 方向層; 本 guard 填「微動量陷阱區」——
+      //   SILVER(+0.21%)/GOLD(+0.10%) 開倉時 24h 微正, F1 噪音區放行, guard block。
+      // env: ENTRY_MOM24_GUARD=false 回滾; ENTRY_MOM24_LOW / ENTRY_MOM24_HIGH 可調（clamp）
+      if (process.env['ENTRY_MOM24_GUARD'] !== 'false') {
+        const th = mom24EnvThresholds(process.env['ENTRY_MOM24_LOW'], process.env['ENTRY_MOM24_HIGH']);
+        const mom24 = this.computeOpenMom24Pct(sym);
+        const g = shouldBlockMom24({ mom24Pct: mom24, side: action, low: th.low, high: th.high });
+        if (g.blocked) {
+          return { confidence: 0, blocked: true, reason: `mom24-guard: ${g.reason} — HARD BLOCK`, size: 0 };
+        }
+      }
+      // v2.0.873-P9-chase-tail: BUY 追升尾（scripts/31-mom24-last1-grid.ts——24h 強勢
+      // mom24≥1.0% 但最後已 close 1h 已轉跌 last1<0 = 追升尾, avg −2.58% Δ+54.2% 兩半都正）
+      // 同 mom24-guard 零重疊（guard cover mom24<0.5, 呢度 cover ≥1.0——0.5-1.0 緩衝唔郁）。
+      // env: ENTRY_CHASE_TAIL_GUARD=false 回滾。SELL 鏡像唔 apply（n=4 太少）。
+      if ((action === 'buy') && process.env['ENTRY_CHASE_TAIL_GUARD'] !== 'false') {
+        const mom24 = this.computeOpenMom24Pct(sym);
+        const last1 = this.computeOpenLast1Pct(sym);
+        const ct = shouldBlockChaseTail({
+          mom24Pct: mom24, last1Pct: last1, side: action,
+          thresholdMom24: Number(process.env['ENTRY_CHASE_MOM24_MIN']),
+          thresholdLast1: Number(process.env['ENTRY_CHASE_LAST1_MAX']),
+        });
+        if (ct.blocked) {
+          return { confidence: 0, blocked: true, reason: `chase-tail: ${ct.reason} — HARD BLOCK`, size: 0 };
+        }
+      }
       // shadow-gate WR+EV（統一——所有 symbol 都行,唔再淨係 active）
       // v2.0.872-P9: dip-BUY exploration 豁免——細倉樣本生成（主神:需要確實開到單）。
       // OLR/四窗/5m/momentum 閘照擋——只豁免 shadow WR+EV（新鮮 EV 反對 dip-buy 係
@@ -5695,6 +5727,35 @@ ${recentExamples}
       }
       if (mom24 !== null && Math.abs(mom24) > 1e-9) return mom24;
       return null;
+    } catch { return null; }
+  }
+
+  /** v2.0.873-P9-mom24-guard: 開倉前 24 支已 CLOSED 1h candle 嘅 24h 動量
+   *  （robust median per-candle return × 24——同 24-precise-filter 驗證語義一致）。
+   *  剔 in-progress 燭（t + 1h > now）——831.md §7.1 look-ahead 教訓: 未 close 燭
+   *  含開倉嗰刻未完成嘅數據 = 未來資訊。數據不足/垃圾 → null（保守放行）。 */
+  private computeOpenMom24Pct(sym: string): number | null {
+    try {
+      const c1h = candleCache.peekCandles(sym, '1h');
+      if (!c1h) return null;
+      return computeMom24PctFromCandles(c1h, Date.now());
+    } catch { return null; }
+  }
+
+  /** v2.0.873-P9-chase-tail: 最後兩支已 close 1h 嘅 return（%）——「最後 1h 已轉跌/轉升」。
+   *  剔 in-progress 燭（同 computeOpenMom24Pct 一致——零 look-ahead）。不足 → null（保守）。 */
+  private computeOpenLast1Pct(sym: string): number | null {
+    try {
+      const c1h = candleCache.peekCandles(sym, '1h');
+      if (!c1h || c1h.length < 2) return null;
+      const now = Date.now();
+      const HOUR_MS = 3_600_000;
+      const closed = c1h.filter((c) => c && Number.isFinite(c.t) && c.t + HOUR_MS <= now);
+      if (closed.length < 2) return null;
+      const a = closed[closed.length - 2]!.c;
+      const b = closed[closed.length - 1]!.c;
+      if (!(a > 0) || !(b > 0)) return null;
+      return ((b - a) / a) * 100;
     } catch { return null; }
   }
 
@@ -6841,6 +6902,22 @@ ${recentExamples}
     if (decision.action === 'buy' || decision.action === 'sell') {
       try { prepareExecutionLens(normalizeSymbol(decision.symbol)); } catch { /* non-critical */ }
     }
+
+      // v2.0.873-P9-boundary-align（PLAN_DRAM-exhaustion T2——主神 2026-08-31）:
+      // 支尾（距 5m close ≤ tailMin）落單實質差單（27-offset-counterfactual.ts:
+      // 支尾 avg −1.10% WR 35% vs 支中 +1.72% WR 62%; skip Δ+75%）——延遲至
+      // 下支開頭（≤60s）「支頭落單」。純時序調整——零 look-ahead（offset 執行嗰刻
+      // 已知）、零離場干預、唔郁 SL/TP。env: ENTRY_BOUNDARY_ALIGN=false 回滾。
+      if ((decision.action === 'buy' || decision.action === 'sell') && process.env['ENTRY_BOUNDARY_ALIGN'] !== 'false') {
+        try {
+          const tailMin = Number(process.env['ENTRY_BOUNDARY_TAIL_MIN'] ?? 4);
+          const ba = shouldDeferToBoundary(Date.now(), { tailMin });
+          if (ba.defer) {
+            log.info(`[boundary-align] ${decision.symbol} ${decision.action.toUpperCase()} — 支尾 offset=${ba.offsetMin.toFixed(1)}min → 延遲 ${(ba.delayMs / 1000).toFixed(0)}s 至下支開頭（T2 驗證: 支尾 avg −1.10% vs 支中 +1.72%）`);
+            await sleep(ba.delayMs);
+          }
+        } catch { /* 執行時序輔助——失敗照常開倉（non-critical） */ }
+      }
 
     try {
     if (isRealMode) {
