@@ -4,6 +4,32 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-verify: 驗證輪——live 5m gate 系列關閉 + 支內逆勢否決 + gate 誤傷成本審計（主神 2026-08-31）
+
+**純驗證（零 code 改動）——四輪獨立實驗，全部誠實記錄（831.md §9-12）**:
+
+### ① 大 winner 保護審計 + C/D 分層驗證（38/39/40）——維持 mom24-guard
+被 block 組 104 筆 avg −1.35%; 31 筆大 winner（+10%）誤傷 4（mom24-guard 12.9%——BNB +20.5% + SKHX×3）;
+「近支撐豁免」（39: 近支撐組 avg −1.32%，大 winner 0——任何豁免 Δ 降）同「SKHX per-symbol」（40: blocked avg −1.34%——尾部幸運）全部推翻;
+誤傷 +52pp = 尾部代價，net +88pp（140.7 − 52）仍最優——**維持 skip 版**。
+
+### ② 順勢 confidence 高加大倉（41）——❌ 否決
+三筆大 winner Post-Review 建議「sizing up」——全樣本驗證: momentumLong「順勢」組反而差（<0 +0.52%/W30 vs ≥0 −0.09%/W1）;
+entryShadowWinRate 反序（<0.45 +2.22%/W13 vs ≥0.45 −0.26%/W0）; entryOlrPWin 反序（<0.5 +0.56%/W23 vs ≥0.5 +0.12%/W8——**證實 Post-Review「+20pp OLR edge 應 size up」係已證偽建議源**, ρ=−0.16 反預測重現）;
+counterfactual ×1.5 Δ+0.8% 或 −1.5%（負）——**大 winner 係低概率高回報尾部, 唔可以被開倉時任何特徵預測**——唔實作。
+
+### ③ PLAN_5m-live-gate A + 支內逆勢 gate（42/43）——全部 ❌ 關閉
+**關鍵修正**: DRAM 00:07 gapToOpen=−0.109%（entry 54.207 < 支 open 54.266——支內微跌 = SELL 順勢）——「開倉時 live 5m 已反彈」敘述唔準確——實際反彈喺 entry 之後——呢兩單係「開倉後市場反轉」——**任何開倉前信號（含 live tick）preempt 唔到**（零 look-ahead 前提下）;
+「支內逆勢 gate」（A 嘅可驗證 proxy）三關: BUY >10bps 關1 ✅(Δ+25.9%) 但關2 剔 outlier Δ=**0.0%**——成效全來自幾筆 |pnl|>20% outlier——**支內資訊無預測力**（42 嘅 Δ+22.1% 係 outlier 幻覺）; SELL 全 ❌（n<9 + 逆勢組 avg 正）——**兩邊都唔實作**。開倉後反轉靠離場（reversal-point-exit 已做）。
+
+### ④ 今日（08-31）counterfactual + gate 誤傷成本審計（44/45）
+**今日 6 筆全 SELL**: sr-size 命中 2（DRAM 00:07 0.13%/SILVER 0.21%——慳 4.15%）誤傷 1（GOLD 縮半少賺 1.6%）——淨 +2.55%; DRAM 01:12 −5.9%（0.93% 唔命）防唔到——**gate 係「全樣本結構性改善」唔係「防今日」**（今日全部 SELL——BUY-only gate 零作用）。
+**誤傷成本審計（45）**: mom24-guard 犧牲 +167.5%（總盈利 18.7%）→ 避免 −308.2%（總虧損 40.9%）= 1:1.84; chase-tail 1:2.77; sr-size 1:2.02——**用 1 蚊盈利換 2-2.8 蚊虧損避免——唔係「賺少好多」係「蝕少好多」嘅主引擎**; boundary-align defer 對贏單影響≈0。
+
+**驗證**: 零 code 改動; 測試/全量不變（3967 pass + 13 pre-existing）; 全部實驗 script 38-45 + 831.md §9-12 + PLAN 檔（全部 gitignore）齊存。
+
+---
+
 ## v2.0.873-P9-sr-size: SELL 貼 S/R 縮 size gate（主神 2026-08-31「<0.3% S/R 距離 → size×0.5」過三關驗證）
 
 **追查（36-sr-truth.ts）**: 831 §2.4「0.3-0.7% 甜區」**唔係幻覺**——用 831 同一定義（開倉前 25×15m range 雙向極值距離 %）全樣本完美重現（<0.3% −0.18% / 0.3-0.7% +1.80% / 1-2% −0.72%）。
