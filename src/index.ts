@@ -6986,6 +6986,18 @@ ${recentExamples}
             const rb = shouldBlockChaseCooldown(st, Date.now());
             if (rb.blocked) {
               log.warn(`[reentry-cooldown] BLOCK ${decision.symbol} ${decision.action.toUpperCase()} — ${rb.reason}`);
+              // v2.0.873-P9-attack 量化提升: GOT 閉環——量度 cooldown block 命中率
+              // （被抑 SELL 後價格續跌 = hit——live 校準 N/HOURS）
+              try {
+                this.gateOutcomeTracker.record({
+                  symbol: decision.symbol,
+                  gate: 'reentry-cooldown',
+                  direction: decision.action,
+                  side: decision.action,
+                  entryPrice: decision.entryPrice ?? this.marketState?.getState(normalizeSymbol(decision.symbol))?.price ?? 0,
+                  cycle: this.totalCycles,
+                });
+              } catch { /* 非致命 */ }
               return { success: false, error: `[reentry-cooldown] ${rb.reason}` };
             }
           }

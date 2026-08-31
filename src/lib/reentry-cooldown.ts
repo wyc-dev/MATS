@@ -65,8 +65,14 @@ export function updateCooldownOnClose(
   closedAt: number,
   opts: { n?: number; hours?: number } = {},
 ): CooldownStreakState {
+  // v2.0.873-P9-attack: own-property 讀取——`__proto__` prototype pollution
+  // （{__proto__:{streak:5}}）唔可以經 prototype chain 假造連蝕/凍結
+  const has = (o: unknown, k: string) => Object.prototype.hasOwnProperty.call(o, k);
   const s: CooldownStreakState = state && typeof state === 'object'
-    ? { streak: Number.isFinite(state.streak) && state.streak >= 0 ? state.streak : 0, cooldownUntil: Number.isFinite(state.cooldownUntil) && state.cooldownUntil > 0 ? state.cooldownUntil : 0 }
+    ? {
+        streak: has(state, 'streak') && Number.isFinite(state.streak) && state.streak >= 0 ? state.streak : 0,
+        cooldownUntil: has(state, 'cooldownUntil') && Number.isFinite(state.cooldownUntil) && state.cooldownUntil > 0 ? state.cooldownUntil : 0,
+      }
     : { streak: 0, cooldownUntil: 0 };
   if (typeof pnl !== 'number' || !Number.isFinite(pnl)) return s;
   const now = Date.now();
@@ -82,9 +88,12 @@ export function updateCooldownOnClose(
 /** 開倉前 check（連蝕 cooldown）——純函數。
  *  ATTACK-HARDENING: now 垃圾 → 唔 block; cooldownUntil 未來垃圾（>now+30d）→ 唔 block。 */
 export function shouldBlockChaseCooldown(state: CooldownStreakState | null | undefined, now: number): { blocked: boolean; reason: string } {
-  if (!state || typeof state !== 'object') return { blocked: false, reason: '無連蝕 cooldown 狀態' };
+  if (!state || typeof state !== 'object' || !Object.prototype.hasOwnProperty.call(state, 'cooldownUntil')) {
+    return { blocked: false, reason: '無連蝕 cooldown 狀態' };
+  }
   const n = typeof now === 'number' && Number.isFinite(now) && now > 0 ? now : Date.now();
   const cu = state.cooldownUntil;
+  // v2.0.873-P9-attack: prototype pollution 防禦——own property 已查, 值仍要 finite
   if (typeof cu !== 'number' || !Number.isFinite(cu) || cu <= 0) return { blocked: false, reason: '冇連蝕 cooldown 生效' };
   if (cu > n + 30 * 24 * 3_600_000) return { blocked: false, reason: 'cooldown 時間戳異常（未來>30d）——唔 block' };
   if (cu > n) {
