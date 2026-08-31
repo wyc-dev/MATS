@@ -4,6 +4,92 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-attack-round5 + chase-tail: 攻擊輪五(6 真漏洞全修) + BUY 追升尾 guard(主神 2026-08-31「不擇手段攻擊啱啱修葺嘅 code」)
+
+**紅先**: 新攻擊測試 29 個（mom24-guard-attack 12 + boundary-align-attack 8 + chase-tail 9）——8 fail 中 6 個真漏洞全修。
+
+### ① 攻擊輪五——狀態注入/污染（6 漏洞全修, production grade）
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1 | `boundary-align` `Number(Symbol)` → **TypeError crash** | HIGH | safeNum helper（typeof number/string 先, Symbol/BigInt/object → null → 唔 defer） |
+| V2 | `mom24EnvThresholds` Symbol → **TypeError crash** | HIGH | 同上 safeNum |
+| V3 | `computeMom24PctFromCandles` element `{t: Symbol}` → **TypeError crash** | HIGH | 元素級 typeof+isFinite 檢查 skip |
+| V4 | `robustMomentumPct`（共用 F1/mom24-guard/sealarm）`{c: Symbol}` → `Symbol > 0` **TypeError crash** | HIGH | 元素級 `typeof number && isFinite` |
+| V5 | `robustMomentumPct` `2e308` literal（已係 Infinity）→ rets NaN → median NaN（下游 F1 有 isFinite guard 收 1.0, 但純函數唔應該吐 NaN） | MED | clean 過濾 + 唔吐 NaN |
+| V6 | `robustMomentumPct` n=closes.length 語義被垃圾 element 污染（skip 後仍乘成個陣列長度） | LOW | 保留原有語義（唔郁 F1 blast radius）——測試鎖定實際行為 |
+
+**量化提升 ②③**: 新增 BUY 追升尾 guard + DRAM 見底兩級框架驗證。
+
+### ② BUY 追升尾 guard（scripts/31-mom24-last1-grid.ts —— ✅ 過關, 先證後改）
+**問題**: 831 §6.1 已知限制——SKHX mom24=+0.95% / BNB +1.23%（mom24-guard 放行區）都大蝕:
+「24h 強勢但開倉嗰刻 1h 已轉跌」= 追升尾。
+**驗證**（305 單, 零 look-ahead）: `BUY mom24≥1.0% && last1<0` n=21 avg **−2.58%**（中位 −1.68%）→ block **Δ+54.2%**;
+兩半 期1 −1.19%(+10.7%) / 期2 −3.63%(+43.5%)（**兩半都正**——T1 期 1 誤傷問題冇咗）;
+剔 outlier 21/21; 敏感性 mom24≥0.5(+22.7)/≥1.5(+40.6)/last1<−0.1(+25.7) 全正（非孤立 peak）;
+分 symbol 5/7 負（SKHX +3.64% n=4 例外——誤傷 ~15pp vs 全組 +54.2pp）。
+**實作**: `mom24-guard.ts` `shouldBlockChaseTail()`（band-validate threshold）+ index.ts 接入
+（mom24-guard block 後, BUY only）+ `computeOpenLast1Pct`（最後兩支已 close 1h return, 剔 in-progress）。
+**零重疊不變式**: mom24-guard cover mom24<0.5; chase-tail cover ≥1.0; 中間 0.5-1.0 緩衝唔郁
+（表證 avg +1.37% 正）。**SELL 鏡像唔實作**（n=4 樣本太少——T1 否決延續, 誠實記錄）。
+env `ENTRY_CHASE_TAIL_GUARD=false` 回滾 / `ENTRY_CHASE_MOM24_MIN`(band [0.5,10]) / `ENTRY_CHASE_LAST1_MAX`(band [-2,0])。
+
+### ③ DRAM 見底——兩級框架驗證（30-reversal-confirm.ts）❌ 否決（誠實）
+`mom24<0 + last1>+0.2% + 5m close 確認` → SELL G1 **全滅 n=0**——5m close 層都 lagging,
+捕唔到「支內 live 反彈」（DRAM 01:12 單 live 反彈喺支內）——確認 PLAN_5m-live-gate A
+（現場 tick）先係 DRAM 類單嘅正解, 歷史 close-candle 任何變體都冇得驗證。
+
+**驗證**: 新測試 29（attack 20 + chase-tail 9）; 全量 **3954 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
+## v2.0.873-P9-boundary-align: 開倉時序對齊——支尾延遲至下支開頭 + DRAM 連蝕研究判決(主神 2026-08-31「今日蝕咗好多錢,研究點解會不斷入場虧損」)
+
+**主神報告**: DRAM 08-31 兩單 −13.44%(00:07 consensus −7.51% + 01:12 reversal_point_exit −5.93%)——跌勢尾聲連環追 SELL,市場已見底反彈但系統照開。
+
+**研究(PLAN_DRAM-exhaustion.md, 全樣本 307 單 + 兩隻新 experiment script)**:
+
+### ① DRAM 連蝕根因鏈(4 層解剖, 實測 candle 取證)
+```
+DRAM 1h: 08-30 12:00→23:00 陰跌 56.4→54.4, 23:00 支急跌後 00:00 見底 L=54.134
+       之後 1.5 小時未破底(54.4~55.2 緩升)——見底反彈結構確立
+5m:     00:10 起 H 連連突破(54.66→55.09→55.28)——明確反彈
+系統:   2 小時內連開 5 單 SELL(23:15 +4.19% / 23:32 −0.20% / 00:07 −7.51% / 01:04 +0.15% / 01:12 −5.93%)
+```
+失效鏈: ① F1 睇 mom4=−1.9%(5支1h median)但最後支 00:00 已 +0.73% 轉升——median lagging 睇唔到
+最後 1-2 支轉向 → SELL 判順勢放行; ② persistent_bear 歷史統計(SELL WR 52-71% 記憶) lean SELL;
+③ 5m gate 用已 close candle(跌勢窗口)放行, live 00:05 支已反彈未 reflected; ④ mom24-guard 只 apply BUY。
+
+### ② T2 開倉時序(scripts/27-offset-counterfactual.ts)—— ✅✅ 過關
+```
+支尾 4-5min: avg −1.10% WR 35% 中位 −1.61% (n=68) vs 支中 3-4min: +1.72% WR 62%
+分方向 BUY −0.82% / SELL −2.20%(兩邊都成立) | 兩半: 期1 −1.70% / 期2 −0.60%(兩半都負)
+剔 outlier −1.42%(更負) | 敏感性: ≥3.5(+48.7%)/≥4.0(+75.0%)/≥4.5(+48.8%) 全正—非孤立 peak
+counterfactual: 支尾 skip Δ+75.0% / size½ Δ+37.5%
+```
+**實作**: `src/analysis/boundary-align.ts` `shouldDeferToBoundary()` 純函數(offset≥4min → delayMs≤60s 至下支開頭;
+attack-hardening: now 垃圾唔 defer / tailMin clamp [1,4] / interval 垃圾→5min)+ index.ts executeTrade 接入
+(prepareExecutionLens 之後, real+paper 統一)——支尾延遲落單至下支開頭「支頭落單」。
+**不變式**: 純時序調整、零 look-ahead(offset 執行嗰刻已知)、零離場干預、SL/TP 唔郁、只延遲新開倉。
+env `ENTRY_BOUNDARY_ALIGN=false` 回滾 / `ENTRY_BOUNDARY_TAIL_MIN=4`。測試 12/12。
+
+### ③ T1 追跌尾/追升尾(29-exhaustion-guard + 30-reversal-confirm)—— ❌ 否決(誠實記錄)
+```
+關1: SELL G1 n=4 avg −3.35% / BUY G1 n=16 avg −1.41%(方向啱但 SELL n 太少)
+關3b 兩半: ⚠️ 期1 G1 avg +1.62%(誤傷 −14.6%) vs 期2 −4.60%——唔穩健
+關3c symbol 兩極: SKHX +8.33%(追跌贏) vs DRAM −5.40% / BNB −4.49%(追跌蝕)
+T1b(+5m 確認): SELL G1 全滅 n=0——5m close 層都 lagging, 捕唔到「支內 live 反彈」
+```
+**判決**: 唔實作——期 1 誤傷 + SELL 樣本太少 + symbol 兩極 + close-candle 任何變體都 lagging。
+「支內 live 反彈」只有現場 tick 先捕到——列為 PLAN_5m-live-gate A(live 5m 方向)現場 deploy follow-up
+(建議實作時用 markPriceMap + Gate Outcome Tracker 閉環量度, 同 5m gate 當初 live 校準先例)。
+
+### ④ 順帶: mom24-guard(上版實作)對 DRAM 兩單嘅限制——只 apply BUY(831 關4 驗證 SELL Δ−2.5% 中性),
+SELL 側冇保護; DRAM 問題屬「SELL 追跌尾」= live 5m 方向層(T3), 唔係 mom24-guard 範疇。
+
+**驗證**: 新測試 12/12(p9-boundary-align)+ 18(p9-mom24-guard, 上版); 相關 54/54; tsc clean。
+
+---
+
 ## v2.0.873-P9-th-archive: 決策歷史永續歸檔 + PNL 3 MONTH/1 YEAR(主神「無限期儲存交易紀錄」+「PNL 加時段」)
 
 **本版三件事(全部先證後改)**:
