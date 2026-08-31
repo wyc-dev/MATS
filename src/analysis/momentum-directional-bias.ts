@@ -61,15 +61,18 @@ export function robustMomentumPct(closes: Array<{ c: number } | null | undefined
     const cur = closes[i];
     const p0 = typeof prev === 'number' ? prev : (prev?.c ?? NaN);
     const p1 = typeof cur === 'number' ? cur : (cur?.c ?? NaN);
-    if (!(p0 > 0) || !(p1 > 0)) continue;
+    if (!(typeof p0 === 'number' && typeof p1 === 'number' && Number.isFinite(p0) && Number.isFinite(p1) && p0 > 0 && p1 > 0)) continue;
     rets.push(p1 / p0 - 1);
   }
   if (rets.length === 0) return null;
-  rets.sort((a, b) => a - b);
-  const mid = rets.length >> 1;
-  const lo = rets[mid - 1]!;
-  const hi = rets[mid]!;
-  const med = rets.length % 2 === 0 ? (lo + hi) / 2 : hi;
+  // v2.0.873-P9-attack: input 已 finite 但防禦性再掃（唔可以吐 NaN——`2e308` literal 已係 Infinity）
+  const clean = rets.filter((r) => Number.isFinite(r));
+  if (clean.length === 0) return null;
+  clean.sort((a, b) => a - b);
+  const mid = clean.length >> 1;
+  const lo = clean[mid - 1]!;
+  const hi = clean[mid]!;
+  const med = clean.length % 2 === 0 ? (lo + hi) / 2 : hi;
   const pct = med * n * 100;
   return Math.max(-100, Math.min(100, pct));
 }
