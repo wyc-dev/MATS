@@ -4,6 +4,32 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-verify-llm: AI 預測能力驗證（LLM live context 47% 無預測力 + HL tick 不可得 + 反序揭穿——主神 2026-08-31）
+
+**純驗證（零 code 改動）三件記錄（831.md §11-12 已詳錄）**:
+
+### ① LLM + live context 事前判斷（46-llm-live-sim.ts, 最近 60 筆）
+重建「開倉嗰刻 LLM 會見到嘅 context」（24h 動量/最後 1h 轉向/最近 5 支 5m/開倉嗰支 open——零 look-ahead）問 deepseek-v4-flash（系統 Meta 用緊）「呢單會唔會賺」:
+```
+總命中率 47%（< baseline「全猜 YES」53%——比亂猜更差）| LLM 話蝕(NO) 42 筆真蝕 45%（保守 bias）
+滯後信號子集（SELL+mom24<−0.5）命中 42%——「AI 預測滯後交易」雙重限制:
+①模型質素（開源 LLM 冇短期前瞻）②開倉前資訊本質唔含未來 5 分鐘反轉（資訊理論）
+```
+**裁決**: LLM 預測唔 work——「開倉後 30min MAE>0.7%」仍係唯一強預警（WR 6%）但執行層死路（831 §2.4）。
+
+### ② HL API 歷史 tick 實測——數據不可得
+```
+tradeHistory（指定時刻成交）: deserialization fail（endpoint 唔通）
+recentTrades: 只返當前最近 10 筆（3 秒跨度——無歷史深度）
+→ 8/31 00:07 嗰陣嘅實際成交無法攞返——Live tick 支內方向歷史驗證確認唔到
+→ 唯一路徑 = 現場收集 + GOT 閉環（live logger, 純記錄零風險）
+```
+
+### ③ 「反序」揭穿——唔可交易
+低 shadowWR 組「avg +2.22%」（41 實驗）——剔除 13 筆大 winner（|pnl|>15%）後 **−1.04%**（61 筆主流蝕）——「+2.22%」係尾部撐起;兩半唔穩（0.28% vs 4.50%）;reconciliation 標籤佔 42%（41% 噪聲）。**「反序」=「無序 + 尾部」——學反序開相反方向 = 學尾部噪音**（ρ≈0 係冇序唔係反序）。
+
+---
+
 ## v2.0.873-P9-reentry-attack: 連蝕 cooldown 攻擊輪（主神 2026-08-31「不擇手段攻擊啱啱修葺嘅 code」）
 
 **紅先 11 攻擊測試——1 個真漏洞全修 + 2 個量化提升驗證**:
