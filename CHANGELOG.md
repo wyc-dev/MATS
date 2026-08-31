@@ -4,6 +4,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-reentry-cooldown: 同 symbol 同向連蝕 hard cooldown（DRAM 5 次 SELL 防禦——主神 2026-08-31）
+
+**問題**: DRAM 2 小時 5 次 SELL（W L L W L W——23:32 蝕→00:07 蝕→01:12 蝕）——「見底反彈」結構斷裂, 系統連環追跌（現有 lossStreakTracker 喺 v2.0.732 後已閹割成 soft +15% conviction——DRAM 冇被 block 正因為佢）。
+
+**兩輪實驗揭示核心定理（47/48/49, 全樣本 311 單, 零 look-ahead）**:
+```
+48-chase-effect.ts: 「per-symbol × 14d 成效 lean」→ Δ−40.4% ❌——平均統計捕捉唔到結構斷裂
+                  （轉捩點前樣本全係舊 regime——DRAM 開倉前 14d 平均仲係正但實際已見底）
+47/49-cooldown:  「N=2 連蝕 → 6h block」→ Δ+123.8% ✅——事件型訊號即時響應斷裂
+核心定理: 結構斷裂（regime switch）嘅可靠偵測器係「連蝕事件」而唔係「平均統計」
+```
+
+**三關全過（N=2 × 6h）**: 被抑制組 avg −2.48%（中位 −3.15%）/ 剔 outlier 50/50 / 兩半 +73.5%/+42.3% / T=3~12h 全正（6h 峰非孤立）/ SILVER 20% 分散 / 誤傷 15:50 = 8:1。DRAM 案例: 23:32 蝕→00:07 蝕=2 連蝕→6h 停→01:12 −5.9 被抑（慳 5.8%）。
+
+**實作（merge 入現有 `src/lib/reentry-cooldown.ts`——唔重複組件）**:
+- `updateCooldownOnClose`（close 後 streak 更新——蝕→++、≥N→cooldown、贏→reset; ATTACK-HARDENING: pnl/closedAt 垃圾唔更新、n/hours band clamp）+ `shouldBlockChaseCooldown`（開倉前 check——未來>30d 戳唔 block）
+- index.ts: `cooldownTracker` Map（persist `data/evolution/reentry-cooldown.json`——atomicWrite + load sanitize）+ onPositionClosedLearning close 後更新 + executeTrade 開倉前 block
+- **同現有「鎖利 cooldown」互補**: 現有 `lib/reentry-cooldown` `shouldBlockReentry` = exit_price_lock 後 1h（防「鎖完又追」贏單追返）; 新連蝕版 = 任何 closeReason 連蝕後 6h（防「連蝕追」蝕單追返）——兩個唔同訊號
+- env `REENTRY_COOLDOWN_GATE=false` 回滾 / `REENTRY_COOLDOWN_N=2`（clamp [1,5]）/ `REENTRY_COOLDOWN_HOURS=6`（clamp [1,72]）
+
+**驗證**: 新測試 10/10（含攻擊輪 + DRAM 案例語義）; 全量 **3977 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
 ## v2.0.873-P9-verify: 驗證輪——live 5m gate 系列關閉 + 支內逆勢否決 + gate 誤傷成本審計（主神 2026-08-31）
 
 **純驗證（零 code 改動）——四輪獨立實驗，全部誠實記錄（831.md §9-12）**:
