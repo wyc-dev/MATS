@@ -4,6 +4,27 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-sr-size: SELL 貼 S/R 縮 size gate（主神 2026-08-31「<0.3% S/R 距離 → size×0.5」過三關驗證）
+
+**追查（36-sr-truth.ts）**: 831 §2.4「0.3-0.7% 甜區」**唔係幻覺**——用 831 同一定義（開倉前 25×15m range 雙向極值距離 %）全樣本完美重現（<0.3% −0.18% / 0.3-0.7% +1.80% / 1-2% −0.72%）。
+⚠️ **本座修正**: 上一輪 35-sr-size-gate 用錯存檔字段（`srDistanceBps` 實際只係 `distanceToSupportBps` 單向 pivot 距離——SELL 語義錯）得出「−77% 否決」係誤判——**撤回**。存檔字段名不副實（已註記, 後續 fix 佢）。
+
+**三關全過（37-sr-final.ts, 全樣本 309 單, 零 look-ahead）——SELL-only × <0.35% × size×0.5**:
+```
+關1: Δ+19.6% 命中組 avg −1.31%（WR 37%——縮細正確）
+關2: 兩半 +15.1% / +4.5%（都正）| 剔 outlier 30/30 | 中位 −0.59%
+關3: 鄰近組合全正（<0.30 +24.7/+12.4 / <0.40 +29.2/+14.6）| GOLD 33% 分散
+     threshold 0.40% 急轉負（−27.5%）——0.35 係峰位, clamp 上限 0.35
+分方向: BUY-only 全負（−5.9~−42.6%）——BUY 貼 S/R 係中性/正 EV, 唔縮（只做 SELL）
+今日覆蓋: DRAM 00:07 −7.5%（srDist 13.5%命中）/ SILVER −0.8% / DRAM −0.2%; DRAM 01:12 −5.9%（93%唔命中——追跌尾非貼S/R, 正確）
+```
+**實作**: `src/analysis/sr-size-gate.ts` `computeSrDistancePct()`（831 定義幾何——雙向極值, 垃圾 element skip）+ `shouldShrinkSrSize()`（SELL-only, band-validate threshold [0.1,0.35]/mult [0.1,0.9]）+ index.ts executeTrade 接入（SELL + srDist<threshold → `positionSizePct ×= mult`, floor 0.01, 純 size 層零離場干預）+ `computeOpenSrDistancePct`（candleCache 15m, 剔 in-progress 零 look-ahead）。
+env `SR_SIZE_GATE=false` 回滾 / `SR_SIZE_THRESHOLD_PCT`（clamp [0.1,0.35]）/ `SR_SIZE_MULT`（clamp [0.1,0.9]）。測試 13/13（含攻擊輪）。
+
+**驗證**: 新測試 13（p9-sr-size）; 全量 **3967 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
 ## v2.0.873-P9-attack-round5 + chase-tail: 攻擊輪五(6 真漏洞全修) + BUY 追升尾 guard(主神 2026-08-31「不擇手段攻擊啱啱修葺嘅 code」)
 
 **紅先**: 新攻擊測試 29 個（mom24-guard-attack 12 + boundary-align-attack 8 + chase-tail 9）——8 fail 中 6 個真漏洞全修。
