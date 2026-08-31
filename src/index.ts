@@ -84,7 +84,7 @@ import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, isPendingLockStale, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
-import { buildCooldownEntry, shouldBlockReentry, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
+import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
@@ -863,6 +863,14 @@ class MATSSystem {
     regimeStats: Map<string, { trades: number; wins: number; volatility: number; pnl: number }>;
   }>();
 
+  /** v2.0.873-P9-reentry-cooldown（PLAN_reentry-cooldown——主神 2026-08-31）:
+   *  同 symbol 同向「連蝕事件」hard cooldown——結構斷裂（regime switch）偵測器。
+   *  47/49 實驗三關全過 Δ+123.8%（被抑制組 avg −2.48% / 兩半 +73.5/+42.3 / T 敏感性全正）
+   *  同 lossStreakTracker（soft +15% conviction, regime 條件化）互補: 呢個係 hard 事件型
+   *  （N=2 連蝕 → 6h block）——lossStreakTracker 喺 v2.0.732 後已閹割成 soft——DRAM 5 次
+   *  SELL 冇被 block 正因為佢。persist: data/evolution/reentry-cooldown.json。 */
+  private cooldownTracker = new Map<string, CooldownStreakState>();
+
   /**
    * v2.0.870-FIX(主神裁決 2026-08-23):sl_tp 蝕 1 次即 soft penalty。
    * 實證:sl_tp 後 12h 內 same-side re-entry n=64 WR 得 39.1%(vs 全場 48.5%)——
@@ -1349,6 +1357,8 @@ class MATSSystem {
       });
 
       // 3. Initialize risk, portfolio, paper trading
+      // v2.0.873-P9-reentry-cooldown: 載入連蝕 cooldown 狀態（restart 唔重置）
+      this.loadCooldownTracker();
       log.info('Step 3/6: Initializing trading systems...');
       this.portfolio = new PortfolioTracker();
       this.riskEngine = new RiskEngine();
@@ -4349,6 +4359,21 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       }
       const isWin = trade.pnl >= 0;
       const pnlPct = trade.pnlPct;
+      // v2.0.873-P9-reentry-cooldown: close 後更新連蝕 cooldown（hard 事件型——
+      // 結構斷裂偵測。DRAM 案例: 2 連蝕 → 6h block）。純函數——垃圾值中性。
+      try {
+        const cooldownN = Number(process.env['REENTRY_COOLDOWN_N'] ?? '2');
+        const cooldownHours = Number(process.env['REENTRY_COOLDOWN_HOURS'] ?? '6');
+        const cdKey = `${normalizeSymbol(safeSymbol)}:${tradeSide}`;
+        const prev = this.cooldownTracker.get(cdKey) ?? emptyCooldownStreakState();
+        const next = updateCooldownOnClose(prev, Number.isFinite(pnlPct) ? pnlPct : 0, trade.closedAt ?? Date.now(), { n: cooldownN, hours: cooldownHours });
+        if (next.streak !== prev.streak || next.cooldownUntil !== prev.cooldownUntil) {
+          this.cooldownTracker.set(cdKey, next);
+          if (next.cooldownUntil > prev.cooldownUntil) {
+            log.info(`[reentry-cooldown] ${safeSymbol} ${tradeSide.toUpperCase()} — ${next.streak} 連蝕 → cooldown 至 ${new Date(next.cooldownUntil).toISOString().slice(11,19)}（結構斷裂偵測）`);
+          }
+        }
+      } catch { /* 非致命——cooldown 更新失敗唔影響學習 */ }
       // P80: 成功類型分類——實際學習（close 後 record，持久化）
       try {
         if (this.successPatternTracker && typeof trade.entryThesis === 'string') {
@@ -5776,6 +5801,35 @@ ${recentExamples}
     } catch { return null; }
   }
 
+  /** v2.0.873-P9-reentry-cooldown: persist（跟主持久化週期——atomic 寫入, restart 唔重置連蝕狀態） */
+  private persistCooldownTracker(): void {
+    try {
+      const obj: Record<string, CooldownStreakState> = {};
+      for (const [k, v] of this.cooldownTracker) obj[k] = v;
+      const tmp = 'data/evolution/reentry-cooldown.json.tmp';
+      const out = 'data/evolution/reentry-cooldown.json';
+      fs.writeFileSync(tmp, JSON.stringify(obj), 'utf-8');
+      fs.renameSync(tmp, out);
+    } catch { /* 非致命 */ }
+  }
+
+  /** v2.0.873-P9-reentry-cooldown: load（restart 後保留連蝕狀態——sanitize 垃圾） */
+  private loadCooldownTracker(): void {
+    try {
+      const raw = fs.readFileSync('data/evolution/reentry-cooldown.json', 'utf-8');
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === 'object') {
+        for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+          const s = v as { streak?: unknown; cooldownUntil?: unknown };
+          if (typeof s?.streak === 'number' && Number.isFinite(s.streak) && s.streak >= 0
+            && typeof s.cooldownUntil === 'number' && Number.isFinite(s.cooldownUntil) && s.cooldownUntil > 0) {
+            this.cooldownTracker.set(k, { streak: s.streak, cooldownUntil: s.cooldownUntil });
+          }
+        }
+      }
+    } catch { /* 首啟/損壞——空狀態 */ }
+  }
+
   /**
    * v2.0.862: DIRECTION HEALTH BLOCK — per-symbol 壓倒性負面數據注入.
    *
@@ -6919,6 +6973,24 @@ ${recentExamples}
     if (decision.action === 'buy' || decision.action === 'sell') {
       try { prepareExecutionLens(normalizeSymbol(decision.symbol)); } catch { /* non-critical */ }
     }
+
+      // v2.0.873-P9-reentry-cooldown（PLAN_reentry-cooldown——主神 2026-08-31）:
+      // 同 symbol 同向連蝕 hard block——結構斷裂偵測（DRAM 5 次 SELL 防禦）。
+      // 47/49 三關全過 Δ+123.8%（N=2 × 6h——被抑制 avg −2.48% / 兩半都正）。
+      // env: REENTRY_COOLDOWN_GATE=false 回滾 / N（clamp [1,5]）/ HOURS（clamp [1,72]）。
+      if ((decision.action === 'buy' || decision.action === 'sell') && process.env['REENTRY_COOLDOWN_GATE'] !== 'false') {
+        try {
+          const cdKey = `${normalizeSymbol(decision.symbol)}:${decision.action}`;
+          const st = this.cooldownTracker.get(cdKey);
+          if (st) {
+            const rb = shouldBlockChaseCooldown(st, Date.now());
+            if (rb.blocked) {
+              log.warn(`[reentry-cooldown] BLOCK ${decision.symbol} ${decision.action.toUpperCase()} — ${rb.reason}`);
+              return { success: false, error: `[reentry-cooldown] ${rb.reason}` };
+            }
+          }
+        } catch { /* 非致命——cooldown check 失敗照常開倉 */ }
+      }
 
       // v2.0.873-P9-boundary-align（PLAN_DRAM-exhaustion T2——主神 2026-08-31）:
       // 支尾（距 5m close ≤ tailMin）落單實質差單（27-offset-counterfactual.ts:
@@ -14813,6 +14885,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       this.persistEVFilter();
       this.persistLLMDirectionVerifier();
       this.persistCloseCalibrator();
+      // v2.0.873-P9-reentry-cooldown: 連蝕 cooldown 狀態持久化（restart 唔重置）
+      this.persistCooldownTracker();
 
       // v2.0.219: Replay buffer epoch — re-feed high-priority trades to OLR
       // to break temporal correlations. Runs every 5 cycles (enough buffer
