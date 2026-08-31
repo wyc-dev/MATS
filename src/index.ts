@@ -92,6 +92,7 @@ import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
 import { computeMom24PctFromCandles, mom24EnvThresholds, shouldBlockMom24, shouldBlockChaseTail } from './analysis/mom24-guard.ts';
 import { shouldDeferToBoundary } from './analysis/boundary-align.ts';
+import { computeSrDistancePct, shouldShrinkSrSize } from './analysis/sr-size-gate.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
@@ -5759,6 +5760,22 @@ ${recentExamples}
     } catch { return null; }
   }
 
+  /** v2.0.873-P9-sr-size: 開倉前 25×15m（已 close）candle range 雙向極值距離（831 定義 %）。
+   *  剔 in-progress 燭（零 look-ahead, 同 mom24/last1 一致）。數據不足/垃圾 → null（不縮）。 */
+  private computeOpenSrDistancePct(sym: string, entry: number): number | null {
+    try {
+      if (!(typeof entry === 'number' && Number.isFinite(entry) && entry > 0)) return null;
+      const c15 = candleCache.peekCandles(sym, '15m');
+      if (!c15 || c15.length < 2) return null;
+      const now = Date.now();
+      const closed = c15
+        .filter((c) => c && Number.isFinite(c.t) && c.t + 900_000 <= now)
+        .slice(-25)
+        .map((c) => ({ h: c.h, l: c.l }));
+      return computeSrDistancePct(entry, closed);
+    } catch { return null; }
+  }
+
   /**
    * v2.0.862: DIRECTION HEALTH BLOCK — per-symbol 壓倒性負面數據注入.
    *
@@ -6917,6 +6934,30 @@ ${recentExamples}
             await sleep(ba.delayMs);
           }
         } catch { /* 執行時序輔助——失敗照常開倉（non-critical） */ }
+      }
+
+      // v2.0.873-P9-sr-size（PLAN_sr-distance-size-gate + 37-sr-final.ts——主神 2026-08-31）:
+      // SELL 貼 S/R（開倉前 25×15m range 雙向極值距離 < threshold）→ size ×mult（縮倉）。
+      // 三關全過 Δ+19.6%（命中組 avg −1.31% WR 37% / 兩半 +15.1/+4.5 / 鄰近全正）。
+      // ⚠️ SELL-only（BUY 貼 S/R 係中性/正 EV——驗證負, 唔縮）; threshold clamp 上限 0.35
+      // （0.40 急轉負——唔准設）; 純 size 層——零離場干預 / SL 唔郁。
+      // env: SR_SIZE_GATE=false 回滾 / SR_SIZE_THRESHOLD_PCT / SR_SIZE_MULT。
+      if (decision.action === 'sell' && process.env['SR_SIZE_GATE'] !== 'false') {
+        try {
+          const symN = normalizeSymbol(decision.symbol);
+          const entry = decision.entryPrice ?? this.marketState?.getState(symN)?.price ?? 0;
+          const srDist = this.computeOpenSrDistancePct(symN, entry);
+          const g = shouldShrinkSrSize({
+            side: decision.action,
+            srDistancePct: srDist,
+            thresholdPct: Number(process.env['SR_SIZE_THRESHOLD_PCT']),
+            sizeMult: Number(process.env['SR_SIZE_MULT']),
+          });
+          if (g.shrink) {
+            decision.positionSizePct = Math.max(0.01, (decision.positionSizePct ?? 0) * g.mult);
+            log.info(`[sr-size] ${decision.symbol} ${g.reason}`);
+          }
+        } catch { /* 非致命——SR 距離不可用開倉照常 */ }
       }
 
     try {
