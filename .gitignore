@@ -5,7 +5,6 @@ ui/node_modules/
 # ─── Build output ───
 dist/
 ui/dist/
-
 # ─── Environment & Secrets ───
 .env
 .env.local
@@ -13,20 +12,17 @@ ui/dist/
 *.key
 *.pem
 *.p12
-
 # ─── OS files ───
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 *~
-
 # ─── IDE / Editor ───
 .idea/
 .vscode/
 *.sublime-project
 *.sublime-workspace
-
 # ─── Internal documents (not for public release) ───
 See.md
 light-rainbow-css.md
@@ -47,12 +43,10 @@ AGENT_PROMPT.md
 evo.md
 frontend.md
 SUPABASE_DATA_CONTRACT.md
-
 # ─── Logs ───
 logs/
 *.log
 *.log.*
-
 # ─── Loop Engineering (self-learning & self-healing system) ───
 scripts/loop-engineering-memory.md
 scripts/loop-engineering.sh
@@ -60,7 +54,6 @@ scripts/loop-engineering-deep.sh
 scripts/*.log
 # v2.0.208: System Engineer feedback log (local-only, records every SE run)
 SYSTEM_ENGINEER_FEEDBACK.md
-
 # ─── Runtime data (generated state, trade history, backtest results) ───
 data/evolution/
 !data/evolution/.gitkeep
@@ -69,22 +62,17 @@ data/*.backup.json
 data/exp/
 data/bstocks-x402-count.json
 data/EXP.md
-
 # ─── Temp files ───
 *.tmp
 *.temp
 .cache/
-
 # ─── TypeScript ───
 *.tsbuildinfo
-
 # ─── Docker ───
 .docker/
-
 # ─── Agent instructions (private) ───
 .github/instructions/PI.instructions.md
 NEWS_DECODER_PLAN.md
-
 # ─── Private investor materials (never commit) ───
 investMATS.md
 investor/
@@ -94,14 +82,12 @@ tests/
 plan-task3-4.md
 investor/Demo.md
 data/evolution/vol-thresholds.json
-
 # Close gate attack plan (ephemeral — validated then removed)
 PLAN_fix-close-gate-attack.md
 P23-A-B.md
 PLAN_fix-buy-bias.md
 PLAN_fix-close-gate-integration.md
 bStocks_module.md
-
 # v2.0.870-sell-decay 內部計劃（主神 2026-08-24——驗證完成後 gitignore）
 PLAN_fix-sell-decay.md
 PLAN_fix-sell-decay-attack.md
@@ -109,18 +95,14 @@ PLAN_fix-momentum-direction.md
 PLAN_fix-momentum-direction-attack.md
 PLAN_fix-sell-seed-accel.md
 PLAN_fix-sell-seed-accel-attack.md
-
 # v2.0.870-exit-price-lock 計劃（主神 2026-08-25——驗證完成後 gitignore）
 PLAN_fix-exit-price-lock.md
-
 # 訊號資料契約（主神 2026-08-25——gitignore）
 asset_analyses.md
 scripts/trend-aware-counter.ts
 PLAN_exploration-dual.md
-
 # Zeabur 部署文檔（主神 2026-08-29——含私鑰處置/Ollama key/架構資訊,gitignore）
 DEPLOY_ZEABUR.md
-
 # v2.0.873-P9-llpp 系列（主神 2026-08-30——驗證完成/內部藍圖,gitignore）
 # 說明文檔 + 計劃文件（Phase A/B 完成後保留喺本地作參考）
 EVO-upgrade.md
@@ -136,3 +118,11 @@ scripts/edge-realloc-experiment/
 PLAN_trade-history-archive.md
 scripts/trade-history-archive/
 data/archive/
+831.md
+PLAN_chase-filter-robustness.md
+PLAN_tri-state-entry-filter.md
+PLAN_60-90-context-hint.md
+PLAN_sr-distance-mae-check.md
+PLAN_DRAM-exhaustion.md
+PLAN_5m-live-gate.md
+PLAN_precise-mom24-filter.md
