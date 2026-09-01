@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-ledger-shape-expose: shape/convexity 拆出獨立 ledger 條目 + OLR blend swap 驗證否決（主神 2026-09-01）
+
+**B（純觀測，零風險）**: conviction ledger 嘅 `base(...)` 原本吞咗 shape/convexity 兩個乘數——UI 睇唔到邊個因素係兇手。拆開：
+```
+改前: base(consensus×pwin×blend×penalty×boost×dirTrust×ev×shape×convexity)×0.21 ...
+改後: base(consensus×pwin×blend×penalty×boost×dirTrust×ev)×0.49 shape×0.85 convexity×0.50 ...
+```
+`effectiveConfidence` 數值完全唔變（只分兩步計）——純觀測層改動，零決策影響。
+
+**A（OLR blend 中性化 / Shadow WR 替換）——66 三關否決（831.md §14）**:
+- A1 中性化 OLR ❌——ρ=+0.019 但低 blend 組 −0.15% vs 全場 +0.51%，OLR 折扣有微弱選擇性（剔走略差單），中性化 = 放返 −0.15% 單入嚟
+- A2 換 Shadow WR ❌——E3 方向錯誤（過度放行組 +3.39% 係好單，Shadow 會錯殺）+ 100% bnb 集中 + outlier 驅動
+- **最終維持現狀**——「OLR 仲有投票權」係真設計張力但 counterfactual 證明移除/替換都唔改善 PnL
+
+**⚠️ 本座更正**: 之前誤判「OLR 永遠 ≤50%」——嗰個係 81 子集，全樣本 OLR pwin 去到 68.4%。
+
+**驗證**: tsc clean；全量測試見下。
+
+---
+
 ## v2.0.873-P9-got-observe-attack: GOT 攻擊輪（3 真漏洞全修）+ 三問題驗證（主神 2026-09-01「不擇手段攻擊啱啱修葺嘅 code」）
 
 **紅先攻擊（併發/狀態注入/持久化污染）——3 真漏洞全修**:
