@@ -3289,7 +3289,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           }
         } catch { /* non-critical */ }
         try {
-          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === normalizeSymbol(symbol) || s.symbol === symbol.toLowerCase());
+          const shadowStats = this.shadowEngine.getStatsForSymbol(symbol);
           if (shadowStats) {
             result.shadowWinRate = side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
           }
@@ -5086,7 +5086,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           })(),
           shadowWinRateAtEntry: (() => {
             try {
-              const stats = this.shadowEngine.getStats().find(s => s.symbol === normalizeSymbol(symbol) || s.symbol === symbol.toLowerCase());
+              const stats = this.shadowEngine.getStatsForSymbol(symbol);
               if (stats) return trade.side === 'buy' ? stats.longWinRate : stats.shortWinRate;
             } catch { /* non-critical */ }
             return undefined;
@@ -5662,7 +5662,7 @@ ${recentExamples}
   ): { confidence: number; blocked: boolean; reason: string | null; size: number } {
     try {
       if (confidence <= 0) return { confidence: 0, blocked: false, reason: null, size: 0 };
-      const sgStats = this.shadowEngine.getStats().find(s => s.symbol === sym);
+      const sgStats = this.shadowEngine.getStatsForSymbol(sym);
       if (!sgStats) return { confidence, blocked: false, reason: null, size: sizePct };
       const wins = action === 'buy' ? sgStats.longWins : sgStats.shortWins;
       const losses = action === 'buy' ? sgStats.longLosses : sgStats.shortLosses;
@@ -6017,7 +6017,7 @@ ${recentExamples}
         // A2(攻擊輪四 2026-08-29): 大小階統一——normalizeSymbol('BTC')='BTC' ≠ 'btc',
         // shadow stats 若大階就 match 唔到(agents 一直冇 quote SHADOW LEAN 可能就係呢個)。
         // 用 lowercase 比較(同其他 call site 一致)。
-        const sg = this.shadowEngine.getStats().find(s => s.symbol.toLowerCase() === sym.toLowerCase());
+        const sg = this.shadowEngine.getStatsForSymbol(sym);
         if (sg) {
           const buyN = sg.longWins + sg.longLosses;
           const sellN = sg.shortWins + sg.shortLosses;
@@ -6291,7 +6291,7 @@ ${recentExamples}
         // Also try to fill shadow win rate if missing
         if (trade.entryShadowWinRate === undefined && trade.side) {
           try {
-            const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === sym);
+            const shadowStats = this.shadowEngine.getStatsForSymbol(sym);
             if (shadowStats) {
               trade.entryShadowWinRate = trade.side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
             }
@@ -6699,7 +6699,7 @@ ${recentExamples}
       // Query shadow win rate at entry time
       let shadowWinRate: number | undefined;
       try {
-        const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === sym);
+        const shadowStats = this.shadowEngine.getStatsForSymbol(sym);
         if (shadowStats) {
           shadowWinRate = side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
         }
@@ -7231,7 +7231,7 @@ ${recentExamples}
       let shadowWinRate = entryShadowWinRate;
       if (shadowWinRate === undefined || !Number.isFinite(shadowWinRate)) {
         try {
-          const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === symNorm);
+          const shadowStats = this.shadowEngine.getStatsForSymbol(symNorm);
           if (shadowStats) {
             shadowWinRate = side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
           }
@@ -10674,7 +10674,7 @@ ${recentExamples}
             // （ρ=+0.106 唯一有預測力入場特徵）; 冇 shadow 數據 → 中性 0.5。
             let pwin = 0.5;
             try {
-              const shadowStats = this.shadowEngine?.getStats()?.find(s => s.symbol.toLowerCase() === sym.toLowerCase());
+              const shadowStats = this.shadowEngine?.getStatsForSymbol(sym);
               if (shadowStats) {
                 const swr = (psc?.action === 'sell' ? shadowStats.shortWinRate : shadowStats.longWinRate);
                 if (Number.isFinite(swr)) pwin = Math.max(0, Math.min(1, swr));
@@ -11740,7 +11740,7 @@ ${recentExamples}
               expOlrPWin = safeNum(olrQ.pWin, 0);
               expOlr = `${(olrQ.pWin * 100).toFixed(0)}% (${olrQ.nSamples} samples)`;
               const shadowSym = normalizeSymbol(activeSymbol);
-              const shadowStat = this.shadowEngine.getStats().find(s => s.symbol === shadowSym);
+              const shadowStat = this.shadowEngine.getStatsForSymbol(shadowSym);
               if (shadowStat) {
                 const swr = direction === 'buy' ? shadowStat.longWinRate : shadowStat.shortWinRate;
                 const stot = direction === 'buy' ? shadowStat.longWins + shadowStat.longLosses : shadowStat.shortWins + shadowStat.shortLosses;
@@ -14168,7 +14168,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       if (cachedOlr !== undefined) {
         entryOlrPWin = cachedOlr;
       }
-      const shadowStats = this.shadowEngine.getStats().find(s => s.symbol === entrySym);
+      const shadowStats = this.shadowEngine.getStatsForSymbol(entrySym);
       if (shadowStats) {
         entryShadowWinRate = finalDecision.action === 'buy'
           ? shadowStats.longWinRate
@@ -14350,7 +14350,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
                   const pre = this.precomputedEntryFeatures?.get(`${execSym}:${finalAction}`) as
                     { shadowWinRate?: number } | undefined;
                   if (pre && Number.isFinite(pre.shadowWinRate)) return Math.max(0, Math.min(1, pre.shadowWinRate ?? 0.5));
-                  const shadowStats = this.shadowEngine?.getStats()?.find(s => s.symbol.toLowerCase() === execSym.toLowerCase());
+                  const shadowStats = this.shadowEngine?.getStatsForSymbol(execSym);
                   if (shadowStats) {
                     const swr = finalAction === 'sell' ? shadowStats.shortWinRate : shadowStats.longWinRate;
                     if (Number.isFinite(swr)) return Math.max(0, Math.min(1, swr));
@@ -15285,9 +15285,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
   ): Promise<{ edgeReport: EdgeReport } | null> {
     try {
       // 1. Shadow WR (pure directional edge proxy)
-      const shadowStats = this.shadowEngine.getStats().find(
-        s => s.symbol === normalizeSymbol(sym) || s.symbol === sym.toLowerCase(),
-      );
+      const shadowStats = this.shadowEngine.getStatsForSymbol(sym);
       const shadowWinRate = side === 'buy'
         ? (shadowStats?.longWinRate ?? 0.5)
         : (shadowStats?.shortWinRate ?? 0.5);

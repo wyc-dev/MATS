@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-shadow-sym-case: Shadow WR 記錄 case-sensitivity bug 修復（主神 2026-09-01「點解 Shadow WR 得 btc+bnb」）
+
+**根因**: `getStats()` 返小寫 symbol（shadow engine 內部 `.toLowerCase()`），但 entryShadowWinRate 記錄處用 `normalizeSymbol()`（保留資產名大小寫——`"xyz:SILVER"`）做 `s.symbol === sym` 比較——`"xyz:silver" !== "xyz:SILVER"` → 9/11 個 xyz: 資產嘅 Shadow WR 全部靜默丢失。只有 btc/bnb（無前綴無大小階）match 到。
+
+**證據**: btc 32/32、bnb 49/49（100% 覆蓋）；其餘 9 個 xyz: 資產 0 覆蓋。
+
+**修復（production grade，統一 case-insensitive）**:
+- 新 `ShadowTradeEngine.getStatsForSymbol(symbol)` helper——case-insensitive 匹配 + null/空 string 防禦，單一 source of truth 令 bug 唔可以再犯
+- index.ts 全部 12 個 `getStats().find(s => s.symbol === ...)` call site 統一改用 helper（含 6 個 case-sensitive buggy site + 6 個已正確但 pattern 不一嘅 site）
+- 呢個係 P9-attack-round4 A2（SHADOW LEAN 大小階）同款 bug——當時只修咗 SHADOW LEAN/voice，漏咗 entryShadowWinRate 記錄等 call site
+
+**⚠️ 重要含義**: 之前「Shadow WR 樣本太薄（81 個、得 2 symbol）」嘅結論係錯嘅——係 bug 唔係數據限制。修復後 Shadow WR 會覆蓋全部 11 symbol。但**歷史 entryShadowWinRate 無法 retroactive 修復**（用現時 decayed shadow stats 回填 = look-ahead 污染）——66 counterfactual 需等新數據累積（2+ 週）先可重跑。
+
+**驗證**: 新測試 4（case-insensitive match / null 防禦 / 冇 stats undefined）；全量 **3999 pass + 13 pre-existing（零新增）**；tsc clean。
+
+---
+
 ## v2.0.873-P9-ledger-shape-expose: shape/convexity 拆出獨立 ledger 條目 + OLR blend swap 驗證否決（主神 2026-09-01）
 
 **B（純觀測，零風險）**: conviction ledger 嘅 `base(...)` 原本吞咗 shape/convexity 兩個乘數——UI 睇唔到邊個因素係兇手。拆開：
