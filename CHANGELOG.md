@@ -4,6 +4,25 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-got-observe-attack: GOT 攻擊輪（3 真漏洞全修）+ 三問題驗證（主神 2026-09-01「不擇手段攻擊啱啱修葺嘅 code」）
+
+**紅先攻擊（併發/狀態注入/持久化污染）——3 真漏洞全修**:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1 | `save()` 用 `fs.writeFileSync` 非原子寫——crash 中途 corrupt JSON → load() fresh start 全 gate stats 丟失（ev-filter/llm-direction-verifier/close-decision-calibrator 已用 atomicWriteSync，唯獨 GOT 漏咗） | HIGH | 改 `atomicWriteSync`（write-to-temp + rename） |
+| V2 | `load()` 持久化污染——`hits/misses=1e308`（finite）→ summary() `n=Infinity` → `hitRate=NaN` → sort comparator `Infinity−Infinity=NaN` 不穩定 + 輸出 NaN/Infinity 垃圾 | MED | load() clamp `hits/misses ≤ 1e6`、`avgMovePct ≤ ±1e4` |
+| V3 | `summary()` sort comparator 無 finite guard——NaN comparator 令排序不穩定 | LOW | safe comparator + 輸出前 finite guard |
+
+**驗證**: 新攻擊測試 4（1e308 污染 clamp / atomicWriteSync 無 .tmp 殘留 / 同步重入唔 double-count / gate 名超長 reject）；全量 **3995 pass + 13 pre-existing（零新增）**；tsc clean。
+
+**三問題驗證（主神質疑——全部屬實）**:
+1. **OLR 仲有投票權** ✅ 真——`olrBlendFactor = pwinBlendFactor(olrPWin)`（0.3+0.7×√pwin）仍乘入 `effectiveConfidence`（index.ts:13565）；OLR ρ=+0.02 已證偽但保留軟乘數角色（P9-olr-audit 裁決）
+2. **兩個 pwin 並存** ✅ 真——signal 層 `asset_analyses.pwin` = Shadow WR（index.ts:10672-10680，P9-signal-pwin）；gate 層用 OLR pwin（index.ts:13394）——兩個唔同源
+3. **shape/convexity 埋喺 base** ✅ 真——`effectiveConfidence = consensus × pwinBlend × penalty × boost × dirTrust × ev × shape × convexity`（13565），convLedger 首條目 `base(...)` 吞咗 shape/convexity，UI ledger 睇唔到獨立歸因
+
+---
+
 ## v2.0.873-P9-got-observe: GOT 歸因修復 + 盈利調查四候選三否決（主神 2026-09-01「不擇手段提升盈利，先調查再執行」）
 
 **純調查輪（831.md §13 已詳錄，scripts 63/64/65）**: swing-SL ❌（全樣本重放 Δ−26~−46%，倖存者偏差教訓）/ deep-consensus defer ❌（Δ−19~−61%，不對稱救細蝕大）/ SL-noise gate ❌（非單調）/ 美洲時段 BUY gate ❌（兩半不穩+era 混淆）/ rolling-WR regime ❌（時代綁架）/ 日熔斷 ⚠️ 邊際唔做。

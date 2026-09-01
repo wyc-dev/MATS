@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../observability/logger.ts';
+import { atomicWriteSync } from '../evolution/persistence.ts';
 
 const log = createLogger({ phase: 'gate-outcome' });
 
@@ -45,6 +46,9 @@ const RESOLVE_THRESHOLD = 0.005;
 /** 4h 後強制 resolve（用最後價格）——唔可以無限 pending */
 const MAX_PENDING_AGE_MS = 4 * 60 * 60 * 1000;
 const MAX_PENDING = 200;
+/** v2.0.873-P9-got-observe-attack: 持久化污染 clamp 上限——1e308 會令 summary 出 NaN */
+const MAX_STAT_COUNT = 1_000_000;
+const MAX_AVG_MOVE = 10_000;
 
 /** Symbol key 統一：細楷 + 去 xyz: 前綴（record/check 一致先 resolve 到） */
 function normalizeSymbolKey(symbol: string): string {
@@ -163,13 +167,21 @@ export class GateOutcomeTracker {
   }
 
   /** v2.0.873-P9-got-observe: per-gate 單行摘要（n≥5 先顯示——冷啟動樣本唔誤導）。
-   *  用途：每 100 cycle log——低 hit rate gate 進入 P9-deadweight 停用候選流程。 */
+   *  用途：每 100 cycle log——低 hit rate gate 進入 P9-deadweight 停用候選流程。
+   *  攻擊硬化：safe comparator（Infinity−Infinity=NaN 會令 sort 不穩定）+ 輸出前 clamp。 */
   summary(): string {
     const parts: string[] = [];
-    for (const [gate, st] of [...this.stats.entries()].sort((a, b) => (b[1].hits + b[1].misses) - (a[1].hits + a[1].misses))) {
+    const entries = [...this.stats.entries()].sort((a, b) => {
+      const na = a[1].hits + a[1].misses;
+      const nb = b[1].hits + b[1].misses;
+      return (Number.isFinite(nb) ? nb : 0) - (Number.isFinite(na) ? na : 0);
+    });
+    for (const [gate, st] of entries) {
       const n = st.hits + st.misses;
-      if (n < 5) continue;
-      parts.push(`${gate}=${(st.hitRate * 100).toFixed(0)}%(n=${n},avg=${st.avgMovePct.toFixed(2)}%)`);
+      if (!Number.isFinite(n) || n < 5) continue;
+      const rate = Number.isFinite(st.hitRate) ? st.hitRate : 0;
+      const avg = Number.isFinite(st.avgMovePct) ? st.avgMovePct : 0;
+      parts.push(`${gate}=${(rate * 100).toFixed(0)}%(n=${n},avg=${avg.toFixed(2)}%)`);
     }
     return parts.length ? parts.join(' ') : 'no-gate-data';
   }
@@ -181,7 +193,9 @@ export class GateOutcomeTracker {
   save(): void {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.writeFileSync(this.file, JSON.stringify({ pending: this.pending, stats: Object.fromEntries(this.stats) }, null, 2));
+      // v2.0.873-P9-got-observe-attack: 非原子寫入 → crash 中途 corrupt JSON →
+      // load() fresh start 全 stats 丟失。改 atomicWriteSync（同 ev-filter/llm-direction-verifier 一致）。
+      atomicWriteSync(this.file, JSON.stringify({ pending: this.pending, stats: Object.fromEntries(this.stats) }, null, 2));
     } catch (err) {
       log.warn(`[gate-outcome] save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -203,13 +217,16 @@ export class GateOutcomeTracker {
         for (const [k, v] of Object.entries(raw.stats)) {
           const st = v as Partial<GateStats>;
           if (!st || typeof st !== 'object') continue;
-          const hits = Number.isFinite(st.hits) ? Math.max(0, Math.floor(st.hits as number)) : 0;
-          const misses = Number.isFinite(st.misses) ? Math.max(0, Math.floor(st.misses as number)) : 0;
+          // v2.0.873-P9-got-observe-attack: 持久化污染 clamp——1e308 hits/misses 會令
+          // summary() n=Infinity → hitRate NaN → sort comparator NaN。clamp 到合理範圍。
+          const hits = Number.isFinite(st.hits) ? Math.min(MAX_STAT_COUNT, Math.max(0, Math.floor(st.hits as number))) : 0;
+          const misses = Number.isFinite(st.misses) ? Math.min(MAX_STAT_COUNT, Math.max(0, Math.floor(st.misses as number))) : 0;
+          const avg = Number.isFinite(st.avgMovePct) ? Math.min(MAX_AVG_MOVE, Math.max(-MAX_AVG_MOVE, st.avgMovePct as number)) : 0;
           this.stats.set(k, {
             hits,
             misses,
             hitRate: hits + misses > 0 ? hits / (hits + misses) : 0,
-            avgMovePct: Number.isFinite(st.avgMovePct) ? st.avgMovePct as number : 0,
+            avgMovePct: avg,
           });
         }
       }
