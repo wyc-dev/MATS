@@ -1554,6 +1554,19 @@ export class ShadowTradeEngine {
     return Array.from(symbolMap.values());
   }
 
+  /** v2.0.873-P9-shadow-sym-case: case-insensitive per-symbol stats lookup。
+   *  getStats() 返小寫 symbol（內部 .toLowerCase()），但 caller 可能傳
+   *  normalizeSymbol()（保留資產名大小寫——"xyz:SILVER"）或 raw symbol——
+   *  "xyz:silver" vs "xyz:SILVER" 大小階 mismatch 令 xyz: 資產永遠 match 唔到
+   *  （P9-attack-round4 A2 同款 bug，當時只修咗 SHADOW LEAN/voice，漏咗
+   *  entryShadowWinRate 記錄等 call site）。呢個 helper 統一 case-insensitive
+   *  匹配，令 bug 唔可以再犯。 */
+  getStatsForSymbol(symbol: string): ShadowTradeStats | undefined {
+    const norm = String(symbol ?? '').toLowerCase();
+    if (!norm) return undefined;
+    return this.getStats().find((s) => String(s.symbol).toLowerCase() === norm);
+  }
+
   /**
    * Get all open shadow positions (for UI).
    */
