@@ -162,6 +162,18 @@ export class GateOutcomeTracker {
     return Object.fromEntries(this.stats);
   }
 
+  /** v2.0.873-P9-got-observe: per-gate 單行摘要（n≥5 先顯示——冷啟動樣本唔誤導）。
+   *  用途：每 100 cycle log——低 hit rate gate 進入 P9-deadweight 停用候選流程。 */
+  summary(): string {
+    const parts: string[] = [];
+    for (const [gate, st] of [...this.stats.entries()].sort((a, b) => (b[1].hits + b[1].misses) - (a[1].hits + a[1].misses))) {
+      const n = st.hits + st.misses;
+      if (n < 5) continue;
+      parts.push(`${gate}=${(st.hitRate * 100).toFixed(0)}%(n=${n},avg=${st.avgMovePct.toFixed(2)}%)`);
+    }
+    return parts.length ? parts.join(' ') : 'no-gate-data';
+  }
+
   getPendingCount(): number {
     return this.pending.length;
   }
@@ -182,6 +194,9 @@ export class GateOutcomeTracker {
       if (Array.isArray(raw.pending)) {
         this.pending = raw.pending
           .filter((s): s is BlockedSignal => !!s && typeof s === 'object' && typeof (s as BlockedSignal).symbol === 'string' && typeof (s as BlockedSignal).gate === 'string')
+          // v2.0.873-P9-got-observe: legacy 'gate' bucket（無 gate 名 + close-defer 被
+          // 誤標 direction 'buy'——v2.0.873 調查發現）不可歸因——丢弃, 從新數據開始
+          .filter((s) => s.gate !== 'gate')
           .slice(-MAX_PENDING);
       }
       if (raw.stats && typeof raw.stats === 'object') {

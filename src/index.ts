@@ -12428,6 +12428,21 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             const floating = unrealizedPct >= P9_CONSENSUS_DEFER_MARGIN_PCT;
             if (floating && deferrals < 2 && pos) {
               this.consensusCloseDeferrals.set(ccKey, deferrals + 1);
+              // v2.0.873-P9-got-observe: GOT 閉環（source site 記錄——direction close +
+              // 倉位 side；flush 唔再記 'hold' rows，防雙重計數 + 語義污染）
+              try {
+                const ccCurPrice = typeof pos.currentPrice === 'number' && Number.isFinite(pos.currentPrice) && pos.currentPrice > 0 ? pos.currentPrice : null;
+                if (ccCurPrice) {
+                  this.gateOutcomeTracker.record({
+                    symbol: psc.symbol,
+                    gate: 'p9-consensus-close-confirm',
+                    direction: 'close',
+                    side: ccSide,
+                    entryPrice: ccCurPrice,
+                    cycle: this.totalCycles,
+                  });
+                }
+              } catch { /* 非致命 */ }
               // v2.0.872-P9-attack V1 修復: 同步 patch _pendingAnalyses——deferred 嘅
               // consensus.action='close' 無 execution.blocked 會令客戶端 AutoTrade
               // 執行 close 而後端揸住 = 指令分裂（split-brain）。
@@ -12438,7 +12453,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
                   execution: {
                     finalAction: 'hold',
                     blocked: true,
-                    blockedBy: 'gate',
+                    blockedBy: 'p9-consensus-close-confirm',
                     blockedReason: `consensus-close deferred — floating profit ${(unrealizedPct * 100).toFixed(2)}% ≥1% (P9 confirm ${deferrals + 1}/2)`,
                     gates: [{ gate: 'p9-consensus-close-confirm', passed: false, reason: 'floating profit ≥1% → defer' }],
                   },
@@ -12470,6 +12485,19 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               ((isBuySide(pos!.side) && holdCurPrice <= holdSlPrice) ||
                (isSellSide(pos!.side) && holdCurPrice >= holdSlPrice));
             if (pos && holdMinNow < P9_HOLD_MIN_MINUTES && !slHitNow && unrealizedNow > -0.03) {
+              // v2.0.873-P9-got-observe: GOT 閉環（source site——close defer 命中 = 價格返嚟）
+              try {
+                if (holdCurPrice > 0) {
+                  this.gateOutcomeTracker.record({
+                    symbol: psc.symbol,
+                    gate: 'p9-holdmin-protection',
+                    direction: 'close',
+                    side: isBuySide(pos.side) ? 'buy' : 'sell',
+                    entryPrice: holdCurPrice,
+                    cycle: this.totalCycles,
+                  });
+                }
+              } catch { /* 非致命 */ }
               // 同步 patch _pendingAnalyses(同浮盈 defer 一致——客戶端唔可以 split)
               const holdPatch = this._pendingAnalyses?.find((a: any) => normalizeSymbol(a.symbol) === normalizeSymbol(psc.symbol));
               if (holdPatch) {
@@ -12478,7 +12506,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
                   execution: {
                     finalAction: 'hold',
                     blocked: true,
-                    blockedBy: 'gate',
+                    blockedBy: 'p9-holdmin-protection',
                     blockedReason: `consensus-close deferred — position held ${holdMinNow.toFixed(0)}min < ${P9_HOLD_MIN_MINUTES}min (P9 holdMin protection)`,// 唔好俾 consensus 過早切走 thesis 未證明嘅倉
                     gates: [{ gate: 'p9-holdmin-protection', passed: false, reason: `held ${holdMinNow.toFixed(0)}min < ${P9_HOLD_MIN_MINUTES}min` }],
                   },
@@ -12568,7 +12596,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
                     execution: {
                       finalAction: 'hold',
                       blocked: true,
-                      blockedBy: 'gate',
+                      blockedBy: 'p9-llpp',
                       blockedReason: llppDecision.reason,
                       gates: [{ gate: 'p9-llpp-protection', passed: false, reason: llppDecision.reason }],
                     },
@@ -14425,6 +14453,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           if (st?.price && Number.isFinite(st.price) && st.price > 0) prices.set(s.toLowerCase(), st.price);
         }
         this.gateOutcomeTracker.check(prices);
+        // v2.0.873-P9-got-observe: 每 100 cycle 輸出 per-gate hit rate 摘要——
+        // 「You can't tune what you can't attribute」——低 hit rate gate 進停用候選
+        if (this.totalCycles % 100 === 0) {
+          log.info(`[gate-outcome] per-gate: ${this.gateOutcomeTracker.summary()}`);
+        }
       } catch (err) {
         log.warn(`[gate-outcome] check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -15461,7 +15494,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     const execReport: AnalysisExecutionReport = {
       finalAction: typeof finalDecision?.action === 'string' ? finalDecision.action.slice(0, 20) : 'hold',
       blocked: Boolean(blockedGate),
-      ...(blockedGate ? { blockedBy: 'gate', blockedReason: blockedGate.reason } : {}),
+      ...(blockedGate ? { blockedBy: (blockedGate.gate || 'gate').slice(0, 40), blockedReason: blockedGate.reason } : {}),
       gates: safeGates,
     };
 
@@ -15477,15 +15510,25 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     }
 
     // v2.0.870: Gate Outcome Tracker——記錄被攔截訊號（active symbol gate）
+    // v2.0.873-P9-got-observe: GOT 歸因修復——flush 只記 entry-gate blocks
+    // （finalAction buy/sell）。Close 側（skeptics/sentinel/llpp/holdmin/consensus-defer）
+    // 全部喺 defer/block site 已用正確 direction+side 記錄——呢度再記 = 雙重計數 +
+    // 'hold'→direction 'buy' 語義污染（v2.0.873-P9-got 調查發現）。
     for (const a of pending) {
-      const exec = a.metadata?.['execution'] as { blocked?: boolean; blockedBy?: string; finalAction?: string } | undefined;
+      const exec = a.metadata?.['execution'] as { blocked?: boolean; blockedBy?: string; finalAction?: string; gates?: Array<{ gate?: string }> } | undefined;
       if (!exec?.blocked) continue;
+      const fa = typeof exec.finalAction === 'string' ? exec.finalAction : '';
+      if (fa !== 'buy' && fa !== 'sell') continue; // close 側 defer/block——source site 已記
       const price = a.marketData?.price;
       if (!Number.isFinite(price) || price <= 0) continue;
+      // gate 名歸因鏈: blockedBy（非 legacy 'gate'）→ gates[0].gate → 'gate'
+      const gateName = exec.blockedBy && exec.blockedBy !== 'gate'
+        ? exec.blockedBy
+        : (exec.gates?.[0]?.gate ?? 'gate');
       this.gateOutcomeTracker.record({
         symbol: a.symbol,
-        gate: exec.blockedBy === 'skeptics' ? 'skeptics-close-validation' : (exec.blockedBy ?? 'gate'),
-        direction: exec.blockedBy === 'skeptics' ? 'close' : (exec.finalAction === 'sell' ? 'sell' : 'buy'),
+        gate: gateName,
+        direction: fa === 'sell' ? 'sell' : 'buy',
         side: null,
         entryPrice: price,
         cycle: a.cycleId,

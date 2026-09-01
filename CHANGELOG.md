@@ -4,6 +4,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-got-observe: GOT 歸因修復 + 盈利調查四候選三否決（主神 2026-09-01「不擇手段提升盈利，先調查再執行」）
+
+**純調查輪（831.md §13 已詳錄，scripts 63/64/65）**: swing-SL ❌（全樣本重放 Δ−26~−46%，倖存者偏差教訓）/ deep-consensus defer ❌（Δ−19~−61%，不對稱救細蝕大）/ SL-noise gate ❌（非單調）/ 美洲時段 BUY gate ❌（兩半不穩+era 混淆）/ rolling-WR regime ❌（時代綁架）/ 日熔斷 ⚠️ 邊際唔做。
+
+### GOT（Gate Outcome Tracker）三層歸因缺陷全修（「You can't tune what you can't attribute」）
+
+**問題**:
+1. entry gates 全部記入 generic `'gate'` bucket（25.7% hit rate 但無法歸因——mom24-guard/chase-tail/sr-size/reentry-cooldown 混一桶）
+2. **close-defer 雙重記錄 + 語義污染**: llpp/holdmin/consensus-defer 喺 defer site 正確記（direction='close'+side），flush 又將 patched row（finalAction='hold'→direction 'buy'）再記一次
+3. **skeptics 同樣雙重記錄**（block site + flush，flush 版 side=null → SELL 倉判定錯方向）
+
+**修復（production grade，零決策邏輯改動）**:
+- index.ts entry-gate flush: `blockedBy: 'gate'` → `blockedGate.gate`（真 gate 名）
+- close-defer 記錄統一喺 source site: consensus-defer/holdmin 補 GOT 記錄（direction='close'+倉位 side），llpp 沿用
+- flush 唔再記 `finalAction='hold'` rows（滅雙重計數 + 語義污染）
+- tracker `load()`: 丢弃 legacy `'gate'` pending（無法歸因+方向污染，從新數據開始）
+- 新 `summary()`: per-gate 單行（n≥5 冷啟動保護）+ 每 100 cycle log——低 hit rate gate 進入 P9-deadweight 停用候選流程
+
+**⚠️ 撤回**: 調查初判「avgMove 管道壞咗」——實際 field 係 `avgMovePct`（0.12-0.64 有數據），首輪 print 用錯 key。
+
+**驗證**: 新測試 3（legacy 丢弃/summary 冷啟動/持久化污染攻擊）；全量 **3991 pass + 13 pre-existing（零新增）**；tsc clean。
+
+---
+
 ## v2.0.873-P9-verify-llm: AI 預測能力驗證（LLM live context 47% 無預測力 + HL tick 不可得 + 反序揭穿——主神 2026-08-31）
 
 **純驗證（零 code 改動）三件記錄（831.md §11-12 已詳錄）**:
