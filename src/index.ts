@@ -13562,12 +13562,18 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         }
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
-        let effectiveConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier * shapeMultiplier * convexityMultiplier;
+        // v2.0.873-P9-ledger-shape-expose: shape/convexity 從 base 拆出獨立條目——
+        // 「You can't tune what you can't attribute」——UI 睇到邊個因素係兇手。
+        // 數值不變（只係分兩步計），純觀測層改動。
+        const baseConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier;
+        let effectiveConfidence = baseConfidence * shapeMultiplier * convexityMultiplier;
         // v2.0.872-P8-transparency: conviction 乘數總帳——每一個乘數都入帳，
         // Plan-G 顯示同 asset_analyses metadata 全鏈透明（主神:睇到 15% vs 0% 矛盾）。
         const convLedger: Array<{ gate: string; mult: number }> = [
-          { gate: 'base(consensus×pwin×blend×penalty×boost×dirTrust×ev×shape×convexity)', mult: effectiveConfidence },
+          { gate: 'base(consensus×pwin×blend×penalty×boost×dirTrust×ev)', mult: baseConfidence },
         ];
+        if (shapeMultiplier !== 1.0) convLedger.push({ gate: 'shape', mult: shapeMultiplier });
+        if (convexityMultiplier !== 1.0) convLedger.push({ gate: 'convexity', mult: convexityMultiplier });
         // v2.0.870-FIX(主神批准): FP Multiplier——令 FP shrink 有硬 teeth。
         // 方向對應: 開 BUY 用 LONG edge, 開 SELL 用 SHORT edge（lastFirstPassage 係
         // active symbol 專屬——唔會錯 symbol）。正 edge → ×1.0（FP 無預測力,唔 boost——
