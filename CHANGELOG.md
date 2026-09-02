@@ -4,6 +4,25 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-mfe-expose-attack: 攻擊輪——6 真漏洞全修（主神 2026-09-02「不擇手段攻擊啱啱修葺嘅 code」）
+
+**紅先 10 攻擊測試 → 6 fail 真漏洞全修**（全部係啱啱修葺嘅 avgMfe 入帳 + gate 歸因語義嘅周邊防禦缺口）:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1×3 | **avgMfe/avgMae 入帳無 clamp**——mfePct=1e308（finite 過 isFinite）→ avg 巨大值/負數 avgMae 誤導（step 1 open + step 2 resolved + step 3 recentResults 三處） | MED | `clampExcursion(v)` 統一——極值比例合理範圍 [0, 0.5]（50% 最大單向;負數/NaN → 0） |
+| V2×2 | **load() 持久化污染無 clamp**——contribution=5 → computeStats 平均撐爆;signal=−3 → agreement/expectancy 污染（契約 [0,1]） | MED | load() clamp contribution [-1,1] + signal [0,1] + agreement [-1,1] |
+| V2c | **load() signalRaw string/Infinity** → gate confident 判定污染（|rawMult−1| 對 NaN 唔安全） | MED | `typeof number && Number.isFinite` 先收,否則 undefined fallback |
+| V3×1 | **sanitizePosition 無 sanitize mfePct/maePct**——persisted 1e308 mfe → load 後 getStats 污染（同 V1 疊加） | LOW-MED | sanitizePosition 加 excursion clamp（源頭防禦） |
+
+V4（pnl=0 唔 crash）/ V4b（`gate:` 空名唔 crash）/ V5（mult=1.0000001 浮點噪聲唔當出手 ε guard）全部通過。
+
+**盈利提升分析（修正後歸因層首次真實可用——量化金融裁決）**: 全部 6 個 soft gate（success-pattern/reversal-point/cal-trust/mae-pattern/base/convexity）誤傷率 68-80%（出手後 trade 平均賺 +1.9~+2.7% = 收緊咗本應賺嘅倉）——**「gate 系統性過度保守」強烈候選**。但樣本得 10-19（deadweight 標準 269 單 counterfactual）→ **唔即刻停用**,2-4 週樣本累積後跑 P9-deadweight 同款實驗。修正本身已係盈利提升: 歸因層乾淨——gate 校準有正確數據基礎。
+
+**驗證**: 新攻擊測試 10/10 + 回歸 18/18; 全量 **4039 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
 ## v2.0.873-P9-mfe-expose: shadow avgMfe 顯示修正 + gate 歸因語義修正（主神 2026-09-02「Why 某些資產無 MFE」+「gate:mae-pattern Expectancy +3.2% 但 Contrib −0.255」）
 
 **先證後改**: PLAN + 邏輯實驗（scripts/p9-shadow-mfe-expose-experiment.ts）驗證兩個修正方向先實作。

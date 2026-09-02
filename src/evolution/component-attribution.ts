@@ -342,7 +342,10 @@ export class ComponentAttributionStore {
         const r = raw as Record<string, unknown>;
         if (typeof r['tradeId'] !== 'string' || typeof r['componentId'] !== 'string') continue;
         const pnl = safeNum(r['pnlPct'] as number, 0);
-        const signal = safeNum(r['signal'] as number, 0.5);
+        // v2.0.873-P9-mfe-expose-attack（V2b）: signal 契約 [0,1]——persisted −3/5
+        // 要 clamp（唔可以令 agreement/expectancy 污染）。
+        const signalClamped = Math.min(1, Math.max(0, safeNum(r['signal'] as number, 0.5)));
+        const signal = signalClamped;
         const cleanliness = safeNum(r['labelCleanliness'] as number, 1.0);
         this.records.push({
           componentId: r['componentId'] as ComponentId,
@@ -351,12 +354,18 @@ export class ComponentAttributionStore {
           side: r['side'] === 'sell' ? 'sell' : 'buy',
           cycleId: typeof r['cycleId'] === 'number' ? r['cycleId'] : 0,
           signal,
-          agreement: safeNum(r['agreement'] as number, 0.5),
+          agreement: Math.min(1, Math.max(0, safeNum(r['agreement'] as number, 0.5))),
           // v2.0.873-P9-gate-attrib: 保留 raw mult（歷史 gate records 無 → 唔定;
           // 新 records 有——用 r['signal'] 原值 fallback）
-          signalRaw: Number.isFinite(r['signalRaw'] as number) ? (r['signalRaw'] as number) : undefined,
+          // v2.0.873-P9-mfe-expose-attack（V2c）: string/Infinity signalRaw → undefined
+          // （唔可以污染 gate confident 判定——|rawMult−1| 唔可以對非數字 NaN）。
+          signalRaw: typeof r['signalRaw'] === 'number' && Number.isFinite(r['signalRaw'] as number)
+            ? (r['signalRaw'] as number)
+            : undefined,
           pnlPct: pnl,
-          contribution: safeNum(r['contribution'] as number, 0),
+          // v2.0.873-P9-mfe-expose-attack（V2）: contribution 契約 [-1,1]——persisted
+          // 5/1e308 要 clamp（computeStats 平均會被撐爆）。
+          contribution: Math.min(1, Math.max(-1, safeNum(r['contribution'] as number, 0))),
           labelCleanliness: Math.max(0, Math.min(1, cleanliness)),
           regime: typeof r['regime'] === 'string' ? r['regime'] : 'unknown',
           riskProfile: typeof r['riskProfile'] === 'string' ? r['riskProfile'] : 'moderate',

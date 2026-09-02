@@ -422,12 +422,18 @@ export class ShadowTradeEngine {
     if (entry <= 0) return null;
     const sl = Number.isFinite(p['stopLossPrice']) && p['stopLossPrice'] > 0 ? p['stopLossPrice'] : entry * (side === 'sell' ? 1 + SHADOW_CONFIG.defaultSLDistance : 1 - SHADOW_CONFIG.defaultSLDistance);
     const tp = Number.isFinite(p['takeProfitPrice']) && p['takeProfitPrice'] > 0 ? p['takeProfitPrice'] : entry * (side === 'sell' ? 1 - SHADOW_CONFIG.defaultTPDistance : 1 + SHADOW_CONFIG.defaultTPDistance);
+    // v2.0.873-P9-mfe-expose-attack（V3）: persisted mfePct/maePct 1e308 clamp——
+    // 極值比例合理範圍 [0, 0.5]; 負數/NaN → 0。污染值唔可以由 load 滲入 getStats。
+    const exc = (v: unknown): number =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.min(Math.max(v, 0), 0.5) : 0;
     return {
       ...p,
       symbol: sym,
       side,
       stopLossPrice: sl,
       takeProfitPrice: tp,
+      mfePct: exc(p['mfePct']),
+      maePct: exc(p['maePct']),
     };
   }
 
@@ -1561,37 +1567,44 @@ export class ShadowTradeEngine {
     // avgMfe/avgMae——checkPositions 每 cycle 用 tick/candle 極值更新 mfePct/maePct,
     // 係真實數據（唔係猜測）。舊 code step 1 唔入帳 → 純 open 倉 symbol（新開 shadow）
     // avg 顯示 0.0% 誤導（SNDK 實際 MFE 1.5% 顯示 0.0%——實驗 A 實證）。
+    // v2.0.873-P9-mfe-expose-attack（V1/V3）: 入帳必須 clamp——mfePct/maePct 係極值比例,
+    // 合理範圍 [0, 0.5]（50%——最大單向極值;1e308/10（1000%）係污染,唔可以入 avg 撐爆）。
+    // 負數亦無意義（MFE/MAE 係最壞/最好距離,唔可以負）。
+    const clampExcursion = (v: number | undefined): number =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.min(Math.max(v, 0), 0.5) : 0;
     for (const pos of this.positions) {
       if (pos.status !== 'open') continue;
       const s = getOrCreate(pos.symbol);
       s.totalOpened++;
       s.openCount++;
-      if (Number.isFinite(pos.mfePct)) s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + pos.mfePct) / s.totalOpened;
-      if (Number.isFinite(pos.maePct)) s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + pos.maePct) / s.totalOpened;
+      s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + clampExcursion(pos.mfePct)) / s.totalOpened;
+      s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + clampExcursion(pos.maePct)) / s.totalOpened;
     }
 
     // 2. Resolved positions still in memory — v2.0.870-sell-decay: 只貢獻 avg 指標
     //    （holdCycles/mfe/mae）。win/loss 由持久化 decayed statsBySymbolSide 負責
     //    （step 4）——避免雙重計算 + 令 WR 反映近期而唔係記憶體殘留。
+    //    v2.0.873-P9-mfe-expose-attack: 同 step 1 一致 clamp（resolved 1e308 唔可以入 avg）。
     for (const pos of this.positions) {
       if (pos.status === 'open') continue;
       const s = getOrCreate(pos.symbol);
       const holdCycles = (pos.resolvedCycle ?? pos.openCycle) - pos.openCycle;
       s.totalOpened++;
       s.avgHoldCycles = (s.avgHoldCycles * (s.totalOpened - 1) + holdCycles) / s.totalOpened;
-      if (pos.mfePct !== undefined) s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + pos.mfePct) / s.totalOpened;
-      if (pos.maePct !== undefined) s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + pos.maePct) / s.totalOpened;
+      s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + clampExcursion(pos.mfePct)) / s.totalOpened;
+      s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + clampExcursion(pos.maePct)) / s.totalOpened;
     }
 
     // 3. Recent results (survives restart) — avg-only, same rationale as step 2
+    //    v2.0.873-P9-mfe-expose-attack: clamp 同 step 1/2（recentResults 1e308 唔可以入 avg）。
     for (const r of this.recentResults) {
       // v2.0.869-P2(主神 刁鑽攻擊):null/非物件樣本 skip——唔 crash
       if (!r || typeof r !== 'object') continue;
       const s = getOrCreate(r.symbol);
       s.totalOpened++;
       s.avgHoldCycles = (s.avgHoldCycles * (s.totalOpened - 1) + r.holdCycles) / s.totalOpened;
-      if (r.mfePct !== undefined) s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + r.mfePct) / s.totalOpened;
-      if (r.maePct !== undefined) s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + r.maePct) / s.totalOpened;
+      s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + clampExcursion(r.mfePct)) / s.totalOpened;
+      s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + clampExcursion(r.maePct)) / s.totalOpened;
     }
 
     // 4. v2.0.870-sell-decay: DECAYED persistent stats — the authoritative win/loss
