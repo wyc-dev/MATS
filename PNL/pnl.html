@@ -135,6 +135,21 @@
   .qr-item canvas, .qr-item img { border-radius: 6px; border: 1px solid var(--border); }
   .qr-item .qr-ico { display: flex; align-items: center; justify-content: center; color: var(--muted); line-height: 1; }
   .qr-item .qr-ico:hover { color: var(--text); }
+
+  /* ═══ Print（Ctrl+P → PDF）——dark theme 轉 light，防全黑 ═══ */
+  @media print {
+    :root {
+      --bg: #ffffff;
+      --surface: #f5f5f5;
+      --border: rgba(0,0,0,0.1);
+      --text: #111111;
+      --muted: #555555;
+    }
+    body { background: #fff; color: #111; padding: 0; }
+    .switch-btn, .btn, .capture-drop, .qr-item, .footer { display: none !important; }
+    .trade-card { break-inside: avoid; }
+    .chart-wrap canvas { background: #fff; }
+  }
 </style>
 </head>
 <body>
@@ -657,6 +672,12 @@ async function capture(fmt) {
         onclone: (doc) => {
           // 移除 unload violation 來源(html2canvas 內部 window unload handler)
           try { doc.defaultView.onbeforeunload = null; } catch { /* non-fatal */ }
+          // v2.0.873-pnl-capture-fix: 隱藏 SVG icon（lucide + MATS_icon.svg）——
+          // html2canvas 1.4.1 對 SVG 渲染唔穩定，會令成個 canvas 空白。
+          // 隱藏後 capture 照樣有文字/圖表/記錄，只係冇 icon。
+          try {
+            doc.querySelectorAll('svg, .mats-icon').forEach((el) => { el.style.display = 'none'; });
+          } catch { /* non-fatal */ }
         },
       });
       if (title) title.classList.remove('no-anim');
@@ -716,9 +737,16 @@ function download(dataUrl) {
 }
 
 // load html2canvas lazily on capture (offline fallback = canvas only)
+// v2.0.873-pnl-capture-fix: unpkg 做主 CDN（同 lucide 一致，jsdelivr 喺部分地區被 block）
+// + jsdelivr fallback——兩個都 fail 先 fallback 到 chart canvas。
 const script = document.createElement('script');
-script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
-script.onerror = () => { /* offline — fallback to canvas capture */ };
+script.src = 'https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js';
+script.onerror = () => {
+  const s2 = document.createElement('script');
+  s2.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+  s2.onerror = () => { /* offline — fallback to canvas capture */ };
+  document.head.appendChild(s2);
+};
 document.head.appendChild(script);
 
 // ═══ Trade Records(每筆交易——unit-aware)═══
