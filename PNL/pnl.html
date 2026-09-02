@@ -648,18 +648,38 @@ async function capture(fmt) {
       // 動態 scale:長頁面 scale 1 防記憶體爆;PDF 強制 scale 1(唔使高清 + 防 hang)
       const rootH = root.offsetHeight || 0;
       const scale = (fmt === 'pdf' || rootH > 2500) ? 1 : 2;
-      const canvas = await html2canvas(root, {
-        backgroundColor: '#0a0a0f',
-        scale,
-        logging: false,
-        // v2.0.873-pnl-density-fix: 移除 windowWidth/windowHeight（scrollHeight 過萬 px
-        // 令 html2canvas 對長頁面（1 MONTH ~100 筆記錄）渲染失敗 → 全黑/空白）。
-        // html2canvas 會自動用 root 元素嘅實際尺寸，唔使手動設 viewport。
-        onclone: (doc) => {
-          // 移除 unload violation 來源(html2canvas 內部 window unload handler)
-          try { doc.defaultView.onbeforeunload = null; } catch { /* non-fatal */ }
-        },
-      });
+      // v2.0.873-pnl-density-fix: 長頁面分 chunk capture——html2canvas 對 >~5000px
+      // 頁面（1 MONTH ~100 筆記錄）渲染失敗 → 全黑/空白。拆成 2000px 一段逐段 capture
+      // 再拼接，避開長頁面限制。
+      const CHUNK_H = 2000;
+      const chunks = Math.ceil(rootH / CHUNK_H);
+      const onclone = (doc) => {
+        // 移除 unload violation 來源(html2canvas 內部 window unload handler)
+        try { doc.defaultView.onbeforeunload = null; } catch { /* non-fatal */ }
+      };
+      let canvas;
+      if (chunks <= 1) {
+        canvas = await html2canvas(root, { backgroundColor: '#0a0a0f', scale, logging: false, onclone });
+      } else {
+        const parts = [];
+        for (let i = 0; i < chunks; i++) {
+          const y = i * CHUNK_H;
+          const h = Math.min(CHUNK_H, rootH - y);
+          const c = await html2canvas(root, { backgroundColor: '#0a0a0f', scale, logging: false, y, height: h, onclone });
+          parts.push(c);
+        }
+        // 拼接 chunks 成完整 canvas
+        const totalH = parts.reduce((s, c) => s + c.height, 0);
+        canvas = document.createElement('canvas');
+        canvas.width = parts[0].width;
+        canvas.height = totalH;
+        const sctx = canvas.getContext('2d');
+        let yOff = 0;
+        for (const c of parts) {
+          sctx.drawImage(c, 0, yOff);
+          yOff += c.height;
+        }
+      }
       if (title) title.classList.remove('no-anim');
       if (fmt === 'pdf' && window.jspdf) {
         // v2.0.868-fix:每頁獨立截取 canvas 子區域——每頁都有 top+bottom margin、
@@ -672,7 +692,7 @@ async function capture(fmt) {
         const availH = ph - 2 * M;
         // 每頁顯示嘅 canvas 高度(像素)——保持比例
         const pageCanvasH = Math.floor(availH * canvas.width / availW);
-        const MAX_PAGES = 30;
+        const MAX_PAGES = 60; // v2.0.873-pnl-density-fix: 300+ 紀錄 ~34 頁，30 唔夠
         let srcY = 0, page = 0;
         while (srcY < canvas.height && page < MAX_PAGES) {
           const h = Math.min(pageCanvasH, canvas.height - srcY);
