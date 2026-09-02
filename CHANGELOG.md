@@ -4,6 +4,29 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-edge-evolution: System Engineer 解放——831 VERIFY-FIRST 授權 + harness 權限升級（主神 2026-09-02「我本身要 System Engineer 做嘅嘢唔係單純困於 831.md,831.md 只係例子,我係希望佢可以不斷演化對 edge 嘅觸覺」）
+
+**兩層改動（fa1b55c docs + 132cfc6 feat）——將 SE 由「被動修 bug」升級為「主動獵取超額盈利嘅 edge hunter」**:
+
+### ① SystemEngineer.md 授權 831 VERIFY-FIRST WORKFLOW（docs 層）
+- **Owner's Directive 新增最高優先權章節**「831.md VERIFY-FIRST WORKFLOW」——執行權限（寫 PLAN_*.md / 寫+執行 scripts/*-experiment.ts / 用實驗裁決 / 改 831.md append §N / 全樣本誠實重放）;五步流程（PLAN → 實驗 → 三關 → 裁決 → 實作+同步）;831 紀律（零 look-ahead / 全樣本誠實 / data-snooping 防線 / 樣本門檻 n≥15 / 已證偽源唔做 gate 基礎）
+- **快速路徑**（bug fix/顯示歸因層/攻擊輪）vs **強制 831 全流程**（新 gate/組件/threshold/feature）分流
+- Scope ALLOW 加 scripts/*-experiment.ts、PLAN_*.md、831.md、SystemEngineer.md、三文檔;North Star/Execution Flow/Output Format（verifyFirst 字段）/Known Good Code/Rules Rule 15/Anti-Patterns 全鏈同步
+- 831.md 補記記錄格式明文化（append §N）
+
+### ② harness 解放（code 層——src/evolution/system-engineer.ts, +86/−7）
+- **Scope 擴展**: ALLOWED_PREFIXES 加 `scripts/`（edge 實驗 script）+ `PLAN_*.md` + `831.md` + `SystemEngineer.md` + `AGENT_PROMPT.md`/`ARCHITECTURE.md`;FORBIDDEN 補 `src/edge/`（v2.0.833 owner-controlled）+ `CHANGELOG.md`（harness 專責——SE 提供 changelogEntry,harness 插入）
+- **新檔支持**: apply 段加 `creatingNewFile`——SE 用 `oldCode='((new file))'` 建立新檔（scripts/*-experiment.ts / PLAN_*.md / 831.md 補記）;mkdir recursive;跳過 existsSync fail + oldCode match;直接寫 newCode
+- **實驗執行能力**: tsc 通過後,若係 scripts/ 新檔 → harness 實際執行 `npx tsx <file>`（120s timeout,head 800 字符記 log）——**SE 唔止有權寫 experiment,仲有能力執行**（edge 觸覺 = 寫→跑→睇結果→修正閉環）;實驗 fail 唔 rollback（探索性容忍,結果供下輪修正）
+- **EDGE EVOLUTION AUTHORITY prompt**（最高優先權章節）: 831 只係底線唔係上限;主動 hunt edge（shadow stats 分佈 / per-side EV / gate 誤傷率 / 時段-condition EV / price 幾何特徵）;候選 edge → script 驗證（ρ sweep/分桶/三關）→ 有預測力先實作;已證偽源（OLR ρ=+0.02 / FP / Q-RL ρ=+0.0064）唔嘥時間
+- **保衛不變**: src/trading/（執行/SL/TP）+ src/config/（風險）+ src/data/（feed）+ src/api-server.ts + .env 仍然 FORBIDDEN——資本安全紅線冇解放;Five Absolute Rules 仍喺 prompt 最高優先權
+
+**⚠️ 過程誠實記錄**: 首次 edit 整出 catch-block 重複（tsc 過但 esbuild/vitest 炸,26 個 v2.0.860 test collect fail）——即時修復;最終與 stash 原版完全一致。
+
+**驗證**: 全量 **4039 pass + 13 pre-existing（零 regression）**;tsc clean;實驗執行路徑（scripts/ 新檔 npx tsx 驗證）已內建 harness（無新測試——config/prompt 層改動,行為由既有測試覆蓋）。
+
+---
+
 ## v2.0.873-P9-mfe-expose-attack: 攻擊輪——6 真漏洞全修（主神 2026-09-02「不擇手段攻擊啱啱修葺嘅 code」）
 
 **紅先 10 攻擊測試 → 6 fail 真漏洞全修**（全部係啱啱修葺嘅 avgMfe 入帳 + gate 歸因語義嘅周邊防禦缺口）:
