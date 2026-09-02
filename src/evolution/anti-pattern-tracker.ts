@@ -86,7 +86,7 @@ export class AntiPatternTracker {
         holdMin: r.holdMin ?? 0,
         closeReason: (r as any).exitType ?? (r as any).closeReason ?? null,
         pnlPct: r.pnlPct ?? 0,
-        hourOfDay: r.ts ? new Date(r.ts).getHours() : undefined,
+        hourOfDay: r.ts ? new Date(r.ts).getHours() : undefined, // 🕐 SERVER LOCAL hour（而家 HK GMT+8; 改 server TZ 會變）
       });
     });
     try {
@@ -130,7 +130,7 @@ export class AntiPatternTracker {
           holdMin: rec.holdMin ?? 0,
           closeReason: (rec as any).exitType ?? (rec as any).closeReason ?? null,
           pnlPct: rec.pnlPct ?? 0,
-          hourOfDay: rec.ts ? new Date(rec.ts).getHours() : undefined,
+          hourOfDay: rec.ts ? new Date(rec.ts).getHours() : undefined, // 🕐 SERVER LOCAL hour（而家 HK GMT+8）
         });
     if (!rec.lesson || rec.lesson.trim().length === 0) {
       rec.lesson = lessonText; // persist for downstream display

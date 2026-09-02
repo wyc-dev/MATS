@@ -73,7 +73,7 @@ export class TradeHistory {
     const record: TradeHistoryEntry = {
       ...entry,
       id: uuidv4(),
-      timestamp: Date.now(),
+      timestamp: Date.now(), // 🕐 UTC epoch ms（儲存層一律 UTC——UI/日誌顯示先轉 HK）
     };
     this.entries.push(record);
 

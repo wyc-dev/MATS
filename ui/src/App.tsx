@@ -24,6 +24,13 @@ function getBStockForSymbol(sym: string): string | null {
   return bStockTickerMap[ticker] ?? null
 }
 
+/**
+ * 🕐 TIMEZONE: Local display = Asia/Hong_Kong (GMT+8) — EXPLICIT conversion.
+ * 入參 ts = epoch ms (UTC 基準, 儲存層一律 UTC)。呢度用 timeZone 參數顯式轉
+ * HK 本地鐘——trade openedAt/closedAt 顯示喺 UI 一定係 HK 時間。
+ * (對照: 儲存/決策層用 UTC epoch ms; 後端 getHours() 係 server local——而家 server
+ * TZ 就係 Asia/Hong_Kong, 若改 server TZ 呢啲位要一齊改。)
+ */
 function formatHKTime(ts: number): string {
   return new Date(ts).toLocaleString('en-US', {
     timeZone: 'Asia/Hong_Kong',

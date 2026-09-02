@@ -217,7 +217,7 @@ const FEEDBACK_LOG = join(PROJECT_ROOT, 'SYSTEM_ENGINEER_FEEDBACK.md');
 
 function logFeedback(phase: string, result: string, title: string, file: string, details: string): void {
   try {
-    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19); // 🕐 UTC ISO（log 用）
     const entry = `\n## [${ts}] [${phase}] [${result}]\n\n- **Title**: ${title}\n- **File**: ${file}\n- **Details**: ${details}\n\n---\n`;
     // v2.0.230: Prepend new entries after the header (latest at top)
     const existing = readFileSync(FEEDBACK_LOG, 'utf-8');

@@ -574,7 +574,7 @@ export class HyperliquidEngine implements RealTradingEngine {
                   return priceDiff < 0.005;
                 });
                 if (matchingFill) {
-                  log.info(`[getPositions] Found open fill for ${p.coin} via wider 30-day search: ${new Date(matchingFill.timestamp).toISOString()}`);
+                  log.info(`[getPositions] Found open fill for ${p.coin} via wider 30-day search: ${new Date(matchingFill.timestamp).toISOString()}`); // 🕐 UTC ISO
                 }
               } catch { /* non-critical — fall through to fallback */ }
             }

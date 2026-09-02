@@ -317,7 +317,7 @@ export class CycleSummaryManager {
     lines.push('Use this to maintain continuity — reference the previous insight when forming your own.\n');
 
     for (const s of recent) {
-      const date = new Date(s.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+      const date = new Date(s.timestamp).toISOString().replace('T', ' ').slice(0, 19); // 🕐 UTC ISO（log 顯示用 UTC——如需 HK 加 timeZone 轉換）
       const arrow = s.primarySignal.direction === 'bullish' ? '🟢' : s.primarySignal.direction === 'bearish' ? '🔴' : '⚪';
       lines.push(`  Cycle #${s.cycleNumber} [${date}]`);
       lines.push(`    Insight: "${s.keyInsight}"`);
