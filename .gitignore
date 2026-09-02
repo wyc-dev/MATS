@@ -133,3 +133,6 @@ PLAN_size-up-high-confidence.md
 PLAN_sr-distance-size-gate.md
 PLAN_reentry-cooldown.md
 PLAN_*.md
+# 通用 PLAN pattern（任何目錄、任何命名——主神 2026-09-01「唔要有任何 PLAN 外泄」）
+*PLAN*.md
+*plan*.md
