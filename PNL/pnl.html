@@ -135,6 +135,21 @@
   .qr-item canvas, .qr-item img { border-radius: 6px; border: 1px solid var(--border); }
   .qr-item .qr-ico { display: flex; align-items: center; justify-content: center; color: var(--muted); line-height: 1; }
   .qr-item .qr-ico:hover { color: var(--text); }
+
+  /* ═══ Print（window.print() → PDF）——dark theme 轉 light，防全黑 ═══ */
+  @media print {
+    :root {
+      --bg: #ffffff;
+      --surface: #f5f5f5;
+      --border: rgba(0,0,0,0.1);
+      --text: #111111;
+      --muted: #555555;
+    }
+    body { background: #fff; color: #111; padding: 0; }
+    .switch-btn, .btn, .capture-drop, .qr-item, .footer { display: none !important; }
+    .trade-card { break-inside: avoid; }
+    .chart-wrap canvas { background: #fff; }
+  }
 </style>
 </head>
 <body>
@@ -642,16 +657,21 @@ async function capture(fmt) {
   const root = document.getElementById('capture-root');
   const title = document.getElementById('title-text');
   try {
+    // v2.0.873-pnl-density-fix: PDF 用瀏覽器原生 print（對長頁面冇 canvas 限制——
+    // html2canvas 對 30000px 頁面有硬限制，點 scale 都唔得）
+    if (fmt === 'pdf') {
+      window.print();
+      return;
+    }
     if (window.html2canvas) {
       if (title) title.classList.add('no-anim');
       await new Promise(r => setTimeout(r, 50));
-      // 動態 scale:長頁面 scale 1 防記憶體爆;PDF 強制 scale 1(唔使高清 + 防 hang)
+      // 動態 scale:長頁面 scale 1 防記憶體爆
       const rootH = root.offsetHeight || 0;
-      // v2.0.873-pnl-density-fix: 瀏覽器 canvas 高度上限 ~16384px——1 MONTH 頁面
-      // ~30000px，scale=1 令 canvas 超上限 → 建立失敗 → 空白/全黑。
-      // 動態 scale 壓到 16000px 以下（scale 細咗 = 分辨率低咗，但 PDF/PNG 照樣可用）。
+      // v2.0.873-pnl-density-fix: 瀏覽器 canvas 高度上限 ~16384px——長頁面
+      // 動態 scale 壓到 16000px 以下（PNG 用）
       const MAX_CANVAS_H = 16000;
-      const baseScale = (fmt === 'pdf' || rootH > 2500) ? 1 : 2;
+      const baseScale = rootH > 2500 ? 1 : 2;
       const scale = Math.min(baseScale, MAX_CANVAS_H / Math.max(1, rootH));
       const canvas = await html2canvas(root, {
         backgroundColor: '#0a0a0f',
@@ -663,40 +683,7 @@ async function capture(fmt) {
         },
       });
       if (title) title.classList.remove('no-anim');
-      if (fmt === 'pdf' && window.jspdf) {
-        // v2.0.868-fix:每頁獨立截取 canvas 子區域——每頁都有 top+bottom margin、
-        // 無縫接合(冇頁尾/頁頭重複)、深色背景、頁數上限防 hang
-        const pdf = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-        const pw = pdf.internal.pageSize.getWidth();
-        const ph = pdf.internal.pageSize.getHeight();
-        const M = 10; // margin mm(上下左右每頁一致)
-        const availW = pw - 2 * M;
-        const availH = ph - 2 * M;
-        // 每頁顯示嘅 canvas 高度(像素)——保持比例
-        const pageCanvasH = Math.floor(availH * canvas.width / availW);
-        const MAX_PAGES = 60; // v2.0.873-pnl-density-fix: 300+ 紀錄 ~34 頁，30 唔夠
-        let srcY = 0, page = 0;
-        while (srcY < canvas.height && page < MAX_PAGES) {
-          const h = Math.min(pageCanvasH, canvas.height - srcY);
-          // 截取 canvas 子區域(獨立一頁——唔係「圖向上移」)
-          const tmp = document.createElement('canvas');
-          tmp.width = canvas.width; tmp.height = h;
-          const tctx = tmp.getContext('2d');
-          tctx.drawImage(canvas, 0, srcY, canvas.width, h, 0, 0, canvas.width, h);
-          const pageImg = tmp.toDataURL('image/jpeg', 0.9);
-          if (page > 0) pdf.addPage();
-          // 深色頁背景(防白底)
-          pdf.setFillColor(10, 10, 15);
-          pdf.rect(0, 0, pw, ph, 'F');
-          // 每頁都放喺 (M, M)——top+bottom margin 一致
-          pdf.addImage(pageImg, 'JPEG', M, M, availW, availH * (h / pageCanvasH), undefined, 'FAST');
-          srcY += h;
-          page++;
-        }
-        pdf.save(`MATS-PnL-${mode}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.pdf`);
-      } else {
-        download(canvas.toDataURL('image/png'));
-      }
+      download(canvas.toDataURL('image/png'));
       return;
     }
     const c = document.getElementById('chart');
