@@ -4,6 +4,16 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-pnl-capture: PNL 長頁面 capture/PDF 修復（主神 PNL 時段系列後續——30000px 頁面）
+
+**問題**: PNL 1 MONTH ~30000px 頁面——html2canvas 對 canvas 高度 16384px 有硬上限 → capture 全黑/空白/hang;PDF 走 html2canvas+jsPDF 同樣受限。
+
+**試錯路線（5 步 + 2 revert，誠實記錄）**: chunk capture（y/height）hang 死 revert → 移除 windowWidth/windowHeight（scrollHeight 過萬 px 令 html2canvas 長頁面渲染失敗）→ chunk capture 300+ 紀錄 + MAX_PAGES 30→60 → 動態 scale 壓 canvas 到 16000px 以下 ——全部未解决 jsPDF 30000px 硬限制 → 最終（bc139ad）**兩路方案**: 短頁面（≤10000px）保留 html2canvas+jsPDF（keep LOGO/QR）;長頁面（>10000px）改用瀏覽器原生 `window.print()`（無 canvas/PDF 上限,@media print 白底）。
+
+**驗證**: 純 `PNL/pnl.html` UI 改動（零後端/零測試影響）;全量 3999 pass + 13 pre-existing 不變。
+
+---
+
 ## v2.0.873-P9-sr-size-unify: sr-size-gate 統一入 applyEntryConvictionGates（方案 B——主神 2026-09-01）
 
 **根因**: sr-size-gate（P9-sr-size，SELL 貼 S/R 縮 size）只接咗 executeTrade（active 路徑），per-symbol consensus 同 exploration 路徑 bypass——09-01 18:45 DRAM SELL −8.0% 追跌尾（S/R 距離 0.13% < 0.35% 應該縮但冇縮）。
