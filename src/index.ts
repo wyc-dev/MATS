@@ -8680,8 +8680,15 @@ ${recentExamples}
       }
       log.info(`Cycle symbols: ${allSymbols.join(', ')} (active: ${activeSymbol})`);
       // v2.0.104: Store additional non-position trading markets to inject into currentPositions
-      (this as any)._additionalMarkets = nonPositionMarkets.filter(s => s !== activeSymbol);
-      log.info(`📊 _additionalMarkets: [${((this as any)._additionalMarkets as string[]).join(', ')}] (tradingMarkets=${this.tradingMarkets.length}, nonPosition=${nonPositionMarkets.length})`);
+      // v2.0.873-P9-sym-coverage（主神 2026-09-02「BTC & BNB 咁耐無開倉係正常的嗎」）:
+      // 唔再剔走 activeSymbol——agents 嘅 marketTicker 跟 selectedSymbol（用戶手動鎖定
+      // 後可以 ≠ activeSymbol）;剔除 activeSymbol 會令兩者唔一致時（如 selectedSymbol=SKHX,
+      // activeSymbol=btc）BTC 同時跌出 marketTicker 同 _additionalMarkets——agents 完全
+      // 見唔到 BTC → 冇 quote → 8 日零開倉。而家全部 non-position markets 注入
+      // （含 activeSymbol）——agents 對所有 tradingMarkets 都有 quote 機會;
+      // currentPositions 注入層嘅 existingSyms dedup + HACP perSymbolMap Map merge 天然防重複。
+      (this as any)._additionalMarkets = nonPositionMarkets;
+      log.info(`📊 _additionalMarkets: [${((this as any)._additionalMarkets as string[]).join(', ')}] (tradingMarkets=${this.tradingMarkets.length}, nonPosition=${nonPositionMarkets.length}, active=${activeSymbol})`);
       // v2.0.108: Record market count at cycle start for post-cycle drift detection
       // v2.0.858-attack: snapshot the FULL symbol list — drift detection now
       // diffs symbol sets (add+remove same count must still trigger).

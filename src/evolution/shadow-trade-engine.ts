@@ -243,14 +243,18 @@ export class ShadowTradeEngine {
    *
    *  @returns true if at least one blind was evicted (caller may open).
    */
-  private evictOldestBlindForRoom(): boolean {
+  /** evict 最舊 blind——preferSide 指定時只 evict 該方向（sell 讓位專用） */
+  private evictOldestBlindForRoom(preferSide?: 'buy' | 'sell'): boolean {
     if (!shadowEvictConfig.enabled) return false;
     const openCount = this.positions.filter(p => p.status === 'open').length;
     if (openCount < SHADOW_CONFIG.maxTotalOpen) return false;
 
     // Candidates: open blinds that have NOT touched SL or TP yet.
+    // v2.0.873-P9-sell-unblock: preferSide='buy' → 只 evict buy blind（sell 樣本要有出口,
+    // 唔可以 evict 賣走僅餘嘅 sell 樣本）。
     const candidates = this.positions.filter(p => {
       if (p.status !== 'open' || p.shadowType !== 'blind') return false;
+      if (preferSide && p.side !== preferSide) return false;
       if (p.side === 'buy') {
         if (p.lowSinceOpen <= p.stopLossPrice) return false;
         if (p.highSinceOpen >= p.takeProfitPrice) return false;
@@ -395,6 +399,15 @@ export class ShadowTradeEngine {
   }
 
   /**
+   * v2.0.873-P9-sell-unblock: per-side open count（只計指定 symbol×side 嘅 open）。
+   * 分 side 計數係 sell 樣本餓死嘅根治——舊 code 用「全 symbol 合計」上限,
+   * buy 佔滿 10 位後連 seeded sell 都開唔到（死亡螺旋）;而家 buy/sell 各自 10 位。
+   */
+  private countOpenBySide(symbol: string, side: 'buy' | 'sell'): number {
+    return this.positions.filter(p => p.symbol === symbol && p.status === 'open' && p.side === side).length;
+  }
+
+  /**
    * Open shadow positions for the given symbol in BOTH directions.
    * Called every cycle for the active symbol.
    *
@@ -433,10 +446,19 @@ export class ShadowTradeEngine {
 
     // Check limits
     const sym = symbol.toLowerCase();
-    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
-    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    // v2.0.873-P9-sell-unblock（方案 C）: per-side 上限——buy/sell 各自 maxOpenPerSymbol 位。
+    // 舊 code「全 symbol 合計 10」令 buy 佔滿後連 sell 都開唔到（死亡螺旋）;
+    // 而家 buy/sell 各自計——sell 永遠有自己嘅樣本出口（buy 滿 10 時照開 sell）。
+    const symBuyOpen = this.countOpenBySide(sym, 'buy');
+    const symSellOpen = this.countOpenBySide(sym, 'sell');
+    const wantBuy = symBuyOpen < SHADOW_CONFIG.maxOpenPerSymbol;
+    const wantSell = symSellOpen < SHADOW_CONFIG.maxOpenPerSymbol;
+    if (!wantBuy && !wantSell) return;
+    // v2.0.861 不變式: blind 係最低優先——池滿時直接 reject, 唔可以 self-evict。
+    // sell 樣本餓死由兩層解決: ①per-side 上限（此處）——buy 滿唔再擋 sell;
+    //  ②seeded/aligned/statistical/qrl sell 撞池滿時先 evict buy-blind（高優先路徑）。
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
-    if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) return;
+    if (totalOpen + (wantBuy ? 1 : 0) + (wantSell ? 1 : 0) > SHADOW_CONFIG.maxTotalOpen) return;
 
     const ts = Date.now();
 
@@ -472,53 +494,59 @@ export class ShadowTradeEngine {
     const shortSL = freshSLPriceShort && freshSLPriceShort > 0 ? freshSLPriceShort : entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance);
     const shortTP = freshTPPriceShort && freshTPPriceShort > 0 ? freshTPPriceShort : entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance);
 
-    // Open shadow LONG
-    const longId = `shadow_${++this.idCounter}`;
-    this.positions.push({
-      id: longId,
-      symbol: sym,
-      side: 'buy',
-      entryPrice,
-      stopLossPrice: longSL,
-      takeProfitPrice: longTP,
-      openCycle: cycle,
-      openTimestamp: ts,
-      features: { ...features },
-      status: 'open',
-      slNarrowed: false,
-      originalSL: longSL,
-      originalTP: longTP,
-      highSinceOpen: entryPrice,
-      lowSinceOpen: entryPrice,
-      mfePct: 0,
-      maePct: 0,
-      shadowType: 'blind',
-    });
-    log.debug(`[shadow] Opened BLIND LONG ${sym} at ${entryPrice.toFixed(2)} (SL=${longSL.toFixed(2)}, TP=${longTP.toFixed(2)})`);
+    // Open shadow LONG（buy side 有位先開——per-side 上限）
+    const canOpenBuy = this.countOpenBySide(sym, 'buy') < SHADOW_CONFIG.maxOpenPerSymbol;
+    if (canOpenBuy) {
+      const longId = `shadow_${++this.idCounter}`;
+      this.positions.push({
+        id: longId,
+        symbol: sym,
+        side: 'buy',
+        entryPrice,
+        stopLossPrice: longSL,
+        takeProfitPrice: longTP,
+        openCycle: cycle,
+        openTimestamp: ts,
+        features: { ...features },
+        status: 'open',
+        slNarrowed: false,
+        originalSL: longSL,
+        originalTP: longTP,
+        highSinceOpen: entryPrice,
+        lowSinceOpen: entryPrice,
+        mfePct: 0,
+        maePct: 0,
+        shadowType: 'blind',
+      });
+      log.debug(`[shadow] Opened BLIND LONG ${sym} at ${entryPrice.toFixed(2)} (SL=${longSL.toFixed(2)}, TP=${longTP.toFixed(2)})`);
+    }
 
-    // Open shadow SHORT
-    const shortId = `shadow_${++this.idCounter}`;
-    this.positions.push({
-      id: shortId,
-      symbol: sym,
-      side: 'sell',
-      entryPrice,
-      stopLossPrice: shortSL,
-      takeProfitPrice: shortTP,
-      openCycle: cycle,
-      openTimestamp: ts,
-      features: { ...features },
-      status: 'open',
-      slNarrowed: false,
-      originalSL: shortSL,
-      originalTP: shortTP,
-      highSinceOpen: entryPrice,
-      lowSinceOpen: entryPrice,
-      mfePct: 0,
-      maePct: 0,
-      shadowType: 'blind',
-    });
-    log.debug(`[shadow] Opened BLIND SHORT ${sym} at ${entryPrice.toFixed(2)} (SL=${shortSL.toFixed(2)}, TP=${shortTP.toFixed(2)})`);
+    // Open shadow SHORT（sell side 有位先開——per-side 上限;buy 滿咗照樣俾 sell 樣本流入）
+    const canOpenSell = this.countOpenBySide(sym, 'sell') < SHADOW_CONFIG.maxOpenPerSymbol;
+    if (canOpenSell) {
+      const shortId = `shadow_${++this.idCounter}`;
+      this.positions.push({
+        id: shortId,
+        symbol: sym,
+        side: 'sell',
+        entryPrice,
+        stopLossPrice: shortSL,
+        takeProfitPrice: shortTP,
+        openCycle: cycle,
+        openTimestamp: ts,
+        features: { ...features },
+        status: 'open',
+        slNarrowed: false,
+        originalSL: shortSL,
+        originalTP: shortTP,
+        highSinceOpen: entryPrice,
+        lowSinceOpen: entryPrice,
+        mfePct: 0,
+        maePct: 0,
+        shadowType: 'blind',
+      });
+      log.debug(`[shadow] Opened BLIND SHORT ${sym} at ${entryPrice.toFixed(2)} (SL=${shortSL.toFixed(2)}, TP=${shortTP.toFixed(2)})`);
+    }
 
     // Prune old resolved positions (keep all open + last 100 resolved).
     // O(n) single-pass (L3 fix) — the previous indexOf-based filter was O(n²).
@@ -574,13 +602,14 @@ export class ShadowTradeEngine {
     if (existing) return;
 
     // Check limits (statistical shadows share the same pool).
-    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
-    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    // v2.0.873-P9-sell-unblock: per-side 上限——buy/sell 各自計, buy 佔滿唔再擋 sell。
+    if (this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
       // v2.0.861: priority eviction — a true-statistical shadow outranks the
       // oldest unevicted blind cold-start prior (0.1×). Evict → open.
-      if (!this.evictOldestBlindForRoom()) return;
+      // v2.0.873-P9-sell-unblock: sell 需求 → 優先 evict buy-blind（sell 樣本要有出口）
+      if (!this.evictOldestBlindForRoom(side === 'sell' ? 'buy' : undefined)) return;
     }
 
     const ts = Date.now();
@@ -668,11 +697,14 @@ export class ShadowTradeEngine {
     if (recentSeeded) return;
 
     // Limits (share the same pool as other shadows)
-    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
-    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    // v2.0.873-P9-sell-unblock（方案 B）: seeded SELL bypass per-symbol 上限——
+    // sell 樣本餓死嘅根治: 跌市強制播種嘅 sell 唔可以被 buy 佔位擋住（只受全局池+cooldown）。
+    // seeded BUY 照舊 per-side 上限（buy 樣本唔缺, 唔需要 bypass）。
+    if (side !== 'sell' && this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
-      if (!this.evictOldestBlindForRoom()) return;
+      // sell 需求 → 優先 evict buy-blind（sell 樣本要有出口; 唔可以 evict 走僅餘 sell）
+      if (!this.evictOldestBlindForRoom(side === 'sell' ? 'buy' : undefined)) return;
     }
 
     const ts = Date.now();
@@ -747,13 +779,14 @@ export class ShadowTradeEngine {
     if (existing) return;
 
     // Check limits (Q-RL shadows share the same pool).
-    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
-    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    // v2.0.873-P9-sell-unblock: per-side 上限——buy/sell 各自計, buy 佔滿唔再擋 sell。
+    if (this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
       // v2.0.861: priority eviction — the Q-RL expectancy A/B arm outranks the
       // oldest unevicted blind cold-start prior. Evict → open.
-      if (!this.evictOldestBlindForRoom()) return;
+      // v2.0.873-P9-sell-unblock: sell 需求 → 優先 evict buy-blind（sell 樣本要有出口）
+      if (!this.evictOldestBlindForRoom(side === 'sell' ? 'buy' : undefined)) return;
     }
 
     const ts = Date.now();
@@ -865,8 +898,8 @@ export class ShadowTradeEngine {
     if (existing) return;
 
     // Check limits (aligned shadows count toward the same pool).
-    const symOpen = this.positions.filter(p => p.symbol === sym && p.status === 'open').length;
-    if (symOpen >= SHADOW_CONFIG.maxOpenPerSymbol) return;
+    // v2.0.873-P9-sell-unblock: per-side 上限——buy/sell 各自計, buy 佔滿唔再擋 sell。
+    if (this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     // v2.0.861: aligned shadows previously had NO global total cap — only
     // per-symbol. With LLM leans this rarely matters, but it is a latent
     // unbounded-growth vector (a burst of lean cycles could exceed the pool
@@ -875,7 +908,8 @@ export class ShadowTradeEngine {
     // outranks the oldest unevicted blind cold-start prior.
     const totalOpen = this.positions.filter(p => p.status === 'open').length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
-      if (!this.evictOldestBlindForRoom()) return;
+      // v2.0.873-P9-sell-unblock: sell 需求 → 優先 evict buy-blind（sell 樣本要有出口）
+      if (!this.evictOldestBlindForRoom(side === 'sell' ? 'buy' : undefined)) return;
     }
     const ts = Date.now();
     const id = `aligned_${++this.idCounter}`;
