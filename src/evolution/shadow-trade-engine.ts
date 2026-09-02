@@ -1557,11 +1557,17 @@ export class ShadowTradeEngine {
     };
 
     // 1. Open positions (count as open, not win/loss)
+    // v2.0.873-P9-mfe-expose（主神「Why 某些資產無 MFE」）: open positions 都要計入
+    // avgMfe/avgMae——checkPositions 每 cycle 用 tick/candle 極值更新 mfePct/maePct,
+    // 係真實數據（唔係猜測）。舊 code step 1 唔入帳 → 純 open 倉 symbol（新開 shadow）
+    // avg 顯示 0.0% 誤導（SNDK 實際 MFE 1.5% 顯示 0.0%——實驗 A 實證）。
     for (const pos of this.positions) {
       if (pos.status !== 'open') continue;
       const s = getOrCreate(pos.symbol);
       s.totalOpened++;
       s.openCount++;
+      if (Number.isFinite(pos.mfePct)) s.avgMfePct = (s.avgMfePct * (s.totalOpened - 1) + pos.mfePct) / s.totalOpened;
+      if (Number.isFinite(pos.maePct)) s.avgMaePct = (s.avgMaePct * (s.totalOpened - 1) + pos.maePct) / s.totalOpened;
     }
 
     // 2. Resolved positions still in memory — v2.0.870-sell-decay: 只貢獻 avg 指標
