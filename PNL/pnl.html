@@ -657,11 +657,15 @@ async function capture(fmt) {
   const root = document.getElementById('capture-root');
   const title = document.getElementById('title-text');
   try {
-    // v2.0.873-pnl-density-fix: PDF 用瀏覽器原生 print（對長頁面冇 canvas 限制——
-    // html2canvas 對 30000px 頁面有硬限制，點 scale 都唔得）
+    // v2.0.873-pnl-density-fix: PDF 分兩路——短頁面（<= 10000px）用 html2canvas + jsPDF
+    // （keep LOGO & QR code），長頁面（> 10000px）用 window.print()（html2canvas 對長頁面有硬限制）
     if (fmt === 'pdf') {
-      window.print();
-      return;
+      const rootH = root.offsetHeight || 0;
+      if (rootH > 10000) {
+        window.print();
+        return;
+      }
+      // 短頁面: 繼續下面嘅 html2canvas capture
     }
     if (window.html2canvas) {
       if (title) title.classList.add('no-anim');
@@ -683,7 +687,40 @@ async function capture(fmt) {
         },
       });
       if (title) title.classList.remove('no-anim');
-      download(canvas.toDataURL('image/png'));
+      if (fmt === 'pdf' && window.jspdf) {
+        // v2.0.868-fix:每頁獨立截取 canvas 子區域——每頁都有 top+bottom margin、
+        // 無縫接合(冇頁尾/頁頭重複)、深色背景、頁數上限防 hang
+        const pdf = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const pw = pdf.internal.pageSize.getWidth();
+        const ph = pdf.internal.pageSize.getHeight();
+        const M = 10; // margin mm(上下左右每頁一致)
+        const availW = pw - 2 * M;
+        const availH = ph - 2 * M;
+        // 每頁顯示嘅 canvas 高度(像素)——保持比例
+        const pageCanvasH = Math.floor(availH * canvas.width / availW);
+        const MAX_PAGES = 60;
+        let srcY = 0, page = 0;
+        while (srcY < canvas.height && page < MAX_PAGES) {
+          const h = Math.min(pageCanvasH, canvas.height - srcY);
+          // 截取 canvas 子區域(獨立一頁——唔係「圖向上移」)
+          const tmp = document.createElement('canvas');
+          tmp.width = canvas.width; tmp.height = h;
+          const tctx = tmp.getContext('2d');
+          tctx.drawImage(canvas, 0, srcY, canvas.width, h, 0, 0, canvas.width, h);
+          const pageImg = tmp.toDataURL('image/jpeg', 0.9);
+          if (page > 0) pdf.addPage();
+          // 深色頁背景(防白底)
+          pdf.setFillColor(10, 10, 15);
+          pdf.rect(0, 0, pw, ph, 'F');
+          // 每頁都放喺 (M, M)——top+bottom margin 一致
+          pdf.addImage(pageImg, 'JPEG', M, M, availW, availH * (h / pageCanvasH), undefined, 'FAST');
+          srcY += h;
+          page++;
+        }
+        pdf.save(`MATS-PnL-${mode}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.pdf`);
+      } else {
+        download(canvas.toDataURL('image/png'));
+      }
       return;
     }
     const c = document.getElementById('chart');
