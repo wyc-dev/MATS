@@ -12,7 +12,7 @@ import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { extractJSON } from './evolution-utils.ts';
 import type { ThesisExperienceRecord } from '../types/index.ts';
@@ -23,6 +23,9 @@ const PROJECT_ROOT = process.cwd();
 const RECOMMENDATIONS_FILE = join(PROJECT_ROOT, 'data/evolution/audit-recommendations.jsonl');
 
 // Files the agent is ALLOWED to modify (learning + decision logic + orchestrator)
+// v2.0.873（主神 2026-09-02「解放 harness 約束,演化對 edge 嘅觸覺」）: 加 scripts/
+// （edge 實驗 script）+ PLAN_*.md（方案）+ 831.md（驗證記錄）+ SystemEngineer.md
+// （自身演化）+ 三文檔同步。831.md 只係例子——SE 有權為任何 edge 觸覺寫實驗。
 const ALLOWED_PREFIXES = [
   'src/evolution/',
   'src/cognition/',
@@ -30,15 +33,25 @@ const ALLOWED_PREFIXES = [
   'src/agents/',
   'src/index.ts',
   'tests/',
+  'scripts/',                       // v2.0.873: edge 實驗 script（寫新檔 + 執行）
+  'SystemEngineer.md',              // v2.0.873: 自身演化
+  'AGENT_PROMPT.md',                // v2.0.873: 同步
+  'ARCHITECTURE.md',                // v2.0.873: 同步
+  'PLAN_',                          // v2.0.873: 831 方案文檔（gitignored）
+  '831.md',                         // v2.0.873: 驗證記錄 append §N
 ];
 
 // Files the agent is FORBIDDEN from modifying (trading execution + risk config)
+// v2.0.873: CHANGELOG.md 由 harness 自己 updateChangelog() 處理（唔係 SE 直接改）——
+// SE 提案嘅 changelogEntry 會被 harness 插入,唔需要喺 ALLOWED（避免越權）。
 const FORBIDDEN_PREFIXES = [
   'src/trading/',
   'src/config/',
   'src/data/',
   'src/api-server.ts',
   '.env',
+  'src/edge/',                       // v2.0.833: Edge validation layer owner-controlled
+  'CHANGELOG.md',                    // v2.0.873: harness 專責（updateChangelog）
 ];;
 
 const SYSTEM_PROMPT = `You are the System Engineer of MATS, a multi-agent quant trading system on Hyperliquid DEX.
@@ -72,6 +85,35 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 - src/agents/*.ts — agent base class, sub-agents, meta-agent, skeptics
 - src/index.ts — main orchestrator (decision cycle, trade execution routing, adaptive filter, OLR injection)
 - tests/*.ts — test files (you own these, keep them updated with your changes)
+- scripts/*.ts + PLAN_*.md + 831.md + SystemEngineer.md + AGENT_PROMPT.md + ARCHITECTURE.md（v2.0.873 — 見下方「EDGE EVOLUTION AUTHORITY」）
+
+## ⚠️ EDGE EVOLUTION AUTHORITY（v2.0.873 — OWNER'S EXPLICIT DIRECTIVE — 最高優先權）
+
+**The owner has ordered（2026-09-02）:「解放 harness 約束,我本身要 System Engineer 做嘅嘢唔係單純困於 831.md,831.md 只係例子,我係希望佢可以不斷演化對 edge 嘅觸覺」**
+
+831.md 只係驗證節奏嘅例子——你嘅真正使命係**不斷演化對 edge（超額盈利來源）嘅觸覺**。你有以下完整權限：
+
+### 你可以做嘅嘢（權限）
+1. **寫 + 執行 edge 實驗 script**（\`scripts/*-experiment.ts\`）——用真實歷史數據（realTrades / shadow-state / component-attribution / candle-cache）驗證任何你懷疑有 edge 嘅信號組合
+2. **寫 PLAN_*.md 方案**（root, gitignored）——新 gate / 新 feature / threshold 調整 / 新組件,先 PLAN 再實作
+3. **改 831.md**（append §N 補記）——實驗結果、教訓、裁決記錄
+4. **改 SystemEngineer.md 自身**——如果你發現流程可以改得更有效
+5. **同步 AGENT_PROMPT.md / ARCHITECTURE.md**（透過 affectedFile 提案）
+
+### 831 節奏只係底線（唔係上限）
+- **決策邏輯改動**（新 gate / 組件 / threshold / feature）→ 至少行 831 三關（全樣本 / 兩半穩健 / 敏感性）先實作
+- **探索性實驗**（唔一定實作）→ 直接寫 script 跑,結果記錄落 831.md 或 PLAN
+- **bug fix / 防禦層** → 快速路徑直接修
+
+### 對 edge 嘅觸覺（你要主動做）
+- 唔好淨係等「見到蝕錢先診斷」——主動 hunt edge：shadow stats 分佈、per-side EV、gate 誤傷率、時段/regime 條件 EV、price 幾何特徵（round-number/S-R 距離）
+- 發現候選 edge → 寫 experiment script 驗證（ρ sweep / 分桶 / 三關）→ 有預測力先考慮實作
+- **已證偽源唔好嘥時間**: OLR（ρ=+0.02）、FP、Q-RL expectancy（ρ=+0.0064）——已死
+
+### 831 三關定義（驗證任何候選 edge 用）
+1. **關1 全樣本**: ΔPnL 正 + 命中組 avg 有方向（零 look-ahead）
+2. **關2 穩健**: 兩半（期1/期2）都成立 + 剔 outlier 後仍成立 + 中位數同方向
+3. **關3 敏感性**: 鄰近 threshold 全正（非孤立 peak）+ 分 symbol 分散（單 symbol <60%）+ within-symbol ρ 一致性
 
 ## What You CANNOT Modify (STRICTLY FORBIDDEN)
 - src/trading/*.ts — order execution, SL/TP, position management, signing
@@ -79,6 +121,8 @@ A safety net runs after each fix: tsc --noEmit + npm test. If either fails, your
 - .env — environment configuration
 - src/api-server.ts — API server
 - src/data/*.ts — WebSocket data feeds
+- src/edge/* — Edge Validation layer（owner-controlled,可讀不可改）
+- CHANGELOG.md — harness 專責（你提供 changelogEntry,harness 插入）
 
 ## Core Principles
 
@@ -704,7 +748,7 @@ Respond with EXACTLY ONE JSON object:
     // Validate scope
     const targetFile = proposal.affectedFile;
     if (!isFileAllowed(targetFile)) {
-      log.warn(`🚫 [system-engineer] REJECTED: ${targetFile} is outside allowed scope (src/evolution/ + src/cognition/hacp.ts + tests/)`);
+      log.warn(`🚫 [system-engineer] REJECTED: ${targetFile} is outside allowed scope (src/evolution/ + src/cognition/hacp.ts + tests/ + scripts/ + PLAN_*.md + 831.md + SystemEngineer.md + AGENT_PROMPT.md + ARCHITECTURE.md)`);
       return {
         applied: false, title: proposal.title, file: targetFile, reason: 'File outside allowed scope',
         tscPassed: false, testsPassed: false, rolledBack: false,
@@ -713,15 +757,22 @@ Respond with EXACTLY ONE JSON object:
     }
 
     // Read the target file
+    // v2.0.873（解放 harness——edge evolution）: 允許建立新檔案——edge 實驗 script
+    // （scripts/*-experiment.ts）、PLAN_*.md、831.md 補記。SE 用 oldCode='((new file))'
+    // 標記建立新檔（避免同「oldCode 搵唔到」混淆）。新檔寫完後照樣行 safety net
+    // （tsc 唔會理 scripts/ 因為 tsconfig 只 include src/——但實驗 script 由 SE 自行執行）。
     const fullPath = join(PROJECT_ROOT, targetFile);
-    if (!existsSync(fullPath)) {
+    const creatingNewFile = !existsSync(fullPath) && proposal.proposedFix.oldCode.trim() === '((new file))';
+    if (!existsSync(fullPath) && !creatingNewFile) {
       log.warn(`🚫 [system-engineer] File not found: ${targetFile}`);
       return null;
     }
-    const originalContent = readFileSync(fullPath, 'utf-8');
+    const originalContent = creatingNewFile ? '' : readFileSync(fullPath, 'utf-8');
 
     // Check if oldCode exists in the file
-    if (!originalContent.includes(proposal.proposedFix.oldCode)) {
+    // v2.0.873（解放）: 新檔建立直接跳過 oldCode match——oldCode 標記係
+    // '((new file))'，原內容空。
+    if (!creatingNewFile && !originalContent.includes(proposal.proposedFix.oldCode)) {
       // v2.0.201: Try whitespace-normalized match — LLMs often get leading/trailing
       // whitespace wrong but the actual code is correct. If normalized match works,
       // find the exact text in the file and replace it.
@@ -786,8 +837,16 @@ Respond with EXACTLY ONE JSON object:
 
     // Apply the fix
     log.info(`🔧 [system-engineer] Applying fix: ${proposal.title} → ${targetFile}`);
-    const newContent = originalContent.replace(proposal.proposedFix.oldCode, proposal.proposedFix.newCode);
-    writeFileSync(fullPath, newContent, 'utf-8');
+    // v2.0.873（解放——edge evolution）: 新檔建立直接寫 newCode（跳過 replace——
+    // originalContent 空,oldCode 係 '((new file))' 標記）。scripts/ 目錄 mkdir 確保存在。
+    if (creatingNewFile) {
+      const dir = dirname(fullPath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(fullPath, proposal.proposedFix.newCode, 'utf-8');
+    } else {
+      const newContent = originalContent.replace(proposal.proposedFix.oldCode, proposal.proposedFix.newCode);
+      writeFileSync(fullPath, newContent, 'utf-8');
+    }
 
     // Apply test update if provided
     let originalTestContent: string | null = null;
@@ -811,13 +870,33 @@ Respond with EXACTLY ONE JSON object:
     }
 
     // Run safety net: tsc --noEmit
+    // v2.0.873（解放——edge evolution）: 新檔係 scripts/*-experiment.ts ——
+    // 除咗 tsc,harness 會實際執行佢（npx tsx <file>）驗證「真係跑得郁」——
+    // SE 唔止有權寫 experiment,仲有能力執行（edge 觸覺 = 寫→跑→睇結果→修正）。
     log.info(`🔧 [system-engineer] Running tsc --noEmit...`);
     let tscPassed = false;
     let tscErrorOutput = '';
+    let experimentRanOk = true;
+    let experimentOutput = '';
     try {
       const tscOutput = execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
       tscPassed = true;
       log.info(`✅ [system-engineer] tsc passed`);
+
+      // v2.0.873: scripts/* 新檔額外執行驗證——npx tsx 跑實驗 script
+      if (creatingNewFile && targetFile.startsWith('scripts/')) {
+        try {
+          log.info(`🔧 [system-engineer] Executing experiment script: npx tsx ${targetFile}...`);
+          experimentOutput = execSync(`npx tsx ${targetFile} 2>&1`, { cwd: PROJECT_ROOT, timeout: 120_000, stdio: 'pipe', encoding: 'utf-8' });
+          experimentRanOk = true;
+          // 將實驗輸出頭 800 字符記入 log（唔可以全部——可能好長）
+          log.info(`🔧 [system-engineer] Experiment output (head):\n${experimentOutput.slice(0, 800)}`);
+        } catch (expErr: any) {
+          experimentRanOk = false;
+          const expErrStr = String(expErr?.stdout ?? expErr?.stderr ?? expErr?.message ?? String(expErr));
+          log.warn(`❌ [system-engineer] Experiment script FAILED: ${expErrStr.slice(0, 500)}`);
+        }
+      }
     } catch (err: any) {
       // v2.0.199: Capture actual tsc error output, not just "Command failed"
       tscErrorOutput = String(err?.stdout ?? err?.stderr ?? err?.message ?? String(err));
