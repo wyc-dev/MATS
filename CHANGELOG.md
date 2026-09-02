@@ -4,6 +4,28 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-sym-sell-unblock: activeSymbol 注入覆蓋 + Shadow SELL 樣本餓死修復（主神 2026-09-02「BTC & BNB 咁耐無開倉」調查後 fix #1+#2）
+
+**調查**: BTC 8 日、BNB 1.5 日零開倉——三層斷裂點拆解: ①agents 對 BTC 全 0B/0S/7H（7 agents HOLD,無方向）;②activeSymbol/selectedSymbol 分離令 BTC 兩頭跌出注入;③shadow sell 樣本餓死（buy 獨佔池）令 agents 冇 sell 統計參考。實測排除價格管線問題（live fetch 正常）。
+
+### ① #1: activeSymbol 注入覆蓋（BTC 兩頭跌出 agents 視野——真 bug）
+
+**根因**: `index.ts` activeSymbol = `nonPositionMarkets[0]`（第一冇倉 market = btc）;但 agents prompt 嘅 marketTicker 跟 **selectedSymbol**（UI 手動鎖定後可 ≠ activeSymbol）。而 `_additionalMarkets = nonPositionMarkets.filter(s => s !== activeSymbol)` 剔除咗 activeSymbol——當 selectedSymbol=SKHX 而 activeSymbol=btc 時,**BTC 同時唔係 marketTicker、又唔喺 additionalMarkets——agents 完全見唔到 BTC（8 日）**。
+
+**修復（production grade）**: `_additionalMarkets = nonPositionMarkets`（全保留）——agents 對所有 tradingMarkets 都有 quote 機會;currentPositions 注入層嘅 existingSyms dedup + HACP perSymbolMap Map merge 天然防重複。
+
+### ② #2: Shadow SELL 樣本餓死（buy 獨佔 10 位擋 sell——死亡螺旋重現）
+
+**根因**: 5 條 shadow 開倉路徑（blind/statistical/seeded/qrl/aligned）上限 check 全部係「全 symbol 合計 `symOpen >= maxOpenPerSymbol(10)`」——buy 佔滿 10 位後,**sell 開倉 request 直接 return**（連 seeded sell 都擋）。實證: shadow open buy 56/sell 4（btc/gold/sp500/skhx/bnb 全 10/0）。同 v2.0.870-sell-decay「10.8:1 BUY:SELL 死亡螺旋」同款根因。
+
+**修復（方案 C, production grade）**: ①新 `countOpenBySide(sym, side)` helper——5 路徑上限改 **per-side**（buy/sell 各自 maxOpenPerSymbol 位）——buy 佔滿唔再擋 sell;②**seeded sell bypass** per-symbol 上限（只受全局池 60 + cooldown）——跌市播種唔可以被 buy 佔位擋;③`evictOldestBlindForRoom(preferSide)` 新增 side 優先——sell 撞池滿時優先 evict **buy-blind**（sell 樣本要有出口）;④v2.0.861 不變式保留: blind 本身唔可以 self-evict（池滿直接 reject, 最低優先）。
+
+**資格不變式守住**: seed sell 資格完全唔郁（persistent_bear + mom24h<0 + mom4h<0 雙確認）——反彈型（BTC/BNB/GOLD）照舊唔 seed（E1: bounce 型 sell 全輸）;修復只解「sell 想開但冇位」。
+
+**驗證（先證後改）**: RED 實驗重現兩 bug（buy 10/10 擋 sell + BTC 剔出注入）→ GREEN 後消除;新攻擊測試 12/12（per-side 上限/盲開 sell/11th sell 擋/seeded bypass/buy 唔 boost/evict 優先賣/池 cap/cooldown/3 路徑 per-side/NaN+garbage 攻擊;`openShadowTrades` 舊 evict 語義測試回歸確認盲 self-evict 唔變）;全量 **4011 pass + 13 pre-existing（零新增）**;tsc clean;UI vite build clean。
+
+---
+
 ## v2.0.873-P9-pnl-capture: PNL 長頁面 capture/PDF 修復（主神 PNL 時段系列後續——30000px 頁面）
 
 **問題**: PNL 1 MONTH ~30000px 頁面——html2canvas 對 canvas 高度 16384px 有硬上限 → capture 全黑/空白/hang;PDF 走 html2canvas+jsPDF 同樣受限。
