@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-sell-unblock-attack: 攻擊輪——7 真漏洞全修（主神 2026-09-02「不擇手段攻擊啱啱修葺嘅 code」）
+
+**紅先 10 攻擊測試 → 7 fail 真漏洞全修（3 層防禦統一）**:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1×3 | openAlignedShadow/openStatisticalShadow/openQRLShadow **冇 side whitelist**——garbage side（'banana'/'hold'/'close'）穿過 per-side helper 開 garbage position（污染 OLR 訓練 + 佔池 + per-side 計數錯位;對照 openSeededShadow 有 guard——防禦不一致） | MED-HIGH | 統一新 `isValidShadowInput(symbol, side)` helper, 5 路徑入口接入 |
+| V2×2 | load() **唔 sanitize positions**——persisted garbage position（side=hold / symbol='' / SL/TP Infinity）佔池 + 污染 per-side 計數 + resolution | MED | 新 `sanitizePosition()`——garbage side/symbol drop, SL/TP 非 finite/≤0 → default 距離（A4 不變式 load 層都守） |
+| V3×2 | blind/aligned **空/空白 symbol**——entryPrice 有效但 symbol='' 開出垃圾 shadow（污染 OLR feed + 計數錯位） | LOW-MED | symbol `trim().length===0` → reject（5 路徑） |
+
+V4（per-side helper 大階 caller）/ V5（evict garbage preferSide 唔 crash）/ V6（save→load round-trip 一致）全部通過。
+
+**盈利提升分析（量化金融視角, 先證後改）**: SELL entryShadowWinRate ≥0.55 係唯一正 edge 方向（n=8, WR 88%, EV +2.32%）vs BUY 任何 WR 全中性/正——**sell 樣本餓死修復（P9-sell-unblock）正正令呢個信號有樣本流入**;但 n=8 唔夠開 gate（831.md data-snooping 教訓）——等 2 週 sell 樣本再驗。BUY sl_tp −290%（48 單）係最大出血點但已由 lock-pipeline/LLPP/holdmin 覆蓋——唔加第三層 block gate（P9-deadweight 教訓）。**盈利提升 = 修復本身**（sell 樣本流入 → OLR sell 側解餓 → agents 跌市有 lean 依據——死亡螺旋真正解除）。
+
+**驗證**: 新攻擊測試 10/10 + 回歸 33/33; 全量 **4021 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
 ## v2.0.873-P9-sym-sell-unblock: activeSymbol 注入覆蓋 + Shadow SELL 樣本餓死修復（主神 2026-09-02「BTC & BNB 咁耐無開倉」調查後 fix #1+#2）
 
 **調查**: BTC 8 日、BNB 1.5 日零開倉——三層斷裂點拆解: ①agents 對 BTC 全 0B/0S/7H（7 agents HOLD,無方向）;②activeSymbol/selectedSymbol 分離令 BTC 兩頭跌出注入;③shadow sell 樣本餓死（buy 獨佔池）令 agents 冇 sell 統計參考。實測排除價格管線問題（live fetch 正常）。
