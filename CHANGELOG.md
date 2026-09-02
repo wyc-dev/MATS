@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-sr-size-unify: sr-size-gate 統一入 applyEntryConvictionGates（方案 B——主神 2026-09-01）
+
+**根因**: sr-size-gate（P9-sr-size，SELL 貼 S/R 縮 size）只接咗 executeTrade（active 路徑），per-symbol consensus 同 exploration 路徑 bypass——09-01 18:45 DRAM SELL −8.0% 追跌尾（S/R 距離 0.13% < 0.35% 應該縮但冇縮）。
+
+**呢個係「統一執行路徑」嘅同款 bug**（v2.0.870-sell-seed-accel S0 統一咗 F1/shadow-gate，但 sr-size-gate 08-31 實作時漏咗統一）。
+
+**修復（方案 B，單一 source of truth）**:
+- 從 executeTrade 移除 sr-size-gate block（避免 double-shrink）
+- 加入 applyEntryConvictionGates（shadow-gate 之後，return 之前）——三路徑 active/per-symbol/exploration 都行
+- SELL-only + 純 size 層 + 冷啟動（15m cache 空）保守放行 + env `SR_SIZE_GATE=false` 回滾
+
+**驗證**: tsc clean；全量 **3999 pass + 13 pre-existing（零新增）**；`shouldShrinkSrSize` 而家只喺 applyEntryConvictionGates 一處（grep 確認）。
+
+**⚠️ 未做 per-symbol threshold**（主神問「sr-size-gate 應該 per-symbol 嗎」）——S/R 距離計算已 per-symbol（各自 S/R 位），但 threshold 0.35% 係 global；per-symbol threshold 係 data-snooping 陷阱（SKHX n=3 貼 S/R 反而好）——先修統一、收集樣本、再考慮。
+
+---
+
 ## v2.0.873-P9-shadow-sym-case: Shadow WR 記錄 case-sensitivity bug 修復（主神 2026-09-01「點解 Shadow WR 得 btc+bnb」）
 
 **根因**: `getStats()` 返小寫 symbol（shadow engine 內部 `.toLowerCase()`），但 entryShadowWinRate 記錄處用 `normalizeSymbol()`（保留資產名大小寫——`"xyz:SILVER"`）做 `s.symbol === sym` 比較——`"xyz:silver" !== "xyz:SILVER"` → 9/11 個 xyz: 資產嘅 Shadow WR 全部靜默丢失。只有 btc/bnb（無前綴無大小階）match 到。
