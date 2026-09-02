@@ -2278,15 +2278,12 @@ export class PortfolioTracker {
   }
 
   /**
-   * 🕐 TIMEZONE: 呢個係 **UTC 日期**（`toISOString()` = UTC YYYY-MM-DD）——
-   * daily PnL reset 喺 UTC 00:00 翻新 = **HK 08:00**。
-   * ⚠️ 同 computeDailyPnl 嘅 todayStart（server local = HK midnight）唔一致——
-   * 「今日 PnL」喺 HK 00:00-08:00 期間會 show 舊一日。統一方案:
-   * ① 兩個都用 HK（`new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' })`）
-   * ② 兩個都用 UTC（computeDailyPnl 改 UTC midnight）——但要知 UI 顯示嘅「今日」
-   *    會跟 server TZ（而家 HK 一致, 若 server 改 UTC 就唔同）。
+   * 🕐 TIMEZONE: HK 日期（GMT+8）——`toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' })`
+   * 輸出 YYYY-MM-DD（en-CA 保證格式）。daily PnL reset 喺 HK 00:00 翻新——
+   * 同 computeDailyPnl todayStart（HK midnight）一致。
+   * （舊版用 toISOString() = UTC 日期 → reset 喺 HK 08:00, 已修 ——主神 2026-09-02 裁決）
    */
   private todayString(): string {
-    return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC date — ⚠️ 見上)
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' }); // YYYY-MM-DD (HK GMT+8)
   }
 }
