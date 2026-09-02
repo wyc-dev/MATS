@@ -647,7 +647,12 @@ async function capture(fmt) {
       await new Promise(r => setTimeout(r, 50));
       // 動態 scale:長頁面 scale 1 防記憶體爆;PDF 強制 scale 1(唔使高清 + 防 hang)
       const rootH = root.offsetHeight || 0;
-      const scale = (fmt === 'pdf' || rootH > 2500) ? 1 : 2;
+      // v2.0.873-pnl-density-fix: 瀏覽器 canvas 高度上限 ~16384px——1 MONTH 頁面
+      // ~30000px，scale=1 令 canvas 超上限 → 建立失敗 → 空白/全黑。
+      // 動態 scale 壓到 16000px 以下（scale 細咗 = 分辨率低咗，但 PDF/PNG 照樣可用）。
+      const MAX_CANVAS_H = 16000;
+      const baseScale = (fmt === 'pdf' || rootH > 2500) ? 1 : 2;
+      const scale = Math.min(baseScale, MAX_CANVAS_H / Math.max(1, rootH));
       const canvas = await html2canvas(root, {
         backgroundColor: '#0a0a0f',
         scale,
