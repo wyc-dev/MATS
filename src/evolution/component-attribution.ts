@@ -77,6 +77,12 @@ export interface ComponentAttribution {
   signal: number;
   /** Normalised agreement of signal with the actual trade direction in [0,1]. */
   agreement: number;
+  /**
+   * v2.0.873-P9-gate-attrib: RAW signal before clamp/agreement normalisation.
+   * gate:* component 用呢個判「出手」——mult<1 收緊/多>1 加成/mult=1 中性。
+   * clamp [0,1] 會丟失加成資訊（×1.1 → 1.0）,所以 raw 必須保留。
+   */
+  signalRaw?: number;
   /** PnL % of the resolved trade (used for standalone expectancy). */
   pnlPct: number;
   /** Proxy contribution in [-1, 1] = (agreement - 0.5) * 2 * sign(pnlPct). */
@@ -159,22 +165,42 @@ export class ComponentAttributionStore {
     if (typeof input.regime !== 'string' || input.regime.length === 0) input.regime = 'unknown';
 
     // Clamp signal to [0,1] — a malformed 2.5 would otherwise skew stats.
-    const signal = Math.max(0, Math.min(1, input.signal));
+    // v2.0.873-P9-gate-attrib: RAW signal（clamp 前）必須保留——gate:* component
+    // 嘅 mult（confidence 乘數）可以有 >1 加成（×1.1 順勢 boost）,clamp 後變 1.0
+    // 會丟失「加成出手」資訊。gate 出手 = |mult−1| ≥ ε 先算 confident。
+    const signalRaw = Number.isFinite(input.signal) ? input.signal : 0.5;
+    const signal = Math.max(0, Math.min(1, signalRaw));
 
     // v2.0.856-attack: Normalize side BEFORE the inversion decision. A garbage
     // side ('SELL', undefined, 'long') must not invert — unknown → no inversion
     // (treated as neutral). This keeps caller/store inversion symmetric.
     const side = normalizeTradeSide(input.side);
 
-    // Invert for 'sell' so agreement ∈ [0,1] always means "agrees with trade".
-    // buy:  signal 1.0 = max agree with buy.  sell: signal 0.0 = max agree with sell.
-    // unknown: no inversion (neutral) — never fabricate a direction.
-    const agreement = side === 'sell' ? 1 - signal : signal;
-
-    // Proxy contribution: positive when the component's direction agreed with
-    // the outcome's sign (i.e. the component was "right").
-    const pnlSign = Math.sign(input.pnlPct);
-    const contribution = (agreement - 0.5) * 2 * pnlSign; // [-1, 1]
+    // v2.0.873-P9-gate-attrib（主神「gate:mae-pattern Expectancy +3.2% 但 Contrib −0.255 點解」）:
+    // gate:* component 嘅 signal 係 confidence 乘數（mult）而唔係方向信號——用 agreement
+    // 框架（sell 反轉 agreement=1−mult）會令任何 soft gate（mult<1）對 SELL 單系統性錄負
+    // contribution（bias, 同 gate 實際成效無關——實驗 B 實證）。gate 正確語義 = 出手命中:
+    //   mult<1（收緊）: trade 最終蝕 = gate 避損啱（正）; trade 最終賺 = gate 誤傷（負）
+    //   mult>1（加成）: trade 賺 = gate 加啱（正）; trade 蝕 = gate 錯（負）
+    //   mult=1（中性）: 未出手 → 0（唔入 confident 子集）
+    const isGate = typeof input.componentId === 'string' && input.componentId.startsWith('gate:');
+    let agreement: number;
+    let contribution: number;
+    if (isGate) {
+      agreement = signal; // gate 冇方向語義——agreement 保留 mult 值（向後兼容顯示）
+      const raw = Number.isFinite(signalRaw) ? signalRaw : 1;
+      const pnlSign = Math.sign(input.pnlPct);
+      contribution = raw < 1 ? -pnlSign : raw > 1 ? pnlSign : 0; // [-1, 1]
+    } else {
+      // Invert for 'sell' so agreement ∈ [0,1] always means "agrees with trade".
+      // buy:  signal 1.0 = max agree with buy.  sell: signal 0.0 = max agree with sell.
+      // unknown: no inversion (neutral) — never fabricate a direction.
+      agreement = side === 'sell' ? 1 - signal : signal;
+      // Proxy contribution: positive when the component's direction agreed with
+      // the outcome's sign (i.e. the component was "right").
+      const pnlSign = Math.sign(input.pnlPct);
+      contribution = (agreement - 0.5) * 2 * pnlSign; // [-1, 1]
+    }
 
     // Idempotency: same (tradeId, componentId) recorded twice → skip second.
     const key = `${input.tradeId}|${input.componentId}`;
@@ -189,6 +215,7 @@ export class ComponentAttributionStore {
       cycleId: input.cycleId,
       signal,
       agreement,
+      signalRaw: isGate ? signalRaw : undefined,
       pnlPct: input.pnlPct,
       contribution,
       labelCleanliness: Math.max(0, Math.min(1, input.labelCleanliness)),
@@ -325,6 +352,9 @@ export class ComponentAttributionStore {
           cycleId: typeof r['cycleId'] === 'number' ? r['cycleId'] : 0,
           signal,
           agreement: safeNum(r['agreement'] as number, 0.5),
+          // v2.0.873-P9-gate-attrib: 保留 raw mult（歷史 gate records 無 → 唔定;
+          // 新 records 有——用 r['signal'] 原值 fallback）
+          signalRaw: Number.isFinite(r['signalRaw'] as number) ? (r['signalRaw'] as number) : undefined,
           pnlPct: pnl,
           contribution: safeNum(r['contribution'] as number, 0),
           labelCleanliness: Math.max(0, Math.min(1, cleanliness)),
@@ -375,7 +405,14 @@ export class ComponentAttributionStore {
     // Only count "confident signal" trades for expectancy — a neutral 0.5
     // signal contributed nothing, so it should not count toward the
     // component's expected value.
-    const confident = recs.filter(r => Math.abs(r.agreement - 0.5) >= (CONFIDENT_SIGNAL - 0.5));
+    // v2.0.873-P9-gate-attrib: gate:* 用 RAW mult 判「出手」——|mult−1|≥ε 先算
+    // confident（mult=1 中性未出手）；非 gate 照舊 agreement 框架。舊 code 對 gate
+    // 用 agreement 過濾——soft gate（mult<1）對 sell 單 agreement 必然 <0.5 →
+    // 永遠唔 confident 或者誤判,令 expectancy 由「出手樣本」變成「偏差樣本」。
+    const isGate = componentId.startsWith('gate:');
+    const confident = isGate
+      ? recs.filter(r => Math.abs((r.signalRaw ?? r.signal) - 1) >= 0.01)
+      : recs.filter(r => Math.abs(r.agreement - 0.5) >= (CONFIDENT_SIGNAL - 0.5));
     const expectancy = confident.length > 0
       ? confident.reduce((s, r) => s + r.pnlPct, 0) / confident.length
       : 0;
@@ -386,7 +423,11 @@ export class ComponentAttributionStore {
     // Per-regime breakdown.
     const byRegimeMap = new Map<string, number[]>();
     for (const r of recs) {
-      if (Math.abs(r.agreement - 0.5) < (CONFIDENT_SIGNAL - 0.5)) continue;
+      // v2.0.873-P9-gate-attrib: gate 用 raw mult 判 confident, 非 gate 用 agreement
+      const conf = isGate
+        ? Math.abs((r.signalRaw ?? r.signal) - 1) >= 0.01
+        : Math.abs(r.agreement - 0.5) >= (CONFIDENT_SIGNAL - 0.5);
+      if (!conf) continue;
       const arr = byRegimeMap.get(r.regime) ?? [];
       arr.push(r.pnlPct);
       byRegimeMap.set(r.regime, arr);

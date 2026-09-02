@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-mfe-expose: shadow avgMfe 顯示修正 + gate 歸因語義修正（主神 2026-09-02「Why 某些資產無 MFE」+「gate:mae-pattern Expectancy +3.2% 但 Contrib −0.255」）
+
+**先證後改**: PLAN + 邏輯實驗（scripts/p9-shadow-mfe-expose-experiment.ts）驗證兩個修正方向先實作。
+
+### #1 avgMfe 顯示修正（純觀測層零決策）
+**問題**: `getStats()` Step 1 open positions 只 `totalOpened++` 唔入 MFE 分子——純 open 倉 symbol（新開 shadow）avgMfe 顯示 0.0% 誤導（實證: live shadow-state SNDK MFE 1.5%/DRAM 0.8%/SILVER 0.4% 但 UI 顯示 0.0%;全部 symbol 現行都係 0.0%）。
+**修復**: Step 1 open positions 有 mfePct/maePct 都計入 avg（極值由 checkPositions 每 cycle tick/candle 更新——真實數據非猜測）。實驗 A: 修正後 btc 0.2%/sndk 0.8%/silver 0.2%（真實反映）。
+
+### #2 gate 歸因語義修正（歸因層零 gate 邏輯）
+**問題（兩層缺陷）**: ①gate mult（confidence 乘數）被當「方向 signal」——對 sell 單反轉 `agreement=1−0.85=0.15` =「gate 反 SELL」（其實 0.85 = 收緊 SELL）→ 任何 soft gate 對 sell 單系統性錄負 contrib（bias, 同 gate 成效無關——實驗 B 實證 mae-pattern −0.255 個 sell 反轉 bias）; ②signal clamp [0,1] 丟失加成資訊（×1.1 boost → 1.0）。
+**修復（production grade）**: 新增 `signalRaw` 字段（clamp 前 mult, load/save round-trip）;`recordAttribution` 對 `gate:*` component 用「出手命中」語義——mult<1 收緊（trade 蝕 = 避損啱 → 正 / 賺 = 誤傷 → 負）、mult>1 加成（賺 → 正 / 蝕 → 負）、mult=1 中性 → 0; non-gate（olr/causal）照舊 agreement 方向框架;`computeStats` confident 過濾 gate 用 `|rawMult−1|≥0.01`（出手先算）而唔係 agreement。
+
+**語義意義（修正後）**: `gate:mae-pattern` contribution 由 −0.255（bias）→ −0.364（真誤傷——出手 11/11 全部收緊,嗰啲 trade 平均 +3.2% = gate 縮咗本應賺嘅倉 → **P9-deadweight 停用候選**）;`gate:base(...)` +0.195 → −0.500（收緊咗本應賺嘅 base 單）;四窗 mult=1.0 未出手 → contrib 0（佢嘅 block 成效由 Gate Outcome Tracker counterfactual 量度,attribution 量唔到 block 單——正確分工）。
+
+**驗證**: 新測試 8/8（open 入帳 avg / resolved 混算 / gate 收緊賺=負 / 收緊蝕=正 / 中性未出手 / non-gate 照舊 / ×1.1 加成 round-trip / legacy signalRaw fallback）;全量 **4029 pass + 13 pre-existing（零新增）**;tsc clean。
+
+---
+
 ## v2.0.873-P9-sell-unblock-attack: 攻擊輪——7 真漏洞全修（主神 2026-09-02「不擇手段攻擊啱啱修葺嘅 code」）
 
 **紅先 10 攻擊測試 → 7 fail 真漏洞全修（3 層防禦統一）**:
