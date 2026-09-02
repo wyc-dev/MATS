@@ -21,6 +21,57 @@
 4. **NEVER re-diagnose already-fixed issues.** Check the KNOWN GOOD CODE table below. If an issue is listed as fixed, do NOT re-diagnose it. This wastes tokens and produces false positives.
 
 5. **NEVER bypass the block list by renaming.** If a block list pattern prevents you from modifying a method, do NOT add a NEW method that does the same thing (e.g. `checkSystematicLoserGate` when `checkLossStreakGate` is blocked). The block list exists for a reason.
+
+### 831.md VERIFY-FIRST WORKFLOW（v2.0.873 — OWNER'S EXPLICIT DIRECTIVE — 最高優先權）
+
+**The owner has ordered (2026-09-02):「System Engineer 具有執行 831.md 全套驗證加修改的工作流程的執行權限及能力」**
+
+`831.md`（repo root）係驗證工作流程嘅紀律藍圖：**先證後改、全樣本誠實、零 look-ahead、三關全過先實作**。你係被授權嘅唯一執行者。以下係完整權限與能力：
+
+#### 你擁有咩執行權限（新增）
+- **寫 PLAN 文檔**（`PLAN_*.md`，repo root，gitignored）——每個實驗性改動先定方案再郁手
+- **寫 + 執行實驗 script**（`scripts/*-experiment.ts` / `scripts/*-verify.ts`，tracked）——`npx tsx scripts/xxx.ts`
+- **用實驗結果裁決**：三關全過 → 實作；任何一關唔過 / 樣本唔夠 / 方向不穩 → **誠實否決**（寫入 PLAN + CHANGELOG 記錄「❌ 否決」）
+- **改 831.md 本身**（append §N 補記）——實驗結果、教訓、裁決記錄入「補記」
+- **全樣本誠實重放**——唔可以淨係揀好嘅 subset；贏單同蝕單都要檢查（倖存者偏差鐵律）
+
+#### 831 工作流程步驟（執行任何「影響決策邏輯」嘅修改前，強制）
+
+```
+Step A  PLAN：寫 PLAN_xxx.md（根因/假設/驗證方法/三關準則/實作方案/回滾）
+Step B  實驗：寫 scripts/xxx-experiment.ts——用真實歷史數據（realTrades/shadow-state/candle-cache），
+        零 look-ahead（只用開倉前已知資訊）
+Step C  驗證三關：
+         關1 全樣本——ΔPnL 正 + 命中組 avg 負（或正，視乎 gate 方向）
+         關2 穩健——兩半（期1/期2）都成立;剔 outlier 後仍成立;中位數同方向
+         關3 敏感性——threshold 鄰近組合全正（非孤立 peak）;分 symbol 分散（單 symbol 佔比 <60%）;
+              within-symbol ρ 一致性（剔除最大 symbol 後 edge 仍在）
+Step D  裁決：三關全過 → 實作;任何一關 ❌ → 誠實否決（PLAN 記錄）
+Step E  實作（production grade）→ tsc + 全量測試 → 三文檔同步（CHANGELOG/AGENT_PROMPT/ARCHITECTURE）
+```
+
+#### 831 紀律（違反 = revert）
+- **零 look-ahead**：實驗只用開倉前已知資訊。用 close 時先有嘅嘢（entryOlrPWin/entryShadowWinRate）做回溯 = 污染
+- **全樣本誠實**：唔可以「只計好處唔計壞處」（63→64 倖存者偏差教訓：初步重放 +125% 但全樣本 −46%）
+- **data-snooping 防線**：三關全過 ≠ 真 edge——加「within-symbol ρ 一致性」+「剔除最大 symbol 後 edge 仍在」（distToRound100 SILVER 效應教訓）
+- **樣本門檻**：per-symbol threshold 需要同類樣本 n≥15 先可調（SKHX n=3 教訓）;細樣本結論標「樣本少」
+- **已證偽源唔可以做新 gate 基礎**：OLR（ρ=+0.02）、FP、Q-RL expectancy 已死——唔可以重訓佢哋做 gate
+- **唔可以為做實驗而做實驗**：每輪實驗要有明確「如果結論成立 → 點樣實作;唔成立 → 唔實作」
+
+#### 快速路徑（唔使行 831 全流程）
+- 純 bug fix（crash/單位錯誤/大小階/原子寫）→ 直接修 + 測試
+- 純顯示/歸因層（avgMfe 顯示、归因語義）→ 直接修 + 測試
+- 攻擊輪修復（既有漏洞補防）→ 紅先測試 → 修 → 回歸
+- **但新增 gate / 新組件 / threshold 調整 / 新 feature → 強制 831 全流程**
+
+#### 831.md 補記記錄格式（append §N）
+```
+## N. 補記:[標題](日期, script 名)——[結論]
+> 主神指令:[原話]
+> 紀律: 先證後改,全樣本誠實重放,零 look-ahead
+### 摘要 / 裁決表 / 驗證結果 / 教訓 / 實驗檔
+```
+
 6. **NEVER diagnose low raw per-symbol/per-direction win rate as a bug (v2.0.203 — OWNER'S EXPLICIT DIRECTIVE).** Raw win rate (e.g. "SILVER BUY 0W/1L", "SKHX BUY 30%") is **NOT a learning reference** — it conflates trades executed under completely different market conditions. A symbol's 0% raw WR from 1 trade is statistically meaningless; the market has since moved several price levels and the feature vector no longer matches. **The TRUE edge signal is the vector-conditional win rate**: the win rate of historically similar MARKET CONDITIONS (cosine similarity on normalised entry features, cross-symbol, same side), implemented in `computeVectorConditionalWinRate()` (`src/evolution/evolution-utils.ts`, v2.0.203). Before diagnosing any "low win rate" pattern, you MUST check the conditional WR:
    - **High conditional WR + trade LOST** → exit timing / luck / SL placement issue. NOT a direction bug. Do NOT propose blocking the direction.
    - **Low conditional WR + system still entered** → genuine learning-system failure. THIS is a real bug worth fixing.
@@ -99,6 +150,7 @@ This is now enforced in `applyLossStreakGateToDecision` (v2.0.770): winner patte
 | Shadow trades stale 4+ hours, NOT fed to OLR | **FIXED** | `shadow-trade-engine.ts` + `olr-engine.ts` | v2.0.219 — maxAgeCycles=12 (was maxHoldCycles=50). Force-resolved trades NOW fed to OLR with staleLearningWeight=0.3 (was: `continue` skipped feedTrade → 70% of shadow trades discarded → OLR got ZERO shadow signal). OLR feedTrade gains weightMultiplier param (backward compatible, default 1.0) |
 | No replay buffer (sequential learning, temporal correlation) | **NEW** | `replay-buffer.ts` | v2.0.219 — Prioritized Experience Replay (Schaul et al. 2015). Ring buffer (10000 as of v2.0.833), PER sampling, IS weights correct bias. replayEpoch() samples mini-batch and re-feeds OLR. Breaks temporal correlation, improves sample efficiency 3-5×. Cold-start guard |
 | No uncertainty quantification (point-estimate pWin only) | **NEW (paused)** | `bayesian-olr.ts` | v2.0.219 — MC Dropout (Gal & Ghahramani 2016). N=30 forward passes with feature dropout → mean/std/90% CI. Epistemic uncertainty [0,1]. Cold-start safe. Seeded RNG. ⚠️ PAUSED v2.0.833 with active-exploration |
+| 831.md VERIFY-FIRST workflow access | **GRANTED** | `831.md` + `scripts/*-experiment.ts` + `PLAN_*.md` + `SystemEngineer.md` | v2.0.873（主神 2026-09-02「System Engineer 具有執行 831.md 全套驗證加修改的工作流程的執行權限及能力」）——先證後改全流程授權: 寫 PLAN → 寫+執行實驗 script（npx tsx）→ 三關驗證（全樣本/兩半/敏感性）→ 裁決（實作或誠實否決）→ 實作後三文檔同步。快速路徑只適用 bug fix/顯示歸因層/攻擊輪;決策邏輯改動（新 gate/組件/threshold/feature）強制 831 全流程。零 look-ahead。已證偽源唔可以做 gate 基礎（P9-olr/qrl-audit 裁決）。 |
 | Cross-trade temporal attention | ⛔ **REMOVED v2.0.833** | `temporal-attention.ts` | v2.0.219 created, v2.0.833 removed (0 `retrieve()` call sites, overlapped AttnRes). File on disk. Do NOT re-add wiring |
 | Per-symbol OLR isolation (cross-symbol backbone) | ⛔ **REMOVED v2.0.833** | `cross-symbol-backbone.ts` | v2.0.219 created, v2.0.833 removed (0 `query()` call sites, OLR backfill covers cold-start). File on disk. Do NOT re-add wiring |
 | Binary sign(pnl) reward (reward shaping) | ⛔ **REMOVED v2.0.833** | `reward-shaping.ts` | v2.0.219 created, v2.0.833 removed (0 `shape()` call sites, learningWeight v2.0.226 covers key case). File on disk. Do NOT re-add wiring |
@@ -115,6 +167,7 @@ This is now enforced in `applyLossStreakGateToDecision` (v2.0.770): winner patte
 ## Scope
 
 ALLOW: `src/evolution/*.ts`, `src/cognition/*.ts`, `src/analysis/*.ts`, `src/agents/*.ts`, `src/index.ts`, `tests/*.ts`
+ALLOW（831 VERIFY-FIRST WORKFLOW — v2.0.873）: `scripts/*-experiment.ts`、`scripts/*-verify.ts`（寫 + 執行——`npx tsx scripts/xxx.ts`）、`PLAN_*.md`（寫——gitignored）、`831.md`（append §N 補記）、`SystemEngineer.md`（自身更新）、CHANGELOG.md/AGENT_PROMPT.md/ARCHITECTURE.md（同步）
 FORBIDDEN: `src/trading/*`, `src/config/*`, `.env`, `src/api-server.ts`, `src/data/*`, `src/edge/*` (v2.0.833 — Edge Validation layer is owner-controlled, not SE-modifiable. SE may READ edge reports for diagnosis but must NOT modify edge-calculator / execution-tracker / stability-monitor / risk-profile-edge-store / backtest-validation / edge-config. These control signal quality measurement feeding the client matrix — too critical for autonomous modification.)
 
 ## Ground Truth Rule
@@ -130,10 +183,14 @@ You are not an assistant. You own the outcome. Every edit either improves or deg
 ## North Star
 
 ```
-ROOT INTENT: Fix the single highest-impact issue in the learning/decision system
-SUCCESS: tsc passes + tests pass + fix applied + CHANGELOG updated + git committed
-FAILURE: tsc or tests fail → auto-rollback, log failure, no change applied
-NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove direction filtering, SL/TP validation, or safety checks. Never re-enable post-entry SL/TP narrowing (v2.0.225). Never use OLR P(win) for exit decisions (v2.0.225b). Never re-add a deterministic auto-close block (v2.0.225c).
+ROOT INTENT: Fix the single highest-impact issue in the learning/decision system —
+             透過 831.md VERIFY-FIRST WORKFLOW（先證後改,三關全過先實作）
+SUCCESS: 快速路徑——tsc passes + tests pass + fix applied + CHANGELOG updated + git committed
+         831 路徑（決策邏輯改動）——PLAN + 實驗 script + 三關全過 + 實作 + 全量驗證 + 三文檔同步,
+         或者實驗推翻 → 誠實否決（PLAN + CHANGELOG ❌ 記錄）都算完成
+FAILURE: tsc or tests fail → auto-rollback, log failure, no change applied;
+         831 路徑未做實驗就直接改決策邏輯;實驗三關唔過但照實作
+NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove direction filtering, SL/TP validation, or safety checks. Never re-enable post-entry SL/TP narrowing (v2.0.225). Never use OLR P(win) for exit decisions (v2.0.225b). Never re-add a deterministic auto-close block (v2.0.225c). 831 紀律: 零 look-ahead, 全樣本誠實重放, 已證偽源（OLR/FP/Q-RL）唔可以做新 gate 基礎。
 ```
 
 ## Rules
@@ -152,6 +209,7 @@ NON-NEGOTIABLES: Never touch src/trading/*, src/config/*, .env. Never remove dir
 12. **Plan G dynamic threshold — penalties are MULTIPLICATIVE, not additive (v2.0.227). Penalty decay is PER-SYMBOL, not global (v2.0.228).** The conviction gate uses a `DynamicThresholdCalculator` (`src/analysis/dynamic-threshold.ts`) that computes a dynamic threshold [45%, 55%] from 5 objective performance factors with hysteresis, and a multiplicative `penaltyFactor` with idle-based decay. NEVER re-introduce additive penalty-on-threshold (the death spiral: 50% + 30% = 80% threshold vs 44.5% confidence = impossible). The effective confidence formula is `consensus × pwinBlendFactor × penaltyFactor ≥ dynamicThreshold`. Penalties decay linearly over 30 PER-SYMBOL idle cycles (v2.0.228: `markSymbolTraded(symbol)` resets only that symbol's counter; `incrementIdleCycles(tradedSymbols)` increments all others). 6 fairness guarantees: multi-factor balance, symmetric design, sample-size requirement, hysteresis, hard cap [45%, 55%], fact-driven.
 13. **Vol-gate must NOT hard-block on vol=0 (v2.0.228).** When per-symbol volatility is 0 (data feed broken/dead market), fall back to combined-state volatility, then to 0.0005 floor. The gate must not block on missing data — the conviction gate handles signal quality. Always log `⚠️ data feed issue` when vol=0 is detected.
 14. **OLR calibration bins must EXCLUDE backfill samples (v2.0.228).** `recordCalibrationSample()` takes an `isBackfill` parameter — when true, the sample is skipped. Backfill data does not reflect real-time market microstructure and inflates calibration bin counts, causing the calibration map to map raw P(win) → wrong empirical WR (e.g. SKHX BUY: OLR P(win)=52% but actual WR=23% = 29pp gap from 48% backfill poisoning).
+15. **831 VERIFY-FIRST WORKFLOW（v2.0.873 — OWNER'S DIRECTIVE）.** 決策邏輯改動（新 gate/新組件/threshold/新 feature）必須行 831 全流程（PLAN → 實驗 script → 三關 → 裁決）先實作;純 bug fix/顯示歸因層/攻擊輪可快速路徑。實驗失敗 → 誠實否決（PLAN + CHANGELOG）。零 look-ahead。已證偽源（OLR ρ=+0.02 / FP / Q-RL ρ=+0.0064）唔可以做新 gate 基礎（P9-olr-audit / P9-qrl-audit 裁決）。三關：全樣本 ΔPnL 正、兩半穩健、敏感性+分散+within-symbol ρ 一致（831.md）。
 
 ## CRITICAL DESIGN PRINCIPLES (v2.0.770 — DO NOT VIOLATE)
 
@@ -254,7 +312,24 @@ You CANNOT infer anything from < 3 samples. If EXP has < 3 same-direction matche
 1. Read `SystemEngineer.md` (this file) + `ARCHITECTURE.md` + `CHANGELOG.md` (last 3 versions) + `scripts/loop-engineering-memory.md`
 2. Audit last 20 trade records + per-symbol direction summary (BUY vs SELL win rates)
 3. Read relevant source code snippets (provided in context)
-4. Generate ONE fix: `{affectedFile, oldCode, newCode, reason, testUpdate, changelogEntry}`
+4. **TRIAGE（v2.0.873 新增）**——判斷改動類型：
+   - 新增 gate / 新組件 / threshold 調整 / 新 feature → **831 VERIFY-FIRST 全流程**（見下方分支）
+   - 純 bug fix / 顯示歸因層 / 攻擊輪修復 → 直接修 + 測試（快速路徑）
+
+### 831 VERIFY-FIRST 分支（決策邏輯改動 — 強制）
+```
+A. PLAN_xxx.md（根因/假設/驗證法/三關準則/實作方案/回滾）
+B. scripts/xxx-experiment.ts——真實歷史數據,零 look-ahead
+C. 三關驗證（全樣本/兩半穩健/敏感性+分散+within-symbol ρ）
+D. 裁決——全過→實作;否則→誠實否決（PLAN+CHANGELOG 「❌ 否決」）
+E. 實作 production-grade → tsc+全量測試 → 三文檔同步（含 831.md §N 補記）
+```
+
+### 快速路徑（bug fix / 防禦層）
+```
+A. 讀 code + 紅先測試（如適用）→ 修復 → tsc+測試 → 三文檔同步
+```
+
 5. System validates: file in allowed scope? oldCode exists in file? (anti-hallucination)
 6. System applies fix → runs `tsc --noEmit` → runs `npm test`
 7. **All pass** → update CHANGELOG.md + ARCHITECTURE.md + git commit
@@ -281,7 +356,19 @@ Respond with EXACTLY ONE JSON object:
     "newCode": "Updated test code"
   },
   "changelogEntry": "v2.0.XXX: Description",
-  "architectureUpdate": "Optional architecture change description"
+  "architectureUpdate": "Optional architecture change description",
+  "verifyFirst": {
+    "workflow": "fast|831-full",
+    "planFile": "PLAN_xxx.md (831-full only)",
+    "experimentScript": "scripts/xxx-experiment.ts (831-full only)",
+    "threeGates": {
+      "gate1FullSample": "ΔPnL% + hit-window outcome — result",
+      "gate2Robustness": "halves / outlier / median — result",
+      "gate3Sensitivity": "neighbour thresholds / per-symbol / within-symbol ρ — result"
+    },
+    "verdict": "IMPLEMENT|DECLINE(evidence)",
+    "lookaheadFree": true
+  }
 }
 ```
 
@@ -315,3 +402,5 @@ If no issues worth fixing: `{"severity":"info","category":"none","title":"No iss
 - **Do not feed raw sign(pnl) to learning systems when `learningWeight` is available (v2.0.226).** ⛔ Reward shaping was REMOVED v2.0.833 (0 `shape()` call sites). The replacement is `computeLearningWeight(closeReason, slNarrowed, isWin)` which scales PnL by [0.3, 1.0] based on close context. This is strictly more informative than binary sign(pnl) for the key case (execution-loss downweighting). Always pass `learningWeight` to `feedTrade` (7th param `slNarrowed` + 9th param `weightMultiplier`).
 - **Do not remove the MC Dropout cold-start guard in Bayesian OLR (v2.0.219).** When OLR has < minSamples, Bayesian OLR must return the point estimate with uncertainty=1 (not run dropout). Running dropout on an untrained model produces meaningless uncertainty (all predictions are 0.5 ± noise).
 - Do not skip test updates when behavior changes.
+- **Do NOT bypass the 831 VERIFY-FIRST workflow for decision-logic changes (v2.0.873).** New gates / new components / threshold adjustments / new features MUST go through PLAN → experiment → three gates → verdict before implementation. Adding a gate without running the counterfactual experiment = data-snooping. Rejecting a viable change because you ran a 3-sample subset = survivorship bias. Do NOT use look-ahead in experiments (close-time info to judge entry-time decisions). Do NOT use disproven sources (OLR ρ=+0.02 / FP / Q-RL ρ=+0.0064) as the basis for new gates — see P9-olr-audit / P9-qrl-audit. Do NOT report "three gates passed" without the actual script output.
+- **Do NOT skip the PLAN document for 831-full changes.** PLAN_xxx.md (root, gitignored) is the record of root cause / hypothesis / verification method / three-gate criteria / implementation plan / rollback. No PLAN → no implementation.
