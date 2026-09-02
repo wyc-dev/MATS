@@ -399,6 +399,39 @@ export class ShadowTradeEngine {
   }
 
   /**
+   * v2.0.873-P9-sell-unblock attack-hardening: 統一入口 guard——
+   * symbol 非空非空白 + side whitelist（'buy'/'sell'）。garbage side/symbol
+   * 唔可以開 garbage position（污染 OLR 訓練 + 佔池 + per-side 計數錯位）。
+   * 之前只有 openSeededShadow 有 side guard——5 路徑防禦不一致（V1-V3 攻擊輪實證）。
+   */
+  private isValidShadowInput(symbol: string, side: string): boolean {
+    if (typeof symbol !== 'string' || symbol.trim().length === 0) return false;
+    return side === 'buy' || side === 'sell';
+  }
+
+  /**
+   * v2.0.873-P9-sell-unblock attack-hardening: load() 後 position sanitize——
+   * garbage side/symbol drop;SL/TP 非 finite 或 ≤0 → default 距離（唔可以
+   * Infinity 污染 resolution;A4 不變式喺 load 層都要守）。
+   */
+  private sanitizePosition(p: Record<string, any>): Record<string, any> | null {
+    const side = p['side'];
+    const sym = typeof p['symbol'] === 'string' ? String(p['symbol']).trim().toLowerCase() : '';
+    if (typeof side !== 'string' || (side !== 'buy' && side !== 'sell') || sym.length === 0) return null;
+    const entry = Number.isFinite(p['entryPrice']) && p['entryPrice'] > 0 ? p['entryPrice'] : 0;
+    if (entry <= 0) return null;
+    const sl = Number.isFinite(p['stopLossPrice']) && p['stopLossPrice'] > 0 ? p['stopLossPrice'] : entry * (side === 'sell' ? 1 + SHADOW_CONFIG.defaultSLDistance : 1 - SHADOW_CONFIG.defaultSLDistance);
+    const tp = Number.isFinite(p['takeProfitPrice']) && p['takeProfitPrice'] > 0 ? p['takeProfitPrice'] : entry * (side === 'sell' ? 1 - SHADOW_CONFIG.defaultTPDistance : 1 + SHADOW_CONFIG.defaultTPDistance);
+    return {
+      ...p,
+      symbol: sym,
+      side,
+      stopLossPrice: sl,
+      takeProfitPrice: tp,
+    };
+  }
+
+  /**
    * v2.0.873-P9-sell-unblock: per-side open count（只計指定 symbol×side 嘅 open）。
    * 分 side 計數係 sell 樣本餓死嘅根治——舊 code 用「全 symbol 合計」上限,
    * buy 佔滿 10 位後連 seeded sell 都開唔到（死亡螺旋）;而家 buy/sell 各自 10 位。
@@ -443,6 +476,9 @@ export class ShadowTradeEngine {
   ): void {
     // v2.0.834: Guard against NaN/Infinity — same fix as openAlignedShadow.
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    // v2.0.873-P9-sell-unblock attack-hardening（V3）: symbol 有效性——
+    // 空/空白 symbol 唔可以開 shadow（污染 OLR feed + per-side 計數錯位）。
+    if (typeof symbol !== 'string' || symbol.trim().length === 0) return;
 
     // Check limits
     const sym = symbol.toLowerCase();
@@ -593,6 +629,9 @@ export class ShadowTradeEngine {
     // Guard against NaN/Infinity — same as openAlignedShadow.
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
     if (!Number.isFinite(statScore)) statScore = 0;
+    // v2.0.873-P9-sell-unblock attack-hardening（V1/V3）: symbol + side whitelist——
+    // garbage side（'banana'/'hold'）唔可以穿過 per-side helper 開 garbage position。
+    if (!this.isValidShadowInput(symbol, side)) return;
     const sym = symbol.toLowerCase();
 
     // Don't open if we already have a statistical shadow for this symbol+side+cycle.
@@ -770,6 +809,8 @@ export class ShadowTradeEngine {
   ): void {
     // Guard against NaN/Infinity — same as openAlignedShadow.
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    // v2.0.873-P9-sell-unblock attack-hardening（V1/V3）: symbol + side whitelist
+    if (!this.isValidShadowInput(symbol, side)) return;
     const sym = symbol.toLowerCase();
 
     // Don't open if we already have a Q-RL shadow for this symbol+side+cycle.
@@ -889,6 +930,8 @@ export class ShadowTradeEngine {
     // catch NaN (NaN <= 0 === false) or Infinity (Infinity <= 0 === false).
     // These would propagate into SL/TP calculations and corrupt OLR training.
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    // v2.0.873-P9-sell-unblock attack-hardening（V1/V3）: symbol + side whitelist
+    if (!this.isValidShadowInput(symbol, side)) return;
     const sym = symbol.toLowerCase();
 
     // Don't open if we already have an aligned shadow for this symbol+side+cycle
@@ -1705,16 +1748,22 @@ export class ShadowTradeEngine {
     try {
       const data = JSON.parse(json);
       if (data.positions) {
-        this.positions = (data.positions as any[]).map(p => ({
-          ...p,
-          status: 'open' as const,
-          // Backfill H/L fields for positions persisted before the H1 fix.
-          highSinceOpen: p.highSinceOpen ?? p.entryPrice,
-          lowSinceOpen: p.lowSinceOpen ?? p.entryPrice,
-          // v2.0.143: Backfill MAE/MFE for positions persisted before the path-risk fix.
-          mfePct: p.mfePct ?? 0,
-          maePct: p.maePct ?? 0,
-        }));
+        // v2.0.873-P9-sell-unblock attack-hardening（V2）: load 層 sanitize——
+        // garbage side/symbol drop（唔可以佔池 + 污染 per-side 計數）;
+        // SL/TP 非 finite/≤0 → default 距離（Infinity 唔可以污染 resolution）。
+        this.positions = (data.positions as any[])
+          .map(p => this.sanitizePosition(p ?? {}))
+          .filter((p): p is ShadowPosition => p !== null)
+          .map(p => ({
+            ...p,
+            status: 'open' as const,
+            // Backfill H/L fields for positions persisted before the H1 fix.
+            highSinceOpen: p['highSinceOpen'] ?? p['entryPrice'],
+            lowSinceOpen: p['lowSinceOpen'] ?? p['entryPrice'],
+            // v2.0.143: Backfill MAE/MFE for positions persisted before the path-risk fix.
+            mfePct: p['mfePct'] ?? 0,
+            maePct: p['maePct'] ?? 0,
+          }));
       }
       if (data.recentResults) {
         this.recentResults = data.recentResults;
