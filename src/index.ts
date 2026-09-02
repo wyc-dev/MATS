@@ -16090,12 +16090,15 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     year1: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
   } {
     const now = new Date();
-    // 🕐 TIMEZONE: `new Date(y, m, d)` 用 SERVER LOCAL midnight 做「今日」分界——
-    // 而家 server TZ = Asia/Hong_Kong (GMT+8) → 今日 = HK 00:00 起。
-    // ⚠️ 注意: portfolio.ts `todayString()` 用 toISOString()（UTC 日期）做 daily reset
-    // ——兩者唔一致: PNL 頁面「今日」= HK 00:00 開始, 但 dailyPnlResetDate 喺 UTC 00:00
-    // （= HK 08:00）翻新。要統一應兩個位都用同一個時區（建議: HK 或 UTC 二選一）。
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    // 🕐 TIMEZONE: HK 今日 00:00（GMT+8）——用 Intl formatToParts 顯式攞 HK 日期,
+    // 再轉 UTC epoch（HK 00:00 = UTC 前一日 16:00）。唔依賴 server TZ——
+    // 就算 server 改 UTC/他區, 「今日 PnL」仍然係 HK 00:00 分界。
+    // 統一方案（主神 2026-09-02 裁決）: 同 portfolio.ts todayString()（HK 日期）一致。
+    const hkParts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+    const hkY = Number(hkParts.find(p => p.type === 'year')!.value);
+    const hkM = Number(hkParts.find(p => p.type === 'month')!.value);
+    const hkD = Number(hkParts.find(p => p.type === 'day')!.value);
+    const todayStart = Date.UTC(hkY, hkM - 1, hkD) - 8 * 3600 * 1000; // HK 00:00 嘅 UTC epoch
     const DAY = 24 * 3600 * 1000;
     const yesterdayStart = todayStart - DAY;
     const toSeries = (trades: Array<Record<string, unknown>>, start: number, end: number): PnlSeries => {
@@ -16132,7 +16135,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     };
     const paperAll = Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<Record<string, unknown>>);
     const realAll = Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<Record<string, unknown>>;
-    const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-CA'); // 🕐 SERVER LOCAL 日期（而家 HK GMT+8——改 server TZ 顯示會變）
+    // 🕐 TIMEZONE: PNL 日期格式化用 HK (GMT+8) 顯式 timeZone——同 todayStart/portfolio
+    // todayString() 一致（主神 2026-09-02 裁決）。en-CA locale 保證 YYYY-MM-DD 格式。
+    const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' }); // 🕐 HK 日期 (GMT+8)
     // v2.0.868-fix:本金(principal——% 模式「對比本金增長」用)
     // paper:初始餘額;real:HL 帳戶餘額(cachedExchangeBalance)
     const paperPrincipal = Number.isFinite(this.portfolio?.getPortfolio?.()?.initialBalance as number) && (this.portfolio?.getPortfolio?.()?.initialBalance as number) > 0
