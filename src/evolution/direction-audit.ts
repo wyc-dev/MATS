@@ -177,7 +177,7 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], em
     const closeKind = r.exitType && SYS_CLOSE_EXIT_TYPES.has(r.exitType) ? ' [SYS-CLOSE: PnL is partial/noisy, not a clean market SL/TP outcome]' : '';
     // v2.0.870-P24: deployment-version awareness —— 每筆 trade 預算「邊啲 fix 已喺佢平倉時上線」。
     // compare mechanize 咗:LLM 只需要讀 postFix 清單,冇得自己估時序。
-    const closeIso = Number.isFinite(r.ts) && r.ts > 0 ? new Date(r.ts).toISOString() : 'unknown-time';
+    const closeIso = Number.isFinite(r.ts) && r.ts > 0 ? new Date(r.ts).toISOString() : 'unknown-time'; // 🕐 UTC ISO（audit log 顯示用）
     const postFix = Number.isFinite(r.ts) && r.ts > 0
       ? postFixVersionsFor(auditTimeline, r.ts, 8)
       : [];

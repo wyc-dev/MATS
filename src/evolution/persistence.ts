@@ -261,7 +261,7 @@ export function saveEvolution(data: {
     ensureDir();
     const snapshot: EvolutionSnapshot = {
       version: 2,
-      savedAt: new Date().toISOString(),
+      savedAt: new Date().toISOString(), // 🕐 UTC ISO（儲存層一律 UTC——顯示時先轉 HK）
       tradeHistory: data.tradeHistory,
       shortTermMemory: data.shortTermMemory,
       longTermMemory: data.longTermMemory,
@@ -619,7 +619,7 @@ export function saveDebateHistory(data: {
     ensureDir();
     const snapshot: DebateHistorySnapshot = {
       version: 1,
-      savedAt: new Date().toISOString(),
+      savedAt: new Date().toISOString(), // 🕐 UTC ISO（儲存層一律 UTC——顯示時先轉 HK）
       totalCycles: data.totalCycles,
       lastCycleDuration: data.lastCycleDuration,
       consensus: data.consensus,
@@ -755,7 +755,7 @@ export function saveMarketAgentConfig(cfg: MarketAgentConfig): boolean {
     ensureDir();
     const snapshot: MarketAgentConfigSnapshot = {
       version: 1,
-      savedAt: new Date().toISOString(),
+      savedAt: new Date().toISOString(), // 🕐 UTC ISO（儲存層一律 UTC——顯示時先轉 HK）
       tradeMode: cfg.tradeMode,
       exchange: cfg.exchange,
       hyperliquidAssetType: cfg.hyperliquidAssetType ?? 'crypto_perps',

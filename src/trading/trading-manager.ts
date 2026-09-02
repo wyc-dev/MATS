@@ -461,7 +461,7 @@ export class TradingManager {
                 mirrorPos.leverage = exPos.leverage;
                 if (exPos.openedAt > 0) mirrorPos.openedAt = exPos.openedAt;
                 mirrorPos.agentId = 'hyperliquid-real';
-                log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x openedAt=${new Date(actualOpenedAt).toISOString()}`);
+                log.info(`Mirror synced to exchange fill: ${decision.symbol} entry=${exPos.averageEntryPrice.toFixed(2)} lev=${exPos.leverage}x openedAt=${new Date(actualOpenedAt).toISOString()}`); // 🕐 UTC ISO
               }
             }
           } else {

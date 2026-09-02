@@ -240,15 +240,25 @@ function catDirMentionDirection(category: string, dir: 'buy' | 'sell'): boolean 
 /** v2.0.221 (Fix 1): Extract hour-of-day from a timestamp (epoch ms) and
  *  normalise to 0-1 (hour/23). Returns 0.5 (noon) when ts is missing or invalid.
  *  This feeds the new OLR `hourOfDay` feature so the model can learn time-of-day
- *  patterns like "SKHX BUY at 16:00 loses 100%". */
+ *  patterns like "SKHX BUY at 16:00 loses 100%".
+ *
+ *  🕐 TIMEZONE: `new Date(ts).getHours()` = SERVER LOCAL time.
+ *  入參 ts 係 epoch ms = UTC 基準, 但 getHours() 用運行環境 local TZ 轉換。
+ *  目前 server TZ = Asia/Hong_Kong (GMT+8) → 輸出 HK 鐘點。
+ *  ⚠️ 如果 server 改為 UTC 或他區, 呢個 feature 會學錯時段（唔再係 HK 鐘點）——
+ *  OLR hourOfDay 特徵同 UI 顯示會唔一致。要固定時區應改用
+ *  `new Date(ts).toLocaleString('en', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false })` 或
+ *  `Intl.DateTimeFormat` 顯式傳 timeZone。 */
 function hourOfDayFromTs(ts?: number): number {
   if (!ts || !Number.isFinite(ts) || ts <= 0) return 0.5; // noon — neutral default
-  const hour = new Date(ts).getHours(); // 0-23 local time
+  const hour = new Date(ts).getHours(); // 0-23 local time（server TZ——而家 = HK GMT+8）
   return hour / 23;
 }
 
 /** v2.0.221 (Fix 1): Current hour-of-day normalised to 0-1. Used for live
- *  feature extraction where no explicit timestamp is available. */
+ *  feature extraction where no explicit timestamp is available.
+ *  🕐 TIMEZONE: 同 hourOfDayFromTs——`new Date().getHours()` = SERVER LOCAL time
+ *  （而家 Asia/Hong_Kong GMT+8; 若 server TZ 改要一齊改, 或改用 Intl 顯式 timeZone）。 */
 function currentHourOfDay(): number {
   return new Date().getHours() / 23;
 }
@@ -4370,7 +4380,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         if (next.streak !== prev.streak || next.cooldownUntil !== prev.cooldownUntil) {
           this.cooldownTracker.set(cdKey, next);
           if (next.cooldownUntil > prev.cooldownUntil) {
-            log.info(`[reentry-cooldown] ${safeSymbol} ${tradeSide.toUpperCase()} — ${next.streak} 連蝕 → cooldown 至 ${new Date(next.cooldownUntil).toISOString().slice(11,19)}（結構斷裂偵測）`);
+            log.info(`[reentry-cooldown] ${safeSymbol} ${tradeSide.toUpperCase()} — ${next.streak} 連蝕 → cooldown 至 ${new Date(next.cooldownUntil).toISOString().slice(11,19)}（結構斷裂偵測）`); // 🕐 UTC 時分
           }
         }
       } catch { /* 非致命——cooldown 更新失敗唔影響學習 */ }
@@ -5499,7 +5509,7 @@ ${recentExamples}
     if (isStaleCache(e.updatedAt, Date.now(), Number(process.env['PERSIST_STALE_HOURS'] ?? 6) || 6)) {
       const norm = normalizeSymbol(sym);
     if (!this.persistenceStaleWarned.has(norm)) {
-        log.warn(`⚠️ [persistence] ${sym} cache stale（updatedAt=${new Date(e.updatedAt).toISOString()}）→ neutral（唔准用化石做決定）`);
+        log.warn(`⚠️ [persistence] ${sym} cache stale（updatedAt=${new Date(e.updatedAt).toISOString()}）→ neutral（唔准用化石做決定）`); // 🕐 UTC ISO
         this.persistenceStaleWarned.add(norm);
       }
       return 'neutral';
@@ -15254,6 +15264,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
       const mode = isReal ? '🔴 REAL' : '🟢 PAPER';
       const posCount = isReal ? (this.cachedExchangePositions?.length ?? 0) : (this.portfolio.getPortfolio().positions.size + this.portfolio.getRealPositions().length);
+      // 🕐 TIMEZONE: Telegram 訊息用 HK 時間顯示——顯式 `timeZone: 'Asia/Hong_Kong'`（GMT+8）。
+      // 同 UI formatHKTime 一致; 儲存層（epoch ms / toISOString）一律 UTC。
       const timestamp = new Date().toLocaleTimeString('en-HK', { timeZone: 'Asia/Hong_Kong' });
 
       const message = `📊 MATS Cycle #${cycleNum} | ${mode} | ${timestamp}\n\n${portfolioLine}\n📍 Positions: ${posCount}\n${decisionLine}\n${positionsText ? '\n' + positionsText : ''}`;
@@ -16078,6 +16090,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     year1: { date: string; principal: { paper: number; real: number }; paper: PnlSeries; real: PnlSeries };
   } {
     const now = new Date();
+    // 🕐 TIMEZONE: `new Date(y, m, d)` 用 SERVER LOCAL midnight 做「今日」分界——
+    // 而家 server TZ = Asia/Hong_Kong (GMT+8) → 今日 = HK 00:00 起。
+    // ⚠️ 注意: portfolio.ts `todayString()` 用 toISOString()（UTC 日期）做 daily reset
+    // ——兩者唔一致: PNL 頁面「今日」= HK 00:00 開始, 但 dailyPnlResetDate 喺 UTC 00:00
+    // （= HK 08:00）翻新。要統一應兩個位都用同一個時區（建議: HK 或 UTC 二選一）。
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const DAY = 24 * 3600 * 1000;
     const yesterdayStart = todayStart - DAY;
@@ -16115,7 +16132,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     };
     const paperAll = Array.from((this.paperEngine?.getTrades?.() ?? []) as never as Array<Record<string, unknown>>);
     const realAll = Array.from(this.portfolio?.getClosedRealTrades?.() ?? []) as never as Array<Record<string, unknown>>;
-    const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-CA');
+    const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-CA'); // 🕐 SERVER LOCAL 日期（而家 HK GMT+8——改 server TZ 顯示會變）
     // v2.0.868-fix:本金(principal——% 模式「對比本金增長」用)
     // paper:初始餘額;real:HL 帳戶餘額(cachedExchangeBalance)
     const paperPrincipal = Number.isFinite(this.portfolio?.getPortfolio?.()?.initialBalance as number) && (this.portfolio?.getPortfolio?.()?.initialBalance as number) > 0
@@ -16399,7 +16416,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
 
     lines.push(
       calSummary,
-      `Last Updated: ${new Date(state.updatedAt).toISOString()}`,
+      `Last Updated: ${new Date(state.updatedAt).toISOString()}`, // 🕐 UTC ISO（若想 HK 顯示加 timeZone）
       `---`,
     );
 
