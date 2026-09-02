@@ -652,8 +652,9 @@ async function capture(fmt) {
         backgroundColor: '#0a0a0f',
         scale,
         logging: false,
-        windowWidth: document.documentElement.scrollWidth,
-        windowHeight: document.documentElement.scrollHeight,
+        // v2.0.873-pnl-density-fix: 移除 windowWidth/windowHeight（scrollHeight 過萬 px
+        // 令 html2canvas 對長頁面（1 MONTH ~100 筆記錄）渲染失敗 → 全黑/空白）。
+        // html2canvas 會自動用 root 元素嘅實際尺寸，唔使手動設 viewport。
         onclone: (doc) => {
           // 移除 unload violation 來源(html2canvas 內部 window unload handler)
           try { doc.defaultView.onbeforeunload = null; } catch { /* non-fatal */ }
