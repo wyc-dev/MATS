@@ -5645,10 +5645,34 @@ ${recentExamples}
       // v2.0.872-P9: dip-BUY exploration 豁免——細倉樣本生成（主神:需要確實開到單）。
       // OLR/四窗/5m/momentum 閘照擋——只豁免 shadow WR+EV（新鮮 EV 反對 dip-buy 係
       // 樣本生成嘅本質:逆住近期劣績買 dip）。size 唔變（exploration 細倉）。
+      let result: { confidence: number; blocked: boolean; reason: string | null; size: number };
       if (opts?.skipShadowGate) {
-        return { confidence, blocked: false, reason: 'strength-buy exploration（shadow-gate 豁免——樣本生成）', size: sizePct };
+        result = { confidence, blocked: false, reason: 'strength-buy exploration（shadow-gate 豁免——樣本生成）', size: sizePct };
+      } else {
+        result = this.applyShadowGate(sym, action, confidence, sizePct);
       }
-      return this.applyShadowGate(sym, action, confidence, sizePct);
+      // v2.0.873-P9-sr-size-unify（方案 B）: sr-size-gate 統一入 applyEntryConvictionGates——
+      // 之前只喺 executeTrade（active 路徑），per-symbol/exploration 路徑 bypass（09-01 DRAM SELL
+      // −8.0% 追跌尾 S/R 0.13% 應該縮但冇縮）。而家三路徑都行（單一 source of truth）。
+      // SELL-only + 純 size 層 + 冷啟動（15m cache 空）保守放行。
+      if (action === 'sell' && !result.blocked && process.env['SR_SIZE_GATE'] !== 'false') {
+        try {
+          const symN = normalizeSymbol(sym);
+          const entry = this.marketState?.getState(symN)?.price ?? 0;
+          const srDist = this.computeOpenSrDistancePct(symN, entry);
+          const g = shouldShrinkSrSize({
+            side: 'sell',
+            srDistancePct: srDist,
+            thresholdPct: Number(process.env['SR_SIZE_THRESHOLD_PCT']),
+            sizeMult: Number(process.env['SR_SIZE_MULT']),
+          });
+          if (g.shrink) {
+            result.size = Math.max(0.01, result.size * g.mult);
+            log.info(`[sr-size] ${sym} ${g.reason}`);
+          }
+        } catch { /* 非致命——SR 距離不可用開倉照常 */ }
+      }
+      return result;
     } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
   }
 
@@ -7020,29 +7044,8 @@ ${recentExamples}
         } catch { /* 執行時序輔助——失敗照常開倉（non-critical） */ }
       }
 
-      // v2.0.873-P9-sr-size（PLAN_sr-distance-size-gate + 37-sr-final.ts——主神 2026-08-31）:
-      // SELL 貼 S/R（開倉前 25×15m range 雙向極值距離 < threshold）→ size ×mult（縮倉）。
-      // 三關全過 Δ+19.6%（命中組 avg −1.31% WR 37% / 兩半 +15.1/+4.5 / 鄰近全正）。
-      // ⚠️ SELL-only（BUY 貼 S/R 係中性/正 EV——驗證負, 唔縮）; threshold clamp 上限 0.35
-      // （0.40 急轉負——唔准設）; 純 size 層——零離場干預 / SL 唔郁。
-      // env: SR_SIZE_GATE=false 回滾 / SR_SIZE_THRESHOLD_PCT / SR_SIZE_MULT。
-      if (decision.action === 'sell' && process.env['SR_SIZE_GATE'] !== 'false') {
-        try {
-          const symN = normalizeSymbol(decision.symbol);
-          const entry = decision.entryPrice ?? this.marketState?.getState(symN)?.price ?? 0;
-          const srDist = this.computeOpenSrDistancePct(symN, entry);
-          const g = shouldShrinkSrSize({
-            side: decision.action,
-            srDistancePct: srDist,
-            thresholdPct: Number(process.env['SR_SIZE_THRESHOLD_PCT']),
-            sizeMult: Number(process.env['SR_SIZE_MULT']),
-          });
-          if (g.shrink) {
-            decision.positionSizePct = Math.max(0.01, (decision.positionSizePct ?? 0) * g.mult);
-            log.info(`[sr-size] ${decision.symbol} ${g.reason}`);
-          }
-        } catch { /* 非致命——SR 距離不可用開倉照常 */ }
-      }
+      // v2.0.873-P9-sr-size-unify（方案 B）: sr-size-gate 已統一入 applyEntryConvictionGates
+      // （三路徑 active/per-symbol/exploration 都行）——呢度移除，避免 double-shrink。
 
     try {
     if (isRealMode) {
