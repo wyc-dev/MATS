@@ -504,7 +504,26 @@ export class OLREngine {
       realSamples: (typeof m.realSamples === 'number' && Number.isFinite(m.realSamples) && m.realSamples >= 0) ? m.realSamples : 0,
       backfillSamples: (typeof m.backfillSamples === 'number' && Number.isFinite(m.backfillSamples) && m.backfillSamples >= 0) ? m.backfillSamples : 0,
       newestSampleTs: (typeof m.newestSampleTs === 'number' && Number.isFinite(m.newestSampleTs) && m.newestSampleTs >= 0) ? m.newestSampleTs : 0,
-      recentTrades: Array.isArray(m.recentTrades) ? m.recentTrades.slice(-20) : [],
+      // v2.0.873-P9-olr-recent-attack（主神「不擇手段攻擊」紅先 4 中）: persisted
+      // recentTrades 零 element 級 sanitize——垃圾 source（prompt injection 文本）/
+      // Infinity cycle(NaN cyclesAgo)/null element 穿透 load() 直接入 agent prompt。
+      // 白名單 source/outcome + finite cycle + object guard——load 層就擋（單一
+      // source of truth, query() 自動安全）。
+      recentTrades: Array.isArray(m.recentTrades)
+        ? m.recentTrades
+            .filter((rt: unknown): rt is Record<string, unknown> =>
+              !!rt && typeof rt === 'object' && !Array.isArray(rt))
+            .map((rt: Record<string, unknown>) => ({
+              source: (['shadow', 'shadow_blind', 'paper', 'real', 'backfill'] as const)
+                .includes(rt['source'] as never) ? (rt['source'] as never) : null,
+              outcome: (['win', 'loss'] as const).includes(rt['outcome'] as never) ? (rt['outcome'] as never) : null,
+              // V2: cycle Infinity/NaN/undefined → 0（cyclesAgo 唔可以 NaN/Infinity）
+              cycle: (typeof rt['cycle'] === 'number' && Number.isFinite(rt['cycle']) && rt['cycle'] >= 0) ? rt['cycle'] : 0,
+              slNarrowed: rt['slNarrowed'] === true,
+            }))
+            .filter((rt: { source: unknown; outcome: unknown }) => rt.source !== null && rt.outcome !== null)
+            .slice(-20)
+        : [],
       // v2.0.862: CALIBRATION BINS PURGE BUG FIX (was v2.0.229 Fix A).
       //
       // The old logic purged bins whenever backfillSamples > 0 — a PERMANENT
@@ -1245,7 +1264,13 @@ export class OLREngine {
     const recentTrades = model.recentTrades.slice(-10).map(rt => ({
       source: rt.source,
       outcome: rt.outcome,
-      cyclesAgo: curCycle - rt.cycle,
+      // v2.0.873-P9-olr-recent-attack: cyclesAgo 必須非負 finite——巨大 cycle
+      // （finite 但天文數字）會令 curCycle - cycle = -1e308 → prompt 污染。
+      // clamp [0, 1e9]（>10^9 cycles ≈ 1900 年——任何合理值都遠細過呢個）。
+      cyclesAgo: (() => {
+        const d = curCycle - (Number.isFinite(rt.cycle) ? rt.cycle : 0);
+        return Number.isFinite(d) ? Math.max(0, Math.min(1e9, d)) : 0;
+      })(),
       slNarrowed: rt.slNarrowed,
     }));
 
