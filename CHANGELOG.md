@@ -4,6 +4,38 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-close-pipeline-fix + shadow-calib: 關倉流水線 reason 正名（Fix A）+ Shadow-Informed 校準（主神 2026-09-04「BNB 重覆 BUY / roll TP/SL / 每 asset 動態校準」系列）
+
+**主神兩條指令**: ①Fix A——層級化 close 流水線 tag 污染（production grade） ②驗證 Shadow-Informed 校準構想
+
+### Fix A: 層級化 close 流水線 closeReason 正名（先證後改——邏輯實驗 E1/E2）
+
+**實證**: 357 單 realTrades 中 **63 單 exitThesis 顯示「Majority: HOLD (0B/0S/NH/0C)」但 closeReason='consensus'**——根因兩層: ①v2.0.831 Meta-Agent authoritative CLOSE override（設計行為——Meta 決定 close 蓋過 sub-agent HOLD）②層級化 close 流水線（SL hit / MFE 鎖利 / 虧損止血 / 盈利止盈 / Skeptics 通過）**全部統一 tag 'consensus'**（index.ts:12781）——SL hit（真市場確認破位）被誤標成「系統共識決策」。
+
+**量化代價**（learning-weight.ts）: SL hit = 唯一 weight-1.0 嘅真市場訊號——被錯 tag 折半成 0.5; MFE 鎖利歸因錯桶（close-decision-calibrator 收唔到 'exit_price_lock' 樣本, 過早率校準被 SL hit 單污染）。
+
+**實作**（minimal blast radius）: 新純函數 `resolveClosePipelineReason({closeStructureConfirmed, mfeLock})`（src/analysis/close-pipeline-reason.ts, 單一 source of truth）——SL hit → `'sl_tp'`、MFE 鎖利 → `'exit_price_lock'`、其餘共識/止血/止盈 → `'consensus'`（保持）。index.ts:12781 call site 接入。下游 sanitizeCloseReason 白名單天然兼容（'sl_tp'/'exit_price_lock' 早已 whitelisted）。
+
+**驗證**: 新測試 11（reason 正名 ×5 + learning weight 復原 ×4 + 白名單 round-trip ×2）; 全量 4103 pass + 13 pre-existing（零新增）; tsc clean。
+
+### Shadow-Informed Hierarchical Shrinkage Calibrator（Part B 驗證→實作）
+
+**主神構想**: 「參考埋 Shadow trade 資訊準繩度更高? 更能貼近當下?」——**數據證實成立**（E1-真: 09-02 後真 entryShadowWinRate n=26）:
+- shadowWR ≥0.55 → WR 57.1% avg **+0.65%** / 0.45-0.55 → WR 66.7% / **<0.45 → WR 16.7% avg −2.85%**, ρ=+0.1378（同 CHANGELOG ρ=+0.106 唯一有預測力特徵一致）
+- **機制優勢**: shadow per-symbol×side 樣本密度 10× real（btc|buy shadow n=269 vs real close 25）——正好填補 per-symbol 樣本餓死死結（close-decision-calibrator per-symbol 桶得 n=1）
+
+**架構**（LLMConvictionCalibrator v2）: 階層 Bayesian-inspired blend——`blendShadowCalibration(realEmp, nReal, shadowWR, nShadow, raw)`:
+- real 樣本足 → real 主導（wReal→1, shadow 權重→0——真錢 ground truth 唔可以俾 shadow over-ride）
+- real 冷啟動 → 純 shadow prior（per-symbol 當下 lean 填充——解樣本餓死）
+- shadow n 細 → 收縮向 0.5（831 冷啟動紀律）; K_REAL=5 / K_SHADOW=20（shadow 係模擬——無費用/滑點——保守 shrink）
+- LLM 角色不變: 校準對象係 LLM 自報 conviction; shadow 只做統計先驗（唔係每 cycle LLM call——Part B 已證偽「每 cycle × 每 asset LLM 動態校準」: 樣本密度 n=1-20 + 每 cycle 零新增資訊 + LLM 預測力 47%<53%）
+
+**驗證**: 新測試 13（階層合併性質 ×7 + 整合 ×6）; 全量 4116 pass + 13 pre-existing（零新增）; tsc clean。
+
+**調查紀錄（同輪）**: ①holdmin 繞過 E2a 定位——10 單輕蝕 <15min consensus close 全部喺 holdmin deploy（2026-08-29 09:36）**前**, deploy 後零漏網（holdmin 有效） ②BNB 重覆 BUY——09/03 日開 5 次（694.55→698.23→705.24→711.7→724.75 逐次追高）, 鎖利→重開 churn 實際 +16.15% vs 純揸（5m candle 重放）**+38.2%**（max DD 0.09%——1.5% SL 全程冇被掃） ③roll TP/SL 構想——9 clusters 重放 ROLL 累計 −83.4pp（2 勝 7 負）: smooth trend（BNB）大勝 +22pp, stepping/choppy trend（SILVER/GOLD sell）敗 −27~−36pp——判別條件 D1（chase re-entry）×D2（smoothness）需擴充樣本驗證, 未實作（831 紀律） ④BTC 10 日冇開倉——tradingMarkets ✓ + consensus ✓ + agents 深入分析 ✓, 根因= range 高位 0.67 + 5m flat + FRONT-RUN suspicion 合理 HOLD ⑤Part B 證偽「每 cycle × 每 asset LLM 動態校準」——per-symbol 樣本 n=1-25（5/11 資產 ≥30） + 每 cycle 零新增 close 資訊 + LLM 預測力 47%<baseline 53%（P9-verify-llm 重現）
+
+---
+
 ## v2.0.873-P9-OLR-decision-lang: 已證偽源決策導向語言清除 + Shadow WR 提升（主神 2026-09-02「🚫 標記會唔會導致好難開倉？」）
 
 **主神質疑**: 「buildOLRBlock 標記 🚫 OLR 已證偽——禁止引用做開倉理由 會唔會導致好難開倉？」
