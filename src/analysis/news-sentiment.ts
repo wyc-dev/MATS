@@ -526,8 +526,13 @@ export function computePriceNewsTiming(
   };
 }
 
-/** Format the price-news timing block for agent context (the 📊 section). */
-export function formatPriceNewsTiming(pt: PriceNewsTiming): string {
+/** Format the price-news timing block for agent context (the 📊 section).
+ *  v2.0.873-P9-news-motive（主神 2026-09-04「新聞出現代表有機構需要散播——需要知道利益瓜葛以及較早時期嘅 front running」）:
+ *  motive alert 直接喺 data 層計算並標註——唔再靠 LLM 自己查 prompt 記憶表格
+ *  （實證: News Reporter v2 框架 07-09 已有, 但執行率僅 4/16=25%——盲目信 news
+ *  avg −1.02% vs 有懷疑 avg +1.27%）
+ */
+export function formatPriceNewsTiming(pt: PriceNewsTiming, lexiconHint?: 'BULLISH' | 'BEARISH' | 'NEUTRAL'): string {
   const pct = (x: number) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
   const lines = [
     `  📊 PRICE-NEWS TIMING:`,
@@ -539,7 +544,49 @@ export function formatPriceNewsTiming(pt: PriceNewsTiming): string {
     lines.push(`     No meaningful pre-news move (${pct(pt.preNewsMovePct)} over the pre-news window) → news not obviously front-run`);
   }
   lines.push(`     Headline cadence: ${pt.headlineCadence.toFixed(1)}/day (${pt.cadenceLevel}) | Source clustering: ${(pt.sourceClustering * 100).toFixed(0)}% (${pt.clusteringLevel}, dominant=${pt.dominantAngle})`);
+  // ── v2.0.873-P9-news-motive: 機構意圖動機警示——data 層直接判讀（唔靠 LLM 記憶表）──
+  const alert = computeNewsMotiveAlert(pt, lexiconHint);
+  if (alert) lines.push(alert);
   return lines.join('\n');
+}
+
+/**
+ * 機構意圖動機警示（data 層判讀——對應 News Reporter prompt 嘅 DECODE FRAMEWORK B 表）。
+ * 主神洞察: 新聞係 strategic dissemination——散播者有 agenda, 機構 pre-position 在先,
+ * news 到零售手已係尾巴。
+ *
+ * 判讀表（headline 方向 × price 方向）:
+ *   BULLISH headline + price UP（24h/3d 升）      → DISTRIBUTION-HYPE（散貨 bait——唔可以信 news 做 BUY）
+ *   BEARISH headline + price DOWN（24h/3d 跌）    → ACCUMULATION-FUD（恐慌 bait——機構收貨）
+ *   BULLISH headline + price DOWN / 跌            → NARRATIVE-PIVOT（新聞為反轉而散播）
+ *   BEARISH headline + price UP（升）             → NARRATIVE-PIVOT（同上）
+ *   NEUTRAL / 無明確方向                          → 無警示（face-value 或噪音）
+ *
+ * 零決策邏輯——純 context 標註（soft——agents 仍可唔跟, 但唔可以話「冇數據」）。
+ */
+export function computeNewsMotiveAlert(
+  pt: PriceNewsTiming,
+  lexiconHint?: 'BULLISH' | 'BEARISH' | 'NEUTRAL',
+): string {
+  if (!pt || typeof pt !== 'object') return ''; // garbage → 無警示
+  const hint = lexiconHint ?? pt.dominantAngle;
+  if (!hint || hint === 'NEUTRAL') return '';
+  const move24h = Number.isFinite(pt.change24h) ? pt.change24h : 0;
+  const priceUp = move24h > 0.005;  // 24h 升 >0.5%
+  const priceDown = move24h < -0.005; // 24h 跌 >0.5%
+  if (hint === 'BULLISH' && priceUp) {
+    return `     🚨 MOTIVE ALERT: DISTRIBUTION-HYPE — BULLISH headlines after price already pumped (24h ${(move24h * 100).toFixed(1)}%) → institutions likely SELLING into the narrative. Fade news-based BUY; do NOT treat bullish news as entry edge.`;
+  }
+  if (hint === 'BEARISH' && priceDown) {
+    return `     🚨 MOTIVE ALERT: ACCUMULATION-FUD — BEARISH headlines after price already dumped (24h ${(move24h * 100).toFixed(1)}%) → institutions likely BUYING the panic. Fade news-based SELL; do NOT treat bearish news as entry edge.`;
+  }
+  if (hint === 'BULLISH' && priceDown) {
+    return `     ⚠️ MOTIVE ALERT: NARRATIVE-PIVOT — BULLISH news while price is FALLING (24h ${(move24h * 100).toFixed(1)}%) → story released to reverse sentiment; requires PRICE CONFIRMATION upward, else it is bait.`;
+  }
+  if (hint === 'BEARISH' && priceUp) {
+    return `     ⚠️ MOTIVE ALERT: NARRATIVE-PIVOT — BEARISH news while price is RISING (24h ${(move24h * 100).toFixed(1)}%) → story released to reverse sentiment; requires PRICE CONFIRMATION downward, else it is bait.`;
+  }
+  return '';
 }
 
 // ─── 5-minute in-memory cache (per symbol) ───
@@ -800,8 +847,10 @@ export function formatNewsForAgentMulti(results: (NewsSentimentResult | null)[])
       lines.push(`  ${emoji} [${h.publisher}, ${ageLabel(h.pubDate)}] ${h.title.slice(0, 120)}`);
     }
     // v2.0.139: append the price-news timing block (institutional front-run tell)
+    // v2.0.873-P9-news-motive: 傳 lexiconHint——motive alert（DISTRIBUTION-HYPE etc.）
+    // 直接喺 data 層判讀並標註（唔靠 LLM 自己查 prompt 記憶表——實測執行率得 25%）
     if (r.priceNewsTiming) {
-      lines.push(formatPriceNewsTiming(r.priceNewsTiming));
+      lines.push(formatPriceNewsTiming(r.priceNewsTiming, r.lexiconHint));
     }
     blocks.push(lines.join('\n'));
   }
