@@ -1,10 +1,27 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-OLR-decision-lang
+> **作者**: YC Wong · **版本**: 2.0.873-P9-close-pipeline-fix + shadow-calib
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-OLR-decision-lang）**: vitest 4092 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-close-pipeline-fix + shadow-calib）**: vitest 4116 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.873-P9-close-pipeline-fix + shadow-calib（2026-09-04）：關倉 reason 正名 + Shadow-Informed 校準
+
+**主神指令**: ①Fix A——層級化 close 流水線 closeReason tag 污染（production grade, 先證後改） ②驗證+實作 Shadow-Informed 校準構想
+
+### Fix A（量化金融——歸因層準確）
+- **實證**: 357 單中 **63 單 exitThesis「Majority: HOLD」但 closeReason='consensus'**——v2.0.831 Meta-Agent authoritative override（設計）+ 流水線全部路徑統一 tag 'consensus'（bug）
+- **代價**: SL hit（唯一 weight-1.0 真市場訊號）被折半成 0.5; MFE 鎖利歸因錯桶污染 calibrator 過早率
+- **實作**: `resolveClosePipelineReason`（src/analysis/close-pipeline-reason.ts 純函數）——SL hit→'sl_tp' / MFE lock→'exit_price_lock' / 其餘→'consensus'; index.ts:12781 接入
+
+### Shadow-Informed Hierarchical Shrinkage Calibrator
+- **主神構想驗證**（E1-真 n=26）: shadowWR<0.45 → WR 16.7% avg −2.85% vs ≥0.55 → WR 57.1% +0.65%, ρ=+0.1378——**成立**
+- **機制**: shadow per-symbol×side 密度 10× real——填補 per-symbol 樣本餓死（real 桶 n=1-25）
+- **架構**: `blendShadowCalibration`——real 樣本足 → real 主導（shadow 權重→0, 真錢 ground truth 唔可以被 shadow over-ride）; real 冷啟動 → 純 shadow prior; shadow n 細 → 收縮向 0.5; K_REAL=5 / K_SHADOW=20（shadow 係模擬, 保守 shrink）
+- **Part B 證偽**: 「每 cycle × 每 asset LLM 動態校準」不可行——per-symbol 樣本 n=1-25（5/11 ≥30）+ 每 cycle 零新增 close 資訊 + LLM 預測力 47%<53%——正確版 = 統計收縮為主 + LLM 只做 regime-switch prior + event-driven
 
 ---
 
