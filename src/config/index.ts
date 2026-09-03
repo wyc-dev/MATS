@@ -91,6 +91,12 @@ const envSchema = z.object({
   // OPEX alone NEVER vetoes since P63 — LLM judges breakout vs failure.
   OPTIONS_PLAYBOOK_VETO: z.coerce.boolean().default(true),
 
+  // v2.0.873-P9-sltp-watch: Real SL/TP 本地兜底 watcher（#5 深挖——DRAM 單
+  // price 真穿 SL 而 HL trigger 冇觸發 + 本地 check 死碼 = 雙裸奔）。
+  // true = 每 cycle 用 HL 權威價檢查 real 倉位擊穿 SL/TP（HL trigger 存在時唔爭）;
+  // false = 回滾（只靠 HL native trigger）。
+  LOCAL_SLT_WATCH: z.coerce.boolean().default(true),
+
   // Telegram Bot for IM notifications
   TELEGRAM_BOT_API: z.string().optional().default(''),
   TELEGRAM_CHAT_ID: z.string().optional().default(''),

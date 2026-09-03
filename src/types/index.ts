@@ -468,6 +468,12 @@ export interface RealTradingEngine {
   cancelOrder(orderId: string): Promise<boolean>;
   /** Get current positions from exchange */
   getPositions(): Promise<Position[]>;
+  /** v2.0.873-P9-sltp-watch: Get open orders (incl. SL/TP trigger orders) —
+   *   local watcher uses it to detect unprotected positions */
+  getOpenOrders(): Promise<Array<{ coin?: unknown; reduceOnly?: unknown; triggerPx?: unknown; orderType?: unknown }>>;
+  /** v2.0.873-P9-sltp-watch: 批量 mid price（逐 dex allMids——xyz 資產權威價）
+   *  optional——唔支援嘅 engine 可唔實作（caller 有 fallback） */
+  getMidPrices?(symbols: string[]): Promise<Map<string, number>>;
   /** Get account balance */
   getBalance(): Promise<ExchangeAccountInfo>;
   /** Adjust stop-loss/take-profit on an existing position */

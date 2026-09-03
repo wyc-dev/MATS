@@ -1565,4 +1565,34 @@ export class HyperliquidEngine implements RealTradingEngine {
       return 0;
     }
   }
+
+  /** v2.0.873-P9-sltp-watch-attack: 公開批量 mid price getter——逐 dex allMids
+   *  合併（主 DEX + xyz——WS activeAssetCtx 唔支援 xyz: 訂閱, markPriceMap 對
+   *  xyz 永遠空——watcher 需要 xyz 權威價先唔會靜默失效）。一次過攞需要嘅
+   *  symbols（慳 API call——唔可以 per-symbol 逐個 fetch）。 */
+  async getMidPrices(symbols: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (!Array.isArray(symbols) || symbols.length === 0) return out;
+    const desired = new Set(symbols.map((s) => s.toLowerCase()));
+    try {
+      for (const dex of HyperliquidEngine.PERP_DEX_NAMES) {
+        const body: Record<string, unknown> = { type: 'allMids' };
+        if (dex) body['dex'] = dex;
+        const res = await hlRateLimitedFetch(HL_INFO_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) continue;
+        const data = await res.json() as Record<string, string>;
+        for (const [coin, mid] of Object.entries(data)) {
+          const k = coin.toLowerCase();
+          if (!desired.has(k)) continue;
+          const v = parseFloat(mid);
+          if (Number.isFinite(v) && v > 0 && !out.has(k)) out.set(k, v);
+        }
+      }
+    } catch { /* 非致命——caller 有 fallback */ }
+    return out;
+  }
 }

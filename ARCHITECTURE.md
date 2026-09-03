@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-edge-evolution
+> **作者**: YC Wong · **版本**: 2.0.873-P9-sltp-watch-attack
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-edge-evolution）**: vitest 4039 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-sltp-watch-attack）**: vitest 4079 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
@@ -979,7 +979,7 @@ src/
 │   │   # v2.0.833 REMOVED + v2.0.862 DELETED: temporal-attention.ts, cross-symbol-backbone.ts, reward-shaping.ts, world-model.ts
 │   ├── direction-audit.ts   # LLM 交易記錄審計（v2.0.180）
 │   └── system-engineer.ts   # 自主代碼工程師 Agent（v2.0.182）
-├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos（v2.0.871-P7: Rosenstein slope λ/min + per-symbol buffer）· momentum-5m-gate（v2.0.872-P8: 主神 5m 方向硬閘，robust σ 自適應門檻；P8-profit 重放否決速度鎖利/半倉試探——大 winner 需要回吐空間，reconciliation wins 學習權重 0.5）· options · news
+├── analysis/                # sentiment · S/R · ATR（momentum-adaptive SL v2.0.207 #C）· planck-chaos（v2.0.871-P7: Rosenstein slope λ/min + per-symbol buffer）· momentum-5m-gate（v2.0.872-P8: 主神 5m 方向硬閘，robust σ 自適應門檻；P8-profit 重放否決速度鎖利/半倉試探——大 winner 需要回吐空間，reconciliation wins 學習權重 0.5）· real-sltp-watcher（v2.0.873-P9-sltp-watch: Real SL/TP 本地兜底——HL trigger 缺失時用 HL 權威價擊穿檢查——xyz 資產用 getMidPrices allMids, 主 DEX 用 WS mark）· options · news
 ├── market-agent/            # 自動 pair 選擇（9 DEX, 416 assets, 類別過濾）
 ├── data/                    # Hyperliquid + Binance WebSocket
 ├── services/                # v2.0.822: Analysis Matrix + Supabase writer
@@ -1552,6 +1552,8 @@ Per-profile caps（v2.0.836 → ⚠️ v2.0.857 moderate-only）：moderate SL 5
 2. TP cap ← 90th-percentile extension（數據驅動上限，取代固定 10% 上限——只喺數據話價格好少行得更遠時生效；固定 cap 仍然係絕對 backstop）。
 3. SL floor ← 95th-percentile adverse 5m excursion（噪音 floor，高槓桿倉位唔會被例行噪音止蝕）。
 方向感知：BUY 用 `tpTargetLongPct`/`tpCapLongPct`/`slFloorLongPct`；SELL 用 `*ShortPct`。全部係 FLOOR/CEILING——唔會移除結構性 S/R 放置，只修正過度樂觀/過度緊嘅值。Caller 提供嘅值 clamp 到 sane bounds（tpTarget ∈ [0.003, 0.20], tpCap ∈ [0.005, 0.30], slFloor ∈ [0.005, 0.15]）。TP 永遠唔可以 cross SL（R:R ≥ 0，v2.0.852 attack fix #4）。
+
+**Real SL/TP Local Watcher（v2.0.873-P9-sltp-watch, `analysis/real-sltp-watcher.ts`）**：**HL native trigger 係 primary 保護, 本地 watcher 係 backup-of-record**——每 cycle 用 HL 權威價（主 DEX=WS mark strict / **xyz=allMids mid——WS activeAssetCtx 唔訂閱 xyz:（hyperliquid-websocket.ts:359）, getMarkPriceStrict 對 xyz 永遠 null = 靜默失效——engine `getMidPrices(symbols)` 逐 dex allMids 合併解決**）檢查 real 倉位擊穿 SL/TP。**HL trigger 存在時完全唔爭（防 double-close/race）; HL trigger 缺失時本地 closeTrade 兕底**（DRAM -14.63% 單教訓: price 真穿 SL 55.222（candle L=55.145）而 HL trigger 冇觸發（userFills 零 SL fill）——checkStopLossTakeProfit 全局零 caller + checkPositionExits 對 real skip = 雙裸奔）。純函數 `decideLocalSltp`（side 白名單 normalizeSide / boolean strict / null input guard / ownProp prototype-pollution 免疫 / SL 1e308 天文數字 reject ±50%）+ `hasHlTriggerForSymbol`。每 cycle 偵測「本地有 SL/TP 而 HL 冇 trigger」→ `🚨 [sltp-unprotected]` LOUD（3 cycle 節流）; `_sltpUnprotectedWarn` Map cap 200。env `LOCAL_SLT_WATCH=false` 回滾。攻擊輪（P9-sltp-watch-attack）: 紅先 18 攻 7 真漏洞全修（V1 side 大小寫顛倒 CRITICAL / V2 boolean truthy / V3 null crash / V5 prototype pollution / V6 1e308 / V6b Map leak）。測試 33（15 + 18）; 全量 4079 pass + 13 pre-existing。
 
 **Momentum + Execution-Lens + Confidence SL Widening（v2.0.849）**：呢啲保護原本只喺 dead code `computeATRSLTP`（trading-manager 從未 call），而家移植到 live `computeSmartSLTP`：
 

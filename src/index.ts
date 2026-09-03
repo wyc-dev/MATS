@@ -8,8 +8,9 @@ import { hlRateLimitedFetch } from './utils/hl-global-limiter.ts';
 import { withTimeout } from './utils/with-timeout.ts';
 import { SupabaseAnalysisWriter } from './services/supabase-writer.ts';
 import { buildAssetAnalysis } from './services/analysis-matrix.ts';
-import { attachExecutionToAnalyses } from './services/execution-metadata.ts';
+import { attachExecutionToAnalyses, attachAuditExecutionToAnalyses } from './services/execution-metadata.ts';
 import { GateOutcomeTracker } from './analysis/gate-outcome-tracker.ts';
+import { decideLocalSltp, hasHlTriggerForSymbol } from './analysis/real-sltp-watcher.ts';
 import { shouldHoldForTrend, prefilterTrend, type TrendHoldResult } from './analysis/trend-hold-gate.ts';
 import { judgeCloseTrend, shouldHoldCloseFromSentinel, CLOSE_TREND_SENTINEL_ENABLED } from './analysis/close-trend-sentinel.ts';
 import type { AssetAnalysis, EdgeReport, ExecutionReport as AnalysisExecutionReport, RiskProfile } from './types/index.ts';
@@ -179,6 +180,9 @@ const klineBlockConfig = { enabled: parseBlockBool(process.env['KLINE_BLOCK_ENAB
 // 同 KLINE_BLOCK_ENABLED 對照組一致: 所有 context 注入都有 env 回滾掣。
 const sellAlertConfig = { enabled: parseBlockBool(process.env['SELL_ALERT_ENABLED'], true) } as const;
 const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BLOCK_ENABLED'], true) } as const;
+// v2.0.873-P9-sltp-watch: Real SL/TP 本地兜底 watcher（#5 深挖——DRAM 單
+// price 真穿 SL 而 HL trigger 冇觸發 + 本地 check 死碼 = 雙裸奔）。
+const localSltpWatchConfig = { enabled: parseBlockBool(process.env['LOCAL_SLT_WATCH'], true) } as const;
 const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
 const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], true) } as const;
@@ -681,6 +685,9 @@ class MATSSystem {
    *  LLM 趨勢持續性判斷 hold）——寫入 execution metadata 令客戶端可追溯。
    *  v2.0.870-FIX-C1: 用 CloseBlock（帶 blockedBy:'sentinel' / gate）——前端準確顯示 TREND HOLD。 */
   private _sentinelHolds = new Map<string, import('./services/execution-metadata.ts').CloseBlock>();
+
+  /** v2.0.873-P9-sltp-watch #5c: 每 symbol 裸奔警告嘅最後 cycle（防每 cycle spam） */
+  private _sltpUnprotectedWarn = new Map<string, number>();
   /** v2.0.870-exit-price-lock-confirm: pending trailing lock——回吐 ≥50% 後
    *  確認窗口（12 cycle=60min）內冇創新高先鎖（大 winner 創新高 → 取消）。 */
   private _pendingTrailingLocks = new Map<string, PendingTrailingLock>();
@@ -10154,6 +10161,19 @@ ${recentExamples}
           log.warn(`Exchange sync (balance/fills/positions) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
+        // v2.0.873-P9-sltp-watch（#5 深挖 2026-09-02）: Real SL/TP 本地兕底——
+        // 每 cycle 用 HL 權威價檢查 real 倉位擊穿 SL/TP。HL native trigger 存在時
+        // 唔爭（防 double-close / race）; HL trigger 缺失時本地兕底——確保任何 real
+        // 倉位任何時刻都唔可以裸奔（DRAM 單: price 真穿 SL 55.222 而 HL trigger 冇
+        // 觸發 + checkStopLossTakeProfit 死碼 + checkPositionExits 對 real skip = 雙裸奔）。
+        if (localSltpWatchConfig.enabled && this.tradingManager.getTradeMode() === 'real') {
+          try {
+            await this.runLocalSltpWatch();
+          } catch (err) {
+            log.warn(`[local-sltp-watch] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
         // v2.0.32: Sync SL/TP to HL — check every cycle if HL has the trigger
         // orders that the local mirror expects. If missing, place them.
         try {
@@ -11720,6 +11740,16 @@ ${recentExamples}
             );
             if (unifyGate.blocked) {
               log.warn(`🧪 [unified-gate] Exploration ${direction!.toUpperCase()} ${exploreTarget}: ${unifyGate.reason} — skip（統一執行路徑）`);
+              // v2.0.873-P9-exec-upload: exploration 被 gate block 一樣要上傳
+              // metadata.execution（客戶端讀 asset_analyses 見到「點解唔執行」）。
+              this.recordDecisionAudit(
+                exploreTarget,
+                direction as 'buy' | 'sell',
+                0.5,
+                '',
+                [{ gate: 'entry-gates', passed: false, reason: unifyGate.reason ?? 'HARD BLOCK' }],
+                false,
+              );
               direction = null;
               finalDecision = result.consensus.decision; // keep HOLD
             }
@@ -15483,6 +15513,23 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
     }
     const gateSummary = gates.map(g => `${g.gate}:${g.passed ? '✅' : '❌'}`).join(' ');
     log.info(`📋 [audit] Cycle ${this.totalCycles} ${action.toUpperCase()} ${symbol} conf=${(confidence * 100).toFixed(0)}% executed=${executed} gates=[${gateSummary}]`);
+
+    // v2.0.873-P9-exec-upload: patch this row's metadata.execution so the
+    //  per-symbol gate trail (mom24-guard / chase-tail / direction-restrict /
+    //  sr-size / ...) reaches Supabase asset_analyses. Before this fix, only
+    //  the ACTIVE symbol got execution metadata (via flushPendingAnalyses);
+    //  every per-symbol block lived ONLY in the in-memory decisionAudit —
+    //  clients reading asset_analyses saw consensus.action='buy' with NO
+    //  blocked flag and would execute a HARD-BLOCKED signal.
+    //  Pure + sanitised (persisted pollution never crashes the audit path);
+    //  non-fatal — a patch failure must never break the trading cycle.
+    if (this._pendingAnalyses && this._pendingAnalyses.length > 0) {
+      try {
+        attachAuditExecutionToAnalyses(this._pendingAnalyses, symbol, action, gates, executed);
+      } catch (err) {
+        log.warn(`[exec-upload] audit patch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**
@@ -16198,6 +16245,118 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
   }
 
   /** v2.0.866: 每 cycle 驗證 pending close 決定(延遲驗證——close 後價格方向) */
+  /** v2.0.873-P9-sltp-watch（#5 深挖 2026-09-02）: Real SL/TP 本地兕底 watcher。
+   *  每 cycle 對全部 real positions（agentId='hyperliquid-real'）:
+   *   1. 用 HL 權威價（mark price——唔用 local stale currentPrice）
+   *   2. 檢查 HL active trigger orders——有覆蓋 → 唔爭（HL 自己會處理）
+   *   3. 冇 HL trigger 且 price 擊穿 SL/TP → 本地 closeTrade（SL/TP 保護唔可以裸奔）
+   *   DRAM 單教訓: price 真穿 SL 而 HL trigger 冇觸發 + 本地 check 死碼 = 雙裸奔。
+   *   env LOCAL_SLT_WATCH=false 回滾。純加法——唔影響 HL trigger 正常路徑。 */
+  private async runLocalSltpWatch(): Promise<void> {
+    const engine = this.tradingManager?.getEngineForExchange('hyperliquid');
+    if (!engine) return;
+
+    // 1. HL 實時 trigger orders（主 DEX + xyz）——判斷邊啲倉位有 HL 保護
+    let hlOrders: Array<{ coin?: unknown; reduceOnly?: unknown; triggerPx?: unknown; orderType?: unknown }> = [];
+    try {
+      const raw = await engine.getOpenOrders();
+      if (Array.isArray(raw)) hlOrders = raw as typeof hlOrders;
+    } catch (err) {
+      log.warn(`[local-sltp-watch] getOpenOrders failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      return; // 攞唔到 HL 訂單 → 唔可以安全判斷 → 唔郁（有咩事 HL trigger 自己兜）
+    }
+
+    // v2.0.873-P9-sltp-watch-attack: xyz 資產權威價——WS activeAssetCtx 唔訂閱
+    // xyz:（DRAM/SILVER/SKHX 等主要風險源）, getMarkPriceStrict 對佢哋永遠 null
+    // → watcher 靜默失效。逐 dex allMids（getMidPrices）一次過攞全部 real
+    // 倉位嘅 mid——主 DEX 用 WS mark（更即時）, xyz 用 allMids（唯一真價）。
+    const openSymbols = this.portfolio.getOpenSymbols().filter((s) => {
+      const p = this.portfolio.getPosition(s);
+      return p && p.agentId === 'hyperliquid-real' && (p.quantity ?? 0) > 0;
+    });
+    let xyzMids: Map<string, number> | null = null;
+    if (openSymbols.some((s) => s.includes(':'))) {
+      try {
+        if (typeof (engine as { getMidPrices?: (s: string[]) => Promise<Map<string, number>> }).getMidPrices === 'function') {
+          xyzMids = await (engine as { getMidPrices: (s: string[]) => Promise<Map<string, number>> }).getMidPrices(openSymbols);
+        }
+      } catch (err) {
+        log.warn(`[local-sltp-watch] getMidPrices failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    for (const sym of openSymbols) {
+      const pos = this.portfolio.getPosition(sym);
+      if (!pos) continue;
+
+      // 2. HL 權威價——主 DEX 用 WS mark（strict）; xyz 用 allMids mid
+      let hlPrice: number | null = null;
+      if (sym.includes(':')) {
+        const mid = xyzMids?.get(sym.toLowerCase());
+        if (mid !== undefined && Number.isFinite(mid) && mid > 0) hlPrice = mid;
+      } else {
+        hlPrice = this.getMarkPriceStrict(normalizeSymbol(sym));
+      }
+      if (hlPrice === null || !Number.isFinite(hlPrice) || hlPrice <= 0) continue;
+
+      // 3. 裁決（純函數——全部 guard 可測試）
+      const hasTrigger = hasHlTriggerForSymbol(hlOrders, sym);
+      const decision = decideLocalSltp({
+        pos: {
+          symbol: sym,
+          side: isSellSide(pos.side) ? 'sell' : 'buy',
+          stopLossPrice: pos.stopLossPrice,
+          takeProfitPrice: pos.takeProfitPrice,
+        },
+        hlPrice,
+        hlHasTrigger: hasTrigger,
+        positionExists: !!(pos && pos.quantity > 0),
+      });
+
+      // v2.0.873-P9-sltp-watch #5c: 放置驗證 LOUD——本地有 SL/TP 期望而 HL 上
+      // 冇對應 trigger order = 裸奔倉位（DRAM 單就係咁: price 真穿 SL 而 HL
+      // trigger 唔存在）。每 cycle 偵測到即 LOUD（唔准靜默）——syncSLTP 會嘗試
+      // 補放, 但補放失敗時冇人知 → 呢度係缺失偵測器。
+      const localHasSltp = (pos.stopLossPrice ?? null) !== null || (pos.takeProfitPrice ?? null) !== null;
+      if (localHasSltp && !hasTrigger) {
+        // 唔每 cycle spam——每 symbol 最少隔 3 個 cycle 警一次
+        // 攻擊硬化(V6):Map 無限增長——垃圾 symbol 可以 memory leak → 超過 200
+        // 個 symbol 強制清理最舊(正常 tradingMarkets ~15-20 個——200 係安全上限)
+        if (this._sltpUnprotectedWarn.size > 200) {
+          const oldest = this._sltpUnprotectedWarn.keys().next().value as string | undefined;
+          if (oldest !== undefined) this._sltpUnprotectedWarn.delete(oldest);
+        }
+        const unprotKey = `unprot:${normalizeSymbol(sym)}`;
+        const lastWarn = this._sltpUnprotectedWarn.get(unprotKey) ?? 0;
+        if (this.totalCycles - lastWarn >= 3) {
+          this._sltpUnprotectedWarn.set(unprotKey, this.totalCycles);
+          log.warn(`🚨 [sltp-unprotected] ${sym} ${String(pos.side ?? '?').toUpperCase()}: 本地期望 SL/TP (SL=${pos.stopLossPrice?.toFixed(2) ?? '-'} TP=${pos.takeProfitPrice?.toFixed(2) ?? '-'}) 但 HL 上冇 trigger order —— 倉位裸奔! syncSLTP 會嘗試補放, 但本地 watcher 接管檢查（price=$ ${hlPrice.toFixed(2)}）`);
+        }
+      }
+
+      if (decision.action === 'skip') continue;
+
+      // 4. 命中 → 本地 close（closeReason='sl_tp'/'tp_hit'——white-list 內）
+      log.warn(`🛡️ [local-sltp-watch] ${sym} ${String(pos.side ?? '?').toUpperCase()} @ $${hlPrice.toFixed(2)} — ${decision.reason === 'sl_tp' ? 'SL' : 'TP'} 擊穿（HL trigger 缺失, 本地兕底接管）`);
+      const exitThesis = `[LOCAL SLTP WATCH] ${sym} ${pos.side.toUpperCase()} ${decision.reason === 'sl_tp' ? 'SL' : 'TP'} triggered @ $${hlPrice.toFixed(2)} (HL mark price, local fallback — HL trigger absent)`;
+      try {
+        const ok = await this.closeTrade(sym, exitThesis, decision.reason);
+        if (ok) {
+          this.gateOutcomeTracker.record({
+            symbol: sym,
+            gate: 'local-sltp-watch',
+            direction: pos.side === 'sell' ? 'sell' : 'buy',
+            side: pos.side === 'sell' ? 'sell' : 'buy',
+            entryPrice: hlPrice,
+            cycle: this.totalCycles,
+          });
+        }
+      } catch (err) {
+        log.warn(`[local-sltp-watch] closeTrade failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   private verifyPendingCloseDecisions(): void {
     try {
       if (!this.closeCalibrator || !closeCalibConfig.enabled) return;
