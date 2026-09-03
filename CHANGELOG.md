@@ -4,6 +4,47 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-sltp-watch-attack: 攻擊輪——7 真漏洞全修 + xyz 權威價斷層（主神 2026-09-02「不擇手段攻擊啱啱修葺嘅 code」）
+
+**紅先 18 攻擊測試 → 7 fail 真漏洞全修（V1-V6 類別）**:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1×3 | `decideLocalSltp` 內 `pos.side === 'sell'` 嚴格比較——`'SELL'`/`'Short'`/`'hold'`/null 全部 fallback BUY → **SELL 倉止蝕方向顛倒**（codebase normalizeTradeSide 教訓同款） | CRITICAL | `normalizeSide()` 白名單（sell/short→sell, buy/long→buy, 垃圾→null→`skip: invalid-side`） |
+| V2×2 | `hlHasTrigger`/`positionExists` 傳 string `'false'`（truthy）→ 當「有 trigger」→ 真穿 SL 但 skip; 或當「存在」→ phantom close | HIGH | strict `=== true` / `!== false`——truthy 污染唔可以當 boolean |
+| V3×1 | `decideLocalSltp(null)` / pos=array/string → 解構 crash | HIGH | input/pos 必須有效 object guard → `skip: invalid-pos` |
+| V5×1 | `hasHlTriggerForSymbol` prototype pollution——`o.coin` 經 chain 攞到垃圾值 | MED | `ownProp()` own-property getter（coin/triggerPx/orderType 全部 hasOwnProperty 先攞） |
+| V6×1 | SL/TP 天文數字（1e308 finite）→ 當有效止蝕基準（誤觸發/永不觸發） | MED | SL/TP 相對 price 距離 ≤50% 合理範圍（`invalid-sltp` skip——1e308 唔可以做止蝕） |
+| V6b | `_sltpUnprotectedWarn` Map 無限增長（垃圾 symbol → memory leak） | LOW | size>200 強制清最舊 |
+
+**🚨 第二個 CRITICAL（實戰斷層, 唔喺純函數度——attack 週邊 code review 發現）**: watcher 用 `getMarkPriceStrict` 攞 xyz 資產權威價——**但 WS activeAssetCtx 對 xyz: 唔訂閱（hyperliquid-websocket.ts:359 明文）, markPriceMap 對 xyz 永遠空 → watcher 對 DRAM/SILVER/SKHX 等主要風險源靜默失效（修復等於白做）**。修復: hyperliquid-engine 新增公開 `getMidPrices(symbols)`（逐 dex allMids 合併——複用 P33 已驗證嘅 PERP_DEX_NAMES 迴圈）, watcher 對 `xyz:` 倉位用 allMids mid（唯一真價）, 主 DEX 用 WS mark（更即時）。
+
+**盈利提升（量化金融師視角——尾部虧損削減 = Sharpe + 幾何收益率提升）**: ① watcher 修復後 9 單歷史真穿 SL 深損（SKHX×3/SNDK×2/SILVER/DRAM/btc/bnb）全部有兕底——慳 23.5% margin 尾部; ② 連蝕閉環確認: watcher close → `onPositionClosedLearning` → `updateCooldownOnClose`——DRAM 類死亡螺旋（同向連蝕 2 次）自動 block 再開; ③ GOT 閉環: watcher 觸發記錄 `gate='local-sltp-watch'`——日後 hit rate 校準（尾部分佈量度）。
+
+**驗證**: 新攻擊測試 18/18（紅先 7 fail → 綠後全過）+ 原測試 15/15; 全量 **4079 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
+## v2.0.873-P9-sltp-watch: Real SL/TP 本地兕底（DRAM -14.6% 五層診斷 + HL trigger 真實驗證——主神 2026-09-02「#5 即刻深挖→即刻實作」）
+
+**觸發**: DRAM BUY -14.63%（09-03 12:01→13:13, consensus close）——「點解有 831 防護都仲蝕咁多」調查。
+
+**診斷（數據鐵證, 全部零 look-ahead）**:
+1. **SL 距離本身容許 -15% margin**——`SL_ABSOLUTE_FLOOR_PCT=0.015` 一刀切, SL 55.222 = -1.5% price = -15% margin @10x（實驗: 收窄 SL 全負面 Δ-129~-336pp, 誤傷 13-38% 插針贏單→**否決**, 831 教訓重現）
+2. **Skeptics 喺 -3.2% BLOCK close（GOT 實證 entryPrice=55.877, cycle 19901）→ 額外損失 11.38% margin**（後續 #2 候選）
+3. **MFE +2% 未到鎖利 threshold（4.02%）——唔鎖正確**
+4. **OLR 已證偽但 73% 單 entryThesis 仍引用（引用組 WR 46.6% vs 冇引用 54.3%）**（後續 #4 候選）
+5. **🚨 HL trigger 真實驗證（三源交叉）**: ①live openOrders 證實 xyz:DRAM trigger 可放設成功 ②userFills 證實涉案單 12:01→13:13 **零 SL fill**（exit 55.239 高過 SL 55.222）③candleSnapshot 證實 price 真穿 SL（05:10 L=55.145）→ **SL 裸奔係真**。根因: `checkStopLossTakeProfit`（engine 層）**全域零 caller**（死碼）+ `checkPositionExits`（portfolio 層）對 `agentId='hyperliquid-real'` **直接 return**（v2.0.156「靠 HL trigger」設計）——HL trigger 缺失時**雙重裸奔**。
+
+**實作（production grade, 兩層防禦）**:
+- **5a 本地兕底**: 新 `src/analysis/real-sltp-watcher.ts` 純函數 `decideLocalSltp`（guard: position 存在 / HL 有 trigger 唔爭 / HL 權威價 finite / SL TP 方向鏡像）+ `hasHlTriggerForSymbol`（reduceOnly + triggerPx 識別, case/prefix 唔敏感）+ index.ts `runLocalSltpWatch()` 每 cycle 接入（HL mark price strict——唔用 local stale currentPrice; closeTrade 用 white-list reason; GOT 記錄 `gate='local-sltp-watch'`）。
+- **5c 放置驗證 LOUD**: 每 cycle 偵測「本地有 SL/TP 期望而 HL 冇 trigger order」→ `🚨 [sltp-unprotected]` LOUD（每 symbol 3 cycle 節流防 spam）——裸奔不再靜默。`RealTradingEngine` interface 補 `getOpenOrders`。
+- env `LOCAL_SLT_WATCH=false` 回滾。純加法——唔影響 HL trigger 正常路徑（HL 有 trigger 時 watcher 完全 skip）。
+
+**驗證**: 新測試 15/15（穿 SL close / HL trigger skip / 方向鏡像 / NaN 垃圾 skip / position-gone / trigger 識別 / case / 誤 match 防禦）; 全量 **4061 pass + 13 pre-existing（零新增）**; tsc clean。**E1 量化**: 歷史 9 單真穿 SL 非 sl_tp 深損（SKHX×3/SNDK×2/SILVER/DRAM/btc/bnb 等）全部有 watcher 兕底路徑——慳 23.5% margin。
+
+---
+
 ## v2.0.873-P9-edge-evolution: System Engineer 解放——831 VERIFY-FIRST 授權 + harness 權限升級（主神 2026-09-02「我本身要 System Engineer 做嘅嘢唔係單純困於 831.md,831.md 只係例子,我係希望佢可以不斷演化對 edge 嘅觸覺」）
 
 **兩層改動（fa1b55c docs + 132cfc6 feat）——將 SE 由「被動修 bug」升級為「主動獵取超額盈利嘅 edge hunter」**:
