@@ -4,6 +4,20 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-news-motive: 機構意圖動機警示注入（主神 2026-09-04「新聞出現代表有機構需要散播——需要知道利益瓜葛以及較早時期嘅 front running」）
+
+**實證（先證後改——全樣本 92 單）**: News Reporter v2 框架（07-09 已有 DECODE FRAMEWORK B 表）**執行率僅 4/16=25%**——盲目信 news avg −1.02%（news+BUY −1.60% 災難）vs 有懷疑 +1.27%; DISTRIBUTION-HYPE 偵測案例 SILVER sell **+12.3%**/+4.5%（bullish headlines on falling price = 機構散貨）。LLM regime 判斷準確率 **44.4%**（反預測）——LLM 敘事層冇預測力, 但「懷疑 news」有正成效。
+
+**缺口**: motive 判讀表（DECODE FRAMEWORK B）只存在於 LLM prompt——靠 LLM 自覺執行（執行率 25%）, context block 只有中性數據（1h/4h/24h moves）——LLM 可以忽略。
+
+**實作（data 層判讀——架構: 零決策邏輯, 純 context 標註 soft gate）**:
+- `computeNewsMotiveAlert()` 純函數——BULLISH+price↑ → 🚨 DISTRIBUTION-HYPE（fade news BUY）/ BEARISH+price↓ → 🚨 ACCUMULATION-FUD（機構收貨）/ BULLISH+price↓ 或 BEARISH+price↑ → ⚠️ NARRATIVE-PIVOT（需 price 確認）; threshold ±0.5% 24h; garbage 防禦
+- `formatPriceNewsTiming()` 加 lexiconHint 參數 + alert 輸出; `formatNewsForAgentMulti` 傳 `r.lexiconHint` 接駁
+- agents 仍可唔跟（soft）——但唔可以話「冇數據」（data 層已判讀）
+
+**驗證**: 新測試 10/10（五分支 + ±0.5% 邊界 + garbage + hint 優先級 + integration）; 全量 **4126 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
 ## v2.0.873-P9-close-pipeline-fix + shadow-calib: 關倉流水線 reason 正名（Fix A）+ Shadow-Informed 校準（主神 2026-09-04「BNB 重覆 BUY / roll TP/SL / 每 asset 動態校準」系列）
 
 **主神兩條指令**: ①Fix A——層級化 close 流水線 tag 污染（production grade） ②驗證 Shadow-Informed 校準構想
