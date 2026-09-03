@@ -2,7 +2,7 @@
 
 > **作者**: YC Wong · **版本**: 2.0.873-P9-news-motive
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-news-motive）**: vitest 4126 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-news-motive-attack）**: vitest 4151 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
@@ -2631,3 +2631,19 @@ if effectiveConfidence < dynamicThreshold → HOLD
 - `src/index.ts` — Conviction gate replaced: additive → multiplicative + dynamic threshold
 - `src/cognition/hacp.ts` — Added `getCyclesWithoutTrade()` getter
 - `tests/dynamic-threshold-attack.test.ts` — 36 attack tests
+
+## v2.0.873-P9-news-motive-attack（2026-09-04）：攻擊輪 18 真漏洞全修（併發/狀態注入/持久化污染全鏈 sanitize）
+
+**紅先 25 攻擊 → 18 真漏洞全命中**——news-sentiment 全鏈喺 garbage 輸入下崩潰（單一垃圾 headline 可殺死成個 news context 注入 → 整個 cycle agents 見唔到 news 區塊 → DISTRIBUTION-HYPE 偵測失效）:
+- **V1** formatPriceNewsTiming: `change1h=Symbol`→`Symbol*100` TypeError / `preNewsMoveDir=123`→`.toUpperCase()` / `headlineCadence=undefined`→`.toFixed`
+- **V2** formatNewsForAgentMulti: headlines garbage element（null/Symbol/number title）/ `pubDate=string`→`.getTime()` / headlines 非 array / results 非 array / r=42
+- **V3** formatNewsForAgent: lexiconScore undefined / headlines undefined
+- **V4** computePriceNewsTiming: candles element `{t:Symbol}`→比較 TypeError / headlines `title=Symbol`→`.toLowerCase()`
+- **V5** computeNewsMotiveAlert: `change24h=1e308`——上輪已 guarded（pass）
+- **V6** normalizeBaseAsset: null→`.indexOf` crash（fetchNewsForSymbols 上游）
+
+**修復架構（單一 sanitize 入口）**: `safeNewsNum/safeNewsStr/safeNewsDate` → `sanitizeHeadline(s)`（元素級垃圾 skip）→ `sanitizeNewsResult`（字段 clamp + priceNewsTiming round-trip 保留）→ `sanitizePriceNewsTiming`（全字段 reset 中性, movedBeforeNews strict `===true`）——所有 formatter/compute 入口收垃圾, 下游只信 clean type, 唔 crash + 唔輸出 NaN%/undefined。
+
+**驗證**: 攻擊 25/25（紅先 18 fail → 綠後全過）+ motive 原有 10/10 零 regression; 全量 **4151 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
