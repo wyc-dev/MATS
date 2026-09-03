@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-sltp-watch-attack
+> **作者**: YC Wong · **版本**: 2.0.873-P9-olr-recent-attack
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-sltp-watch-attack）**: vitest 4079 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-olr-recent-attack）**: vitest 4085 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
@@ -1401,6 +1401,8 @@ MATS 嘅核心競爭力係**認知演化管線**（v2.0.868-P1P2: 15 active + 1 
 Per-symbol, per-side online logistic regression 從 shadow + paper + real + backfill 嘅 TP-before-SL 結果學習 P(win)。每個 feature 獨立計數，缺失 feature 返回中性 z=0。Source-weighted SGD updates（real=4, paper=2, shadow=1, backfill=0.3）。Confidence: high(≥50) / medium(≥20) / low(<20) samples。
 
 **v2.0.143 來源追蹤**：每個 OLR model 記錄 `shadowSamples` / `paperSamples` / `realSamples` 三個獨立計數器。Agent context 顯示數據構成：`BUY P(win)=60% (30 samples, medium | shadow=15 paper=10 real=5)`。如果 model 主要由 shadow samples 訓練（固定 SL/TP），agent 可降低信任度。
+
+**v2.0.873-P9-olr-recent-attack 攻擊硬化**（主神「不擇手段攻擊」紅先 6 攻 4 真漏洞全修）: `migrateModel`（load 層）對 `recentTrades` 做 **element 級 sanitize**——source 白名單（shadow/shadow_blind/paper/real/backfill）+ outcome 白名單（win/loss）+ cycle finite 檢查 + slNarrowed strict boolean + object guard + garbage drop（persisted pollution 唔可以再穿透入 agent prompt）; `query()` 渲染層 second defense——`cyclesAgo` clamp [0, 1e9]（巨大 finite cycle 唔可以產生 −1e308）。**#4 OLR prompt 強化**（4-A/4-B 實驗 347 單）: buildOLRBlock 標記升級「🚫 OLR 已證偽（ρ=+0.02 + OLR-主導開倉 WR 38.5% 全場最差）——禁止引用做開倉理由」——OLR-主導理由單 WR 38.5% 全樣本最差, OLR pwin≥60% 高信心組 avg −0.69%（反預測）。
 
 ### Shadow Trading（`shadow-trade-engine.ts`）
 

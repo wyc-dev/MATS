@@ -4,6 +4,33 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-olr-recent-attack: OLR recentTrades prompt 污染攻擊輪（4 真漏洞全修） + #4 OLR prompt 強化（主神 2026-09-02「#4 OLR prompt 強化 + 5d 記錄層 audit」→「不擇手段攻擊」）
+
+**三個任務（全部先證後改, 數據話事）**:
+
+### ① 5d 記錄層 audit（HL userFills 三源交叉——方向修正）
+- **5-A 鐵證**: 60/60 sl_tp record exitPrice = **HL 真實 fill（零假填, 記錄層誠實）**——「exit≈SL」係真 HL trigger 成交, 唔係本地填價
+- **5-B 方向修正（主神提示「可能係每 cycle 共識 SL close / 你搞錯方向」——正確）**: 「exit>record-SL 但標 sl_tp」**唔係假填**——①08-05 前 = v2.0.868 未 deploy（tp_hit 未分家, exit=TP 被標 sl_tp, 08-11 commit 已修）②08-18 後 = **SL mid-trade 調整後 `finalStopLossPrice` record 字段滯後**（exitThesis 顯示真 SL 707.99 vs record 690.27——真 SL 觸發但字段記錄舊值）→ 影響 close-context learning 歸因, 唔影響交易執行（HL trigger 用權威價 + local watcher 已獨立兕底）
+
+### ② #4 OLR prompt 強化（4-A/4-B 實驗全樣本 347 單）
+- **4-A ρ 重驗**: 引用 OLR 組 WR 46.5% vs 無引用 54.7%（差 8.2pp）; `entryOlrPWin` ρ=+0.035 零預測力; OLR BUY 引用組 WR 45.2% 最差; **OLR pwin≥60% 高信心組 avg −0.69%**（高信心反而蝕——ρ=−0.16 反預測重現）
+- **4-B 移除 counterfactual**: OLR-主導理由單（13 單）WR 38.5% avg +0.02% 全樣本最差; 無引用組有 demand/supply/momentum/trend 完整 edge 基礎（BUY WR 54.1% / SELL WR 55.9%）→ **禁止 OLR 引用零傷害**
+- **實作**（純 prompt 層零決策改動）: buildOLRBlock 標記升級「⚠️ 已證偽」→「🚫 OLR 已證偽（ρ=+0.02 + OLR-主導開倉 WR 38.5% 全場最差）——**禁止引用做開倉理由**, 若 thesis 只用 OLR 做 edge 視為質素不足」——以實證數據（非空泛警告）壓制 agents 引用已證偽源
+
+### ③ OLR recentTrades 攻擊輪（紅先 6 測試 → 4 真漏洞全修）
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1 | `recentTrades.source` 無白名單——persisted 垃圾 source（prompt injection 文本）直入 agent prompt | 🔴 CRITICAL | migrateModel load 層 source 白名單（shadow/shadow_blind/paper/real/backfill）——單一 source of truth |
+| V2 | `cycle=Infinity/1e308` → `curCycle − cycle = −1e308` NaN/負 cyclesAgo 污染 prompt | 🟠 HIGH | query() cyclesAgo clamp [0, 1e9] + load 層 finite 檢查雙重防禦 |
+| V3 | garbage element（null/string/number）→ rt.source on null 入 prompt | 🟠 HIGH | object guard + element filter |
+| V4 | garbage outcome（'banana'/undefined）→ icon 判斷 + prompt 顯示垃圾 | 🟡 MED | outcome 白名單（win/loss） |
+
+**盈利提升（量化金融師視角）**: 修復後 agents 見到嘅 recent outcomes 準確（recency 正確 + SL narrowed 標記可靠）——`entryShadowWinRate`（ρ=+0.106 唯一有預測力特徵）餵俾 LLM 嘅質素提升; 斬斷 prompt injection 理論上可迫 agents 違反 Five Absolute Rules 嘅風險。
+
+**驗證**: 新測試 6/6（紅先 4 fail → 綠後全過）; 全量 **4085 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
 ## v2.0.873-P9-sltp-watch-attack: 攻擊輪——7 真漏洞全修 + xyz 權威價斷層（主神 2026-09-02「不擇手段攻擊啱啱修葺嘅 code」）
 
 **紅先 18 攻擊測試 → 7 fail 真漏洞全修（V1-V6 類別）**:
