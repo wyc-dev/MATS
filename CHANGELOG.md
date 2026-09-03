@@ -18,6 +18,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 **驗證**: 新測試 10/10（五分支 + ±0.5% 邊界 + garbage + hint 優先級 + integration）; 全量 **4126 pass + 13 pre-existing（零新增）**; tsc clean。
 
 ---
+## v2.0.873-P9-recent-losses-diagnostics: 「最近虧損」全輪調査（E1-E5 + LLM/shadow/news 驗證——主神 2026-09-04「最近嘅交易累計結果都係虧損」）
+
+**觸發**: 主神觀察最近虧損（近 24h -11.5%、09-03 -11.5%、08-31 -27.0%、最近 20 單 -3.6%）——「Check all，先制定謹慎及詳盡嘅計劃方案，並且驗證絕對成效」。**收檔**: PLAN_diagnostics-round2.md（gitignored）+ PLAN_recent-losses.md。
+
+**損益全景**: 近 3/7/14/30 日已實現 +34.4%/+20.9%/+96.3%/+176.3%——**鎖利主引擎正確**（exit_price_lock 56 單 +195.8% + tp_hit 7 單 +141.7%），但 consensus close 61 單 **-126.7%**（11 單 <-5% 合共 -94%）+ sl_tp 14 單 **-107.7%** 係兩大出血點。
+
+### 五實驗裁決（全部唔過關/已覆蓋——零盲實作）
+| # | 候選 | 結果 | 裁決 |
+|:--|:--|:--|:--|
+| **E1** 逆勢 BUY gate | 全樣本 163 單: BUY 4h<-5% 16 單全喺 mom24-guard deploy 前, **deploy 後 0 單**——已攔截; block BUY 4h<0 = 慳 0.3% 誤傷 66%（災難） | ❌ 唔做 |
+| **E2** OLR/FP thesis | 大蝕單引用率 45% vs 全部 59%（反而 -14pp） | ❌ 假設反轉 |
+| **E3** SL/TP ATR 對齊 | 60 sl_tp 單: 真收窄 21（含贏單 SKHX +13.6%/MU +10.3%）; 「gap 2.8% tight」誤報 24 單; 收窄後續跌率 71%（方向錯非波動掃） | ❌ 唔做 |
+| **E4** 早止血 | 「蝕>3%+5m 續跌 → 下 cycle 止」counterfactual: 兩半相反（+14.8/-13.6pp）+ 殺 DRAM +20% TP 單（先插針再爆上）——P9-llpp 教訓重現 | ❌ 唔做 |
+| **E5** consensus close 構成 | 90% 「Majority: HOLD 但 Meta override 止血」——平均持倉 195m 先止 | 已由 E4 否決 |
+
+### LLM vs Shadow 全層驗證——統計先係方向源
+- **LLM 方向判斷**: 51.8% 準確率（coin flip）; 判斷啱（順勢）組 avg **-1.68%**——順勢判斷都蝕; LLM regime 判斷準確率 **44.4%**（反預測）
+- **LLM news 引用**: 有 news avg -0.58% vs 無 -0.30%——冇價值; 但 news×方向不對稱: **news+BUY -1.88% vs news+SELL +2.68%**
+- **散播者視角（主神洞察: 新聞=strategic dissemination, 要知利益瓜葛 + front running）**: 盲目信 news（無懷疑）-1.02% vs 懷疑 news（distribution/front-run 偵測）+1.27%; DISTRIBUTION-HYPE 案例 SILVER sell +12.3%/+4.5%——**已實作 P9-news-motive**（data 層標註 🚨）
+- **Shadow 統計 lean**: ρ=+0.1378 唯一有預測力（低 lean WR 16.7% vs 高 57.1%）——已接入 P9-shadow-calib 校準管道
+
+**最終裁決**: ①現有 gate（mom24-guard/chase-tail/EV/cooldown）已攔截機械性出血——剩低大蝕單係 LLM 單筆誤判 vs 市場, 冇事前可分辨特徵（勿 fit 歷史加 gate） ②Shadow = 唯一方向源（已接入） ③LLM 只做催化劑敘事補充（news 帶散播者視角——P9-news-motive 已制度化） ④GOT hit rate 持續收集中（2-4 週後 deadweight 同款 counterfactual）。
+
+---
 ## v2.0.873-P9-close-pipeline-fix + shadow-calib: 關倉流水線 reason 正名（Fix A）+ Shadow-Informed 校準（主神 2026-09-04「BNB 重覆 BUY / roll TP/SL / 每 asset 動態校準」系列）
 
 **主神兩條指令**: ①Fix A——層級化 close 流水線 tag 污染（production grade） ②驗證 Shadow-Informed 校準構想
