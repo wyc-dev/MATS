@@ -105,6 +105,56 @@ export function calibrateBin(wins: number, losses: number, raw: number): number 
   return 0.5 + (empirical - 0.5) * shrink;
 }
 
+// ─── Shadow-Informed Hierarchical Shrinkage（v2.0.873-P9-shadow-calib）───
+// 主神構想（2026-09-04）:「參考埋 Shadow trade 資訊, 準繩度應該更高——
+// 更能如實反映貼近當下情況?」——數據驗證（E1-真, 09-02 後 n=26）:
+//   shadowWR≥0.55 → WR 57.1% avg +0.65% | <0.45 → WR 16.7% avg −2.85%
+//   ρ=+0.1378（同 CHANGELOG ρ=+0.106 唯一有預測力特徵一致）
+// 機制: shadow 每 symbol×side 累積 24h decay 統計（btc|buy n=269 vs real
+// close 25——樣本密度 10 倍）——正好填補 Part B 驗證出嘅「per-symbol real
+// 樣本餓死」（close-decision-calibrator per-symbol 桶得 n=1）。
+//
+// 階層合併公式（Bayesian-inspired）:
+//   weight_real = nReal / (nReal + K_REAL)              // real = ground truth 主導
+//   weight_shadow = (1 − weight_real) × nShadow / (nShadow + K_SHADOW)
+//   calibrated = 0.5 + (realEmp − 0.5)×wReal + (shadowWR−0.5)×wShadow×(1−wReal)
+//
+// 收斂性質（quant 嚴謹）:
+//   • real 樣本足（nReal→∞）→ wReal→1, shadow 影響→0（real 先係真錢 truth）
+//   • real 冷啟動（nReal=0）→ 純 shadow prior（per-symbol 當下 lean 填充）
+//   • shadow n 細（如 CL n=4）→ wShadow→0 → 收縮向 0.5 中性（831 冷啟動紀律）
+//   • K_SHADOW=20 > K_REAL=5——shadow 係模擬（無費用/滑點/真實 execution）
+//     → 保守 shrink, shadow 唔可以 over-ride real 太多
+const K_REAL = BIN_SHRINK_K;      // 5——real 樣本 shrink（歷史一致）
+const K_SHADOW = 20;              // 保守——shadow 係模擬, 權重要更弱先可信
+
+/** Shadow-Informed hierarchical blend 純函數。
+ *  @param realEmpirical global side×bin 實證 WR（0-1）
+ *  @param nReal real 樣本數
+ *  @param shadowWR per-symbol×side shadow WR（0-1, 24h decay 後）
+ *  @param nShadow shadow 樣本數
+ *  @param raw 原始 conviction（0-1）
+ *  返回 [0,1] clamp。任何 garbage → 0.5 中性（攻擊硬化）。 */
+export function blendShadowCalibration(
+  realEmpirical: number,
+  nReal: number,
+  shadowWR: number,
+  nShadow: number,
+  raw: number,
+): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 0.5;
+  const rE = Number.isFinite(realEmpirical) ? Math.max(0, Math.min(1, realEmpirical)) : 0.5;
+  const nR = Number.isFinite(nReal) ? Math.max(0, nReal) : 0;
+  const sW = Number.isFinite(shadowWR) ? Math.max(0, Math.min(1, shadowWR)) : 0.5;
+  const nS = Number.isFinite(nShadow) ? Math.max(0, nShadow) : 0;
+  if (nR <= 0 && nS <= 0) return raw; // 零樣本 → identity（冷啟動中性）
+  const wReal = nR / (nR + K_REAL);
+  // shadow 只填 real 未覆蓋嘅權重份額（(1−wReal)）——real 足則 shadow 無權重
+  const wShadow = (1 - wReal) * (nS / (nS + K_SHADOW));
+  const out = 0.5 + (rE - 0.5) * wReal + (sW - 0.5) * wShadow;
+  return Math.max(0, Math.min(1, out));
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────
 
 export class LLMConvictionCalibrator {
@@ -151,12 +201,36 @@ export class LLMConvictionCalibrator {
 
   /** 校準一筆 conviction——LLM 話 0.85 → bin 實際 WR。
    *  v2.0.863-calib-attack (V1): 非 finite conviction → 0.5 中性——
-   *  NaN/Infinity/undefined 唔可以傳播返 gate(會污染 effectiveConfidence)。 */
-  getCalibratedConviction(side: 'buy' | 'sell', conviction: number): number {
+   *  NaN/Infinity/undefined 唔可以傳播返 gate(會污染 effectiveConfidence)。
+   *  v2.0.873-P9-shadow-calib（主神 2026-09-04）: 可選 shadow context——
+   *  per-symbol×side shadow WR 做「當下先驗」——real bin 冷啟動時由 shadow
+   *  填充 per-symbol 維度（shadow 樣本密度 10× real——btc|buy n=269 vs 25）。
+   *  shadow 唔傳 → 保持舊行為（global bin 只靠 real）。 */
+  getCalibratedConviction(
+    side: 'buy' | 'sell',
+    conviction: number,
+    shadowCtx?: { winRate?: number; n?: number },
+  ): number {
     if (typeof conviction !== 'number' || !Number.isFinite(conviction)) return 0.5;
     const bin = this.getDecayedBin(side, binOf(conviction));
-    if (!bin || bin.wins + bin.losses < MIN_SAMPLES) return conviction; // 冷啟動/過期中性
-    return calibrateBin(bin.wins, bin.losses, conviction);
+    if (bin && bin.wins + bin.losses >= MIN_SAMPLES) {
+      // real 樣本足夠 → real 主導（同 shadow 階層 blend——real 足則 shadow 權重→0）
+      const w = bin.wins + bin.losses;
+      const realEmp = bin.wins / w;
+      const swr = shadowCtx?.winRate;
+      const sn = shadowCtx?.n;
+      if (typeof swr === 'number' && Number.isFinite(swr) && Number.isFinite(sn) && (sn ?? 0) > 0) {
+        return blendShadowCalibration(realEmp, w, swr, sn ?? 0, conviction);
+      }
+      return calibrateBin(bin.wins, bin.losses, conviction);
+    }
+    // real 冷啟動（樣本<MIN_SAMPLES）→ shadow prior 填充（per-symbol 當下 lean）
+    const swr = shadowCtx?.winRate;
+    const sn = shadowCtx?.n;
+    if (typeof swr === 'number' && Number.isFinite(swr) && Number.isFinite(sn) && (sn ?? 0) > 0) {
+      return blendShadowCalibration(0.5, 0, swr, sn ?? 0, conviction);
+    }
+    return conviction; // 完全零樣本 → identity（冷啟動中性）
   }
 
   /** 規限②:記錄一次 K-LINE 讀圖(引用方向 vs 實際趨勢) */
