@@ -12,6 +12,7 @@ import { attachExecutionToAnalyses, attachAuditExecutionToAnalyses } from './ser
 import { GateOutcomeTracker } from './analysis/gate-outcome-tracker.ts';
 import { decideLocalSltp, hasHlTriggerForSymbol } from './analysis/real-sltp-watcher.ts';
 import { shouldHoldForTrend, prefilterTrend, type TrendHoldResult } from './analysis/trend-hold-gate.ts';
+import { resolveClosePipelineReason } from './analysis/close-pipeline-reason.ts';
 import { judgeCloseTrend, shouldHoldCloseFromSentinel, CLOSE_TREND_SENTINEL_ENABLED } from './analysis/close-trend-sentinel.ts';
 import type { AssetAnalysis, EdgeReport, ExecutionReport as AnalysisExecutionReport, RiskProfile } from './types/index.ts';
 import {
@@ -12778,7 +12779,19 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
           if (!closeStructureConfirmed && !mfeLock && !skipSkeptics && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
             continue; // close 被 hold——唔執行(下 cycle 再確認)
           }
-          const closeSuccess = await this.closeTrade(psc.symbol, closeRationale, 'consensus');
+          // v2.0.873-P9-close-pipeline-fix（Fix A）: 層級化流水線嘅 closeReason 由
+          // 「實際離場機制」決定, 而唔係統一 tag 'consensus'——
+          // ① SL hit（closeStructureConfirmed）→ 'sl_tp'（真市場確認——learning weight
+          //    1.0 唔再被錯 tag 折半成 0.5）
+          // ② MFE 鎖利（mfeLock）→ 'exit_price_lock'（歸因歸位——close-decision-
+          //    calibrator 收返鎖利樣本, 唔再當 consensus 過早率）
+          // ③ 其餘（共識/止血/止盈/Skeptics 通過）→ 'consensus'（系統決策, 保留）
+          // 純函數單一 source of truth（src/analysis/close-pipeline-reason.ts）。
+          const pipelineCloseReason = resolveClosePipelineReason({
+            closeStructureConfirmed,
+            mfeLock,
+          });
+          const closeSuccess = await this.closeTrade(psc.symbol, closeRationale, pipelineCloseReason);
           if (closeSuccess) {
             if (pos.agentId === 'hyperliquid-real') {
               log.info(`  → Closed ${psc.symbol} (real, closed on HL)`);
@@ -13540,8 +13553,28 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // (LLM 話 0.85 但 bin 實際 40% → 用 40%)。冷啟動(樣本<20)→ 中性。
         // v2.0.870-gatedir-fix: HOLD 冇方向 → 唔校準（直接 consensus 原值）——
         // 唔可以用 fallback buy 誤校準。
+        // v2.0.873-P9-shadow-calib（主神 2026-09-04「參考埋 Shadow trade 資訊
+        // 準繩度更高?」——實證 E1-真: shadowWR<0.45 WR 16.7% avg −2.85% vs
+        // ≥0.55 WR 57.1% +0.65%, ρ=+0.1378）: real bin 冷啟動時用 per-symbol×side
+        // shadow WR 做當下先驗填充（shadow 密度 10× real——解決 per-symbol 樣本
+        // 餓死）。shadow 只喺 real 樣本未足時有權重（hierarchical 收斂: real→∞
+        // shadow→0）——唔可以 over-ride 真錢 ground truth。
         const calibratedConsensus = (gateAction !== 'hold' && this.llmCalibrator && llmCalibrationConfig.enabled)
-          ? this.llmCalibrator.getCalibratedConviction(gateAction as 'buy' | 'sell', consensusConfidence)
+          ? (() => {
+              // per-symbol shadow 統計（case-insensitive）——garbage symbol → 唔傳
+              let shadowCtx: { winRate?: number; n?: number } | undefined;
+              try {
+                const calSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+                if (this.shadowEngine && calSym) {
+                  const ss = this.shadowEngine.getSymbolSideStats(calSym);
+                  const sideStats = gateAction === 'sell' ? ss.sell : ss.buy;
+                  if (sideStats && sideStats.n > 0 && Number.isFinite(sideStats.winRate)) {
+                    shadowCtx = { winRate: sideStats.winRate, n: sideStats.n };
+                  }
+                }
+              } catch { /* shadow 查詢失敗 → 唔用 shadow prior（fallback 純 real） */ }
+              return this.llmCalibrator.getCalibratedConviction(gateAction as 'buy' | 'sell', consensusConfidence, shadowCtx);
+            })()
           : consensusConfidence;
         // ── v2.0.864: LLM Direction Verifier——每 cycle 記錄 LLM 方向判斷(包括 HOLD/冇落單)
         // 判斷時 price 凍結——下個 cycle 用現價驗證 B 方向預測;平倉時記錄 C 終極結果
