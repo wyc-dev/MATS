@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-OLR-decision-lang: 已證偽源決策導向語言清除 + Shadow WR 提升（主神 2026-09-02「🚫 標記會唔會導致好難開倉？」）
+
+**主神質疑**: 「buildOLRBlock 標記 🚫 OLR 已證偽——禁止引用做開倉理由 會唔會導致好難開倉？」
+
+**查證（邏輯實驗 E1/E2/E3, 全樣本 347 單）**: 唔係「禁止」難開倉——係**標記與內容自相矛盾**: OLR/FP/Q-RL 三個已證偽源 block 內仍輸出「FAVOR BUY / edge +XXpp / conf=high」決策導向語言 → LLM 見到「🚫 禁止」+「FAVOR BUY」→ 混亂（信 FAVOR=繼續被誤導 / 矛盾→保守 HOLD=難開倉）。
+- **E1**: 冇引用 OLR 嘅 95 單 **100% 有 5m/15m/4h/1h 時序 + 94% S/R + 79% momentum + 0 單靠弱描述** → 移除唔損害開倉能力
+- **E2**: 引用 OLR 嘅 255 單 **100% 都有其他 edge 元素, 0 單只靠 OLR** → 移除 OLR 決策語言**零單受害**
+- **E3**: Shadow WR（ρ=+0.106 唯一有預測力）buildShadowVoiceBlock 係獨立統計 lean 源
+
+**實作（純 prompt 層, 零決策邏輯改動）**:
+1. **Fix 1 buildOLRBlock**: OLR/FP block 保留資訊數據（P(win)/n/source）但**移除 FAVOR/AGAINST/edge +XXpp/conf=high 全部決策導向語言** → 「🚫 已證偽(ρ=+0.02 + WR 38.5% 全場最差)——數字係噪音背景, 唔係開倉理由; 統計 lean 以 SHADOW STATISTICS 為準」; FP 加「已證偽(實測 WR 39.1%, 唔係 signal, 僅背景)」移除 conf=high
+2. **Fix 2 Q-RL EXPECTANCY**: 加「🚫 已證偽(ρ=+0.0064, 僅背景)」前綴 + **移除「favors BUY/SELL」結論句**（spread 只報數字）——leanEnabled 默認 true 但已證偽源唔可以做 lean
+3. **Fix 3 buildShadowVoiceBlock**: 標題改「✅ SHADOW STATISTICS (統計層 lean 來源——Shadow WR ρ=+0.106 唯一有預測力入場特徵, 優先參考)」——統計 lean 唯一權威源
+
+**架構清晰度（量化金融師視角）**: 「一句話嘅清晰勝過十句警告」——agents 明確知道: 統計層信 Shadow（唯一 ρ=+0.106）, OLR/FP/Q-RL（ρ≈0）做背景。唔會因矛盾而 HOLD, 唔會因 FAVOR 而誤導。
+
+**驗證**: 新測試 7/7（實際輸出行決策語言清零 / 已證偽標記 / FP 無 edge / Q-RL 無 favors / Shadow lean 提升 / 難開倉防禦指引）; 全量 **4092 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
+
 ## v2.0.873-P9-olr-recent-attack: OLR recentTrades prompt 污染攻擊輪（4 真漏洞全修） + #4 OLR prompt 強化（主神 2026-09-02「#4 OLR prompt 強化 + 5d 記錄層 audit」→「不擇手段攻擊」）
 
 **三個任務（全部先證後改, 數據話事）**:

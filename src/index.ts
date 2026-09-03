@@ -5937,7 +5937,7 @@ ${recentExamples}
       if (syms.size === 0) return '';
       const stats = this.shadowEngine.getStats();
       const openPos = this.shadowEngine.getOpenPositions();
-      const lines: string[] = ['=== SHADOW STATISTICS (統計層參考——shadow 模擬成交,非實時信號) ==='];
+      const lines: string[] = ['=== SHADOW STATISTICS (✅ 統計層 lean 來源——Shadow WR 全樣本 ρ=+0.106 唯一有預測力入場特徵, 優先參考) ==='];
       for (const sym of syms) {
         const s = stats.find((x) => x.symbol.toLowerCase() === sym.toLowerCase());
         if (!s) continue;
@@ -8306,12 +8306,18 @@ ${recentExamples}
       // agents 見到「OLR 兩邊 <50%」就 HOLD 係被噪音誤導。
       // ⚠️ 注意: 「分桶 WR」唔可以當預測力證據——269 單係已成交 subset(通過晒
       // 其他 gate 先開到倉),有選擇偏差;正確結論係全樣本 ρ=+0.02 零預測力。
-      // v2.0.873-P9-OLR-prompt（主神 2026-09-02「#4 OLR prompt 強化」——4-A/4-B
-      // 實驗全樣本 347 單: OLR-主導理由單 WR 38.5% avg +0.02%(全樣本最差); 引用
-      // OLR 單 WR 46.5% vs 無引用 54.7%; OLR pwin≥60% 高信心組 avg −0.69%——已證偽
-      // 源唔止係噪音, 係**反預測**(高信心反而蝕)。標記由「⚠️ 唔可以做依據」升級
-      // 「🚫 禁止引用做開倉理由」——若 thesis 只靠 OLR 視為質素扣分。
-      lines.push(`🚫 OLR 已證偽(全樣本 ρ=+0.02 零預測力 + OLR-主導開倉 WR 38.5% 全場最差)——數字係噪音, **禁止引用做開倉理由**;若你的 thesis 只用 OLR 做 edge, 視為 thesis 質素不足。`);
+      // v2.0.873-P9-OLR-prompt（主神 2026-09-02「#4 OLR prompt 強化」+「會唔會導致好難開倉？」
+      // 邏輯實驗 E1/E2 全樣本 347 單）:
+      //   ① OLR-主導理由單 WR 38.5% avg +0.02%（全樣本最差）; 引用 OLR 單 WR 46.5%
+      //      vs 無引用 54.7%; OLR pwin≥60% 高信心組 avg −0.69%——已證偽源係反預測。
+      //   ② **E2 鐵證: 引用 OLR 嘅 255 單 100% 都有其他 edge 元素（S/R/momentum/
+      //      volume/時序）——冇單只靠 OLR——移除 OLR 決策語言零單受害,唔會難開倉**。
+      //   ③ **冇引用組 95 單 100% 有 5m/15m/4h/1h 時序 + 94% S/R + 79% momentum
+      //      ——agents 有完整非 OLR edge 基礎**。
+      // 結論: OLR/FP 只保留**資訊性數據**（P(win)/n/source）, 唔可以輸出決策導向
+      // 語言（FAVOR/AGAINST/edge/conf=high）——避免「🚫 禁止」同「FAVOR BUY」並存
+      // 嘅自相矛盾令 LLM 混亂（信 FAVOR = 被誤導 / 矛盾 → 保守 HOLD = 難開倉）。
+      lines.push(`🚫 OLR 已證偽(全樣本 ρ=+0.02 零預測力 + OLR-主導開倉 WR 38.5% 全場最差)——以下 OLR/FP 數字係**噪音背景**, 唔係開倉理由。**統計 lean 以 SHADOW STATISTICS 區塊為準**。`);
 
       // P78 誠實信心修復: 兩邊都冇 live 樣本（只有 backfill）→ 明確標明唔係 live 訊號。
       // 根源: SKHX -14.7% 案例 agent 睇到「OLR BUY edge +28pp, conf=high」但實際
@@ -8359,27 +8365,23 @@ ${recentExamples}
         const symRegime = this.marketState.getState(sym)?.regime;
         const drift = sanitizeDriftForRegime(estimateDrift(priceHistory, 20), symRegime, vol);
         const fp = calculateFirstPassage(vol, drift, dist.slLong, dist.tpLong, dist.slShort, dist.tpShort);
-        lines.push(`First-Passage P(TP before SL) — path-risk from vol + drift + S/R SL/TP:`);
-        lines.push(`  LONG  P=${(fp.longPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPLong * 100).toFixed(0)}% → edge ${((fp.longPWin - fp.breakevenPLong) * 100).toFixed(0)}pp) conf=${fp.confidence}`);
-        lines.push(`  SHORT P=${(fp.shortPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPShort * 100).toFixed(0)}% → edge ${((fp.shortPWin - fp.breakevenPShort) * 100).toFixed(0)}pp) conf=${fp.confidence}`);
-        lines.push(`  Drift=${(fp.drift * 100).toFixed(2)}%/cycle | Vol=${(fp.volatility * 100).toFixed(2)}%/cycle`);
-        lines.push(`  LONG SL=${(dist.slLong * 100).toFixed(1)}% TP=${(dist.tpLong * 100).toFixed(1)}% | SHORT SL=${(dist.slShort * 100).toFixed(1)}% TP=${(dist.tpShort * 100).toFixed(1)}%`);
-        // OLR-vs-breakeven EDGE — the ready-made decision signal
+        // v2.0.873-P9-OLR 決策語言清除: FP 已證偽(P9-deadweight: claim≥95% 實際
+        // WR 39.1%, counterfactual 269 單壓制無分辨力)——唔可以輸出「edge +71pp
+        // conf=high」幻覺(buildOLRBlock 係 agents 唯一 FP 來源)。
+        lines.push(`First-Passage P(TP before SL) — 🚫 已證偽(實測 WR 39.1%, 唔係 signal, 僅背景):`);
+        lines.push(`  LONG  P=${(fp.longPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPLong * 100).toFixed(0)}%)`);
+        lines.push(`  SHORT P=${(fp.shortPWin * 100).toFixed(0)}% (breakeven=${(fp.breakevenPShort * 100).toFixed(0)}%)`);
+        lines.push(`  Drift=${(fp.drift * 100).toFixed(2)}%/cycle | Vol=${(fp.volatility * 100).toFixed(2)}%/cycle (LONG SL=${(dist.slLong * 100).toFixed(1)}% TP=${(dist.tpLong * 100).toFixed(1)}% | SHORT SL=${(dist.slShort * 100).toFixed(1)}% TP=${(dist.tpShort * 100).toFixed(1)}%)`);
+        // OLR-vs-breakeven EDGE——已證偽源 (ρ=+0.02) 唔可以輸出「FAVOR/AGAINST」
+        // 決策導向語言（E2 實驗: 255 單全部有其他 edge——OLR 只做背景）。
+        // 保留數字但移除決策結論——LLM 唔會被已證偽源嘅「FAVOR BUY」誤導。
         const buyEdge = olrBuy.pWin - fp.breakevenPLong;
         const sellEdge = olrSell.pWin - fp.breakevenPShort;
-        // v2.0.870-FIX(主神調查 2026-08-23): 同時顯示 vs50%——breakeven(29%)包裝
-        // 令 P=40% 都顯示「edge +11pp」→ LLM 睇唔到輸面。vs50% 令負 edge 無所遁形。
-        const buyEdge50 = olrBuy.pWin - 0.5;
-        const sellEdge50 = olrSell.pWin - 0.5;
-        const buySig = buyEdge > 0.10 ? 'FAVOR BUY' : buyEdge < -0.05 ? 'AGAINST BUY' : 'no edge';
-        const sellSig = sellEdge > 0.10 ? 'FAVOR SELL' : sellEdge < -0.05 ? 'AGAINST SELL' : 'no edge';
-        const buySig50 = buyEdge50 > 0.05 ? 'FAVOR BUY' : buyEdge50 < -0.05 ? 'AGAINST BUY' : 'no edge';
-        const sellSig50 = sellEdge50 > 0.05 ? 'FAVOR SELL' : sellEdge50 < -0.05 ? 'AGAINST SELL' : 'no edge';
-        // P78-E3 誠實信心延伸: edge 用 backfill pwin 計——liveSamples === 0 時標明
-        // （SKHX 案例「OLR BUY edge +28pp」就係 backfill edge 被當 live 顯示）
         const edgeSuffix = liveSamples === 0 ? ' (backfill-only — NOT live)' : '';
-        lines.push(`OLR EDGE vs breakeven: BUY ${(buyEdge * 100).toFixed(0)}pp (${buySig})${edgeSuffix} | SELL ${(sellEdge * 100).toFixed(0)}pp (${sellSig})${edgeSuffix}`);
-        lines.push(`OLR P(win) vs 50%: BUY ${(olrBuy.pWin * 100).toFixed(0)}% (${(buyEdge50 * 100).toFixed(0)}pp, ${buySig50})${edgeSuffix} | SELL ${(olrSell.pWin * 100).toFixed(0)}% (${(sellEdge50 * 100).toFixed(0)}pp, ${sellSig50})${edgeSuffix} — 負數 = 勝算低過 50/50,需要其他強訊號支持`);
+        // v2.0.873-P9-OLR 決策語言清除: 唔再輸出 FAVOR/AGAINST 結論句, 只保留
+        // 數字作背景 + 明確標「已證偽非 signal」。
+        lines.push(`OLR EDGE vs breakeven（已證偽背景）: BUY ${(buyEdge * 100).toFixed(0)}pp | SELL ${(sellEdge * 100).toFixed(0)}pp${edgeSuffix} — 數字唔係 trade signal, 唔可以作開倉理由`);
+        lines.push(`OLR P(win) vs 50%（已證偽背景）: BUY ${(olrBuy.pWin * 100).toFixed(0)}% (${((olrBuy.pWin - 0.5) * 100).toFixed(0)}pp) | SELL ${(olrSell.pWin * 100).toFixed(0)}% (${((olrSell.pWin - 0.5) * 100).toFixed(0)}pp)${edgeSuffix} — 負數 = 勝算低過 50/50, 但數字唔係 signal`);
       } catch { /* price history unavailable for this symbol — skip FP + edge */ }
 
       lines.push(`DATA SOURCES: shadow=fixed S/R SL/TP sim, paper=dynamic SL/TP, real=HL exchange (truest), backfill=cold-start prior (weight least). Weight by recency + source reliability.`);
@@ -8401,16 +8403,19 @@ ${recentExamples}
             `Q=${(c.q * 100).toFixed(2)}% n=${c.visits}`
             + (c.medianReward !== null ? ` median=${(c.medianReward * 100).toFixed(2)}%` : '');
           lines.push('');
-          lines.push(`=== Q-RL EXPECTANCY (state bucket: ${qrlLean.buy.bucket}) ===`);
+          // v2.0.873-P9-OLR 決策語言清除: Q-RL expectancy 已證偽(P9-qrl-audit
+          // ρ=+0.0064 零預測力, gate 默認 OFF)但 leanEnabled 默認 true 仍注入
+          // context——改為「已證偽背景」, 唔可以輸出「favors BUY」決策結論。
+          lines.push(`=== Q-RL EXPECTANCY (state bucket: ${qrlLean.buy.bucket}) — 🚫 已證偽(ρ=+0.0064, 僅背景) ===`);
           lines.push(`  BUY  ${fmtCell(qrlLean.buy)}`);
           lines.push(`  SELL ${fmtCell(qrlLean.sell)}`);
           if (qrlLean.robust) {
-            const dirDesc = qrlLean.lean === 'buy' ? 'favors BUY' : qrlLean.lean === 'sell' ? 'favors SELL' : 'no clear directional edge (spread within friction) — weight OTHER signals';
-            lines.push(`  spread = ${(qrlLean.spread * 100).toFixed(2)}pp → ${dirDesc} (${qrlLean.buy.bucket}, both sides ≥ ${qrlDirectionConfig.minSamples} samples)`);
+            // 只提供數字, 唔畀「favors BUY」結論句——已證偽源唔可以主導 lean
+            lines.push(`  spread = ${(qrlLean.spread * 100).toFixed(2)}pp — 數字唔係 signal, 統計 lean 以 SHADOW STATISTICS 為準`);
           } else {
-            lines.push(`  ⚠️ sample-starved on one/both sides (buy n=${qrlLean.buy.visits}, sell n=${qrlLean.sell.visits}) → NO directional claim — do not extrapolate across regimes`);
+            lines.push(`  ⚠️ sample-starved on one/both sides (buy n=${qrlLean.buy.visits}, sell n=${qrlLean.sell.visits}) → NO directional claim`);
           }
-          lines.push(`  (learned from aligned-shadow + backfill rewards in this exact state bucket; negative median = losing side in current conditions)`);
+          lines.push(`  (learned from aligned-shadow + backfill rewards in this exact state bucket; 已證偽源唔做 lean 依據)`);
         }
       } catch { /* non-fatal — Q-RL block is best-effort */ }
       // v2.0.140: inject EXP digest (only for active symbol — avoids per-symbol duplication)
