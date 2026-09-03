@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-news-motive-attack: 攻擊輪 18 真漏洞全修（主神 2026-09-04「不擇手段使用任何出其不意的更刁鑽的攻擊方案」）
+
+**紅先 25 攻擊測試 → 18 fail 真漏洞全修**（news-sentiment 全鏈——剛修葺嘅 P9-news-motive 周邊 + computePriceNewsTiming/cache/formatter 全鏈）:
+
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1×5 | `formatPriceNewsTiming`——`change1h=Symbol` → `Symbol*100` TypeError; `change1h='abc'` → NaN%; `preNewsMoveDir=123`（movedBeforeNews=true）→ `.toUpperCase()` crash; `headlineCadence/sourceClustering=undefined` → `.toFixed` crash; pt=null → crash | 🔴 HIGH | `sanitizePriceNewsTiming`（全字段 reset 中性, movedBeforeNews strict `===true`）+ `pctSafe`——garbage → 0 唔 NaN% |
+| V2×6 | `formatNewsForAgentMulti`——headlines 含 null/Symbol-title/number element → `.match()` TypeError crash; `pubDate='2026-09-04'`(string persisted) → `.getTime()` crash; headlines 非 array → `.slice()` crash; results 非 array; r=42 garbage element | 🔴 HIGH | `sanitizeNewsResult` + `sanitizeHeadlines`（元素級垃圾 skip, title 非 string → 中性, cap 8）+ `ageLabel` instanceof Date guard + `Array.isArray` 入口 guard |
+| V3×2 | `formatNewsForAgent`——`lexiconScore=undefined` → `.toFixed(2)` crash; `headlines=undefined` → `.slice` crash | 🟠 MED | 同上 sanitizeNewsResult 入口 |
+| V4×4 | `computePriceNewsTiming`——candles element `{t:Symbol}` → 比較 TypeError; `[null,...]` element → `.t` crash; headlines `title=Symbol` → `classifyAngle.toLowerCase` crash; candles 非 array | 🔴 HIGH | `closeAtAbs` element guard + `cleanCandles` filter（t/c finite）+ `sanitizeHeadline` 前置 |
+| V5 | `computeNewsMotiveAlert`——`change24h=1e308/Infinity`; `lexiconHint=Symbol` | ✅ pass | 上輪 (P9-news-motive) 已 guarded——本輪確認 |
+| V6 | `normalizeBaseAsset`——null/undefined → `.indexOf` crash（fetchNewsForSymbols 上游） | 🟠 MED | `typeof string` guard → 中性 '' |
+
+**修復架構（Google Tech Lead——單一 sanitize 入口）**: `safeNewsNum/safeNewsStr/safeNewsDate` → `sanitizeHeadline(s)` → `sanitizeNewsResult` → `sanitizePriceNewsTiming`——所有 formatter/compute 入口收垃圾, 下游只信 clean type（唔 crash + 唔輸出 NaN%/undefined）。`priceNewsTiming` 保留 round-trip（sanitizeNewsResult 唔再剝走——V2 嘅 `r.priceNewsTiming` 仍可顯示）。
+
+**盈利意義（quant 金融師視角）**: 單一 garbage headline 可以殺死成個 news context 注入 → 整個 cycle agents 見唔到 news 區塊 → **DISTRIBUTION-HYPE 偵測（SILVER +12.3% 嗰類 edge）被持久化垃圾一炮打死**（靜默失效）。修復後 news 管道喺任何污染下保持 alive——機構散貨偵測唔再可以被垃圾 headline 癱瘓。
+
+**驗證**: 新攻擊測試 25（紅先 18 fail → 綠後全過）+ motive 原有 10/10 零 regression; 全量 **4151 pass + 13 pre-existing（零新增）**; tsc clean。
+
+---
 ## v2.0.873-P9-news-motive: 機構意圖動機警示注入（主神 2026-09-04「新聞出現代表有機構需要散播——需要知道利益瓜葛以及較早時期嘅 front running」）
 
 **實證（先證後改——全樣本 92 單）**: News Reporter v2 框架（07-09 已有 DECODE FRAMEWORK B 表）**執行率僅 4/16=25%**——盲目信 news avg −1.02%（news+BUY −1.60% 災難）vs 有懷疑 +1.27%; DISTRIBUTION-HYPE 偵測案例 SILVER sell **+12.3%**/+4.5%（bullish headlines on falling price = 機構散貨）。LLM regime 判斷準確率 **44.4%**（反預測）——LLM 敘事層冇預測力, 但「懷疑 news」有正成效。
