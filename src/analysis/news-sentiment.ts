@@ -123,6 +123,9 @@ type AssetCategory = 'crypto' | 'indices' | 'stocks' | 'commodities' | 'fx' | 'u
 // ─── Symbol normalisation (mirrors agents.ts normalizeBaseAsset) ───
 
 export function normalizeBaseAsset(symbol: string): string {
+  // v2.0.873-P9-news-motive-attack (V6): null/undefined/Symbol/number garbage
+  // → 中性 ''（fetchNewsForSymbols 上游可能收到垃圾 symbol）——唔可以 crash
+  if (typeof symbol !== 'string') return '';
   const colonIdx = symbol.indexOf(':');
   const stripped = colonIdx >= 0 ? symbol.slice(colonIdx + 1) : symbol;
   return stripped.toUpperCase().replace(/USDT$/, '').replace(/USD$/, '').replace(/PERP$/, '');
@@ -421,8 +424,11 @@ export interface PriceNewsTiming {
   dominantAngle: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 }
 
-/** Classify a single headline's angle via the same lexicon as `lexiconHint`. */
-function classifyAngle(title: string): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
+/** Classify a single headline's angle via the same lexicon as `lexiconHint`.
+ *  v2.0.873-P9-news-motive-attack (V4): title garbage（Symbol/number/null）
+ *  → NEUTRAL——唔 crash（toLowerCase TypeError）。 */
+function classifyAngle(title: unknown): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
+  if (typeof title !== 'string') return 'NEUTRAL';
   const text = title.toLowerCase();
   let pos = 0, neg = 0;
   for (const w of POSITIVE_WORDS) if (text.includes(w)) pos++;
@@ -457,8 +463,20 @@ export function computePriceNewsTiming(
   windowHours: number,
   lexiconHint: 'BULLISH' | 'BEARISH' | 'NEUTRAL',
 ): PriceNewsTiming | null {
-  if (candles.length < 5 || headlines.length === 0) return null;
-  const sorted = [...candles].sort((a, b) => a.t - b.t);
+  // v2.0.873-P9-news-motive-attack (V4): candles/headlines 垃圾輸入防禦——
+  // 非 array / element garbage（null/Symbol/無 .t/.c）→ skip——唔 crash,
+  // 數據不足返回 null（中性）。
+  if (!Array.isArray(candles) || !Array.isArray(headlines)) return null;
+  const cleanCandles = candles
+    .filter((c): c is TimingCandle => !!c && typeof c === 'object'
+      && typeof (c as unknown as Record<string, unknown>)['t'] === 'number'
+      && typeof (c as unknown as Record<string, unknown>)['c'] === 'number'
+      && Number.isFinite((c as unknown as Record<string, unknown>)['t'] as number)
+      && Number.isFinite((c as unknown as Record<string, unknown>)['c'] as number))
+    .sort((a, b) => a.t - b.t);
+  const cleanHeadlines = headlines.map(h => sanitizeHeadline(h)).filter((h): h is NewsHeadline => h !== null);
+  if (cleanCandles.length < 5 || cleanHeadlines.length === 0) return null;
+  const sorted = cleanCandles;
   const now = sorted[sorted.length - 1]!.t;
   const last = sorted[sorted.length - 1]!.c;
   const pctAgo = (msAgo: number): number => {
@@ -472,7 +490,7 @@ export function computePriceNewsTiming(
 
   // ── movedBeforeNews: did price move >2% in the hint direction BEFORE the
   //    earliest headline in the cluster? (front-run / pre-positioning tell)
-  const validDates = headlines
+  const validDates = cleanHeadlines
     .map(h => h.pubDate?.getTime() ?? null)
     .filter((x): x is number => x != null)
     .sort((a, b) => a - b);
@@ -533,19 +551,24 @@ export function computePriceNewsTiming(
  *  avg −1.02% vs 有懷疑 avg +1.27%）
  */
 export function formatPriceNewsTiming(pt: PriceNewsTiming, lexiconHint?: 'BULLISH' | 'BEARISH' | 'NEUTRAL'): string {
+  // v2.0.873-P9-news-motive-attack (V1): garbage pt（null/Symbol/string 字段）
+  // → sanitize 才格式化——唔 crash, 唔輸出 NaN%/undefined。
+  const clean = sanitizePriceNewsTiming(pt);
+  if (!clean) return '';
   const pct = (x: number) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
+  const pctSafe = (x: unknown) => pct(typeof x === 'number' && Number.isFinite(x) ? x : 0);
   const lines = [
     `  📊 PRICE-NEWS TIMING:`,
-    `     Recent move: 1h ${pct(pt.change1h)} | 4h ${pct(pt.change4h)} | 24h ${pct(pt.change24h)} | 3d ${pct(pt.change3d)}`,
+    `     Recent move: 1h ${pctSafe(clean.change1h)} | 4h ${pctSafe(clean.change4h)} | 24h ${pctSafe(clean.change24h)} | 3d ${pctSafe(clean.change3d)}`,
   ];
-  if (pt.movedBeforeNews) {
-    lines.push(`     ⚡ Price MOVED ${pt.preNewsMoveDir.toUpperCase()} ${(Math.abs(pt.preNewsMovePct) * 100).toFixed(1)}% BEFORE the news cluster → institutions likely PRE-POSITIONED (front-run tell)`);
+  if (clean.movedBeforeNews) {
+    lines.push(`     ⚡ Price MOVED ${clean.preNewsMoveDir.toUpperCase()} ${(Math.abs(clean.preNewsMovePct) * 100).toFixed(1)}% BEFORE the news cluster → institutions likely PRE-POSITIONED (front-run tell)`);
   } else {
-    lines.push(`     No meaningful pre-news move (${pct(pt.preNewsMovePct)} over the pre-news window) → news not obviously front-run`);
+    lines.push(`     No meaningful pre-news move (${pctSafe(clean.preNewsMovePct)} over the pre-news window) → news not obviously front-run`);
   }
-  lines.push(`     Headline cadence: ${pt.headlineCadence.toFixed(1)}/day (${pt.cadenceLevel}) | Source clustering: ${(pt.sourceClustering * 100).toFixed(0)}% (${pt.clusteringLevel}, dominant=${pt.dominantAngle})`);
+  lines.push(`     Headline cadence: ${clean.headlineCadence.toFixed(1)}/day (${clean.cadenceLevel}) | Source clustering: ${(clean.sourceClustering * 100).toFixed(0)}% (${clean.clusteringLevel}, dominant=${clean.dominantAngle})`);
   // ── v2.0.873-P9-news-motive: 機構意圖動機警示——data 層直接判讀（唔靠 LLM 記憶表）──
-  const alert = computeNewsMotiveAlert(pt, lexiconHint);
+  const alert = computeNewsMotiveAlert(clean, lexiconHint);
   if (alert) lines.push(alert);
   return lines.join('\n');
 }
@@ -569,9 +592,13 @@ export function computeNewsMotiveAlert(
   lexiconHint?: 'BULLISH' | 'BEARISH' | 'NEUTRAL',
 ): string {
   if (!pt || typeof pt !== 'object') return ''; // garbage → 無警示
-  const hint = lexiconHint ?? pt.dominantAngle;
-  if (!hint || hint === 'NEUTRAL') return '';
-  const move24h = Number.isFinite(pt.change24h) ? pt.change24h : 0;
+  const clean = sanitizePriceNewsTiming(pt);
+  if (!clean) return '';
+  let hint: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+  if (lexiconHint === 'BULLISH' || lexiconHint === 'BEARISH') hint = lexiconHint;
+  else if (clean.dominantAngle === 'BULLISH' || clean.dominantAngle === 'BEARISH') hint = clean.dominantAngle;
+  if (hint === 'NEUTRAL') return '';
+  const move24h = clean.change24h;
   const priceUp = move24h > 0.005;  // 24h 升 >0.5%
   const priceDown = move24h < -0.005; // 24h 跌 >0.5%
   if (hint === 'BULLISH' && priceUp) {
@@ -594,6 +621,114 @@ export function computeNewsMotiveAlert(
 interface CacheEntry { result: NewsSentimentResult; ts: number; }
 const CACHE_TTL_MS = 5 * 60_000;
 const cache = new Map<string, CacheEntry>();
+
+// ═══ v2.0.873-P9-news-motive-attack: 統一 sanitize 層 ═══
+// 攻擊輪（紅先 25 攻 18 命中）: news-sentiment 全鏈喺 persisted/注入 garbage
+// （Symbol/undefined/null/number/string pubDate）下崩潰:
+//   V1 formatPriceNewsTiming pct()/toUpperCase/toFixed crash
+//   V2 formatNewsForAgentMulti garbage headlines element / 非 array / results 非 array
+//   V3 formatNewsForAgent lexiconScore/headlines undefined
+//   V4 computePriceNewsTiming candles element garbage / headlines title Symbol
+//   V6 normalizeBaseAsset null crash
+// 修復: 單一 sanitize 入口——所有 formatter/compute 喺入口收垃圾, 下游只信 clean type。
+
+/** safe number——typeof number + finite 先收, 否則 0（Symbol/BigInt/string → 0） */
+function safeNewsNum(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/** safe string——typeof string 先收（Symbol 有 toString 但唔可以入 regex/API）, 否則 '' */
+function safeNewsStr(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+/** safe Date——instanceof Date 先收; 持久化 garbage（string/number）嘗試 parse, 失敗 null */
+function safeNewsDate(v: unknown): Date | null {
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v : null;
+  if (typeof v === 'string' || typeof v === 'number') {
+    const d = new Date(v as string | number);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  return null;
+}
+
+/** sanitize 單條 headline——null/非 object → null（skip）; title/publisher 非 string → 中性 */
+function sanitizeHeadline(h: unknown): NewsHeadline | null {
+  if (!h || typeof h !== 'object') return null;
+  const o = h as Record<string, unknown>;
+  const title = safeNewsStr(o['title']).trim().slice(0, 200);
+  if (!title) return null; // 無 title = 無資訊價值
+  return {
+    title,
+    publisher: safeNewsStr(o['publisher']).slice(0, 100) || 'unknown',
+    pubDate: safeNewsDate(o['pubDate']),
+    url: safeNewsStr(o['url']).slice(0, 500) || undefined,
+  };
+}
+
+/** sanitize headlines array——垃圾 element skip; 非 array → [] */
+export function sanitizeHeadlines(input: unknown): NewsHeadline[] {
+  if (!Array.isArray(input)) return [];
+  const out: NewsHeadline[] = [];
+  for (const h of input) {
+    const clean = sanitizeHeadline(h);
+    if (clean) out.push(clean);
+    if (out.length >= 8) break; // 上下限一致（formatter cap 8）
+  }
+  return out;
+}
+
+/** sanitize NewsSentimentResult——garbage 字段 reset 中性, 唔會傳播落 formatter */
+export function sanitizeNewsResult(r: unknown): NewsSentimentResult | null {
+  if (!r || typeof r !== 'object') return null;
+  const o = r as Record<string, unknown>;
+  const headlines = sanitizeHeadlines(o['headlines']);
+  const hint = safeNewsStr(o['lexiconHint']);
+  const validHint = (hint === 'BULLISH' || hint === 'BEARISH' || hint === 'NEUTRAL') ? hint : 'NEUTRAL';
+  const timing = o['priceNewsTiming'] ? sanitizePriceNewsTiming(o['priceNewsTiming']) : null;
+  return {
+    symbol: safeNewsStr(o['symbol']).slice(0, 50) || '?',
+    category: safeNewsStr(o['category']) as AssetCategory,
+    query: safeNewsStr(o['query']).slice(0, 120),
+    headlineCount: Math.max(0, Math.min(8, Math.round(safeNewsNum(o['headlineCount'])))),
+    headlines,
+    lexiconHint: validHint,
+    lexiconScore: Math.max(-1, Math.min(1, safeNewsNum(o['lexiconScore']))),
+    fetchedAt: safeNewsNum(o['fetchedAt']),
+    source: safeNewsStr(o['source']).slice(0, 50) || 'unknown',
+    windowHours: Math.max(1, Math.min(168, Math.round(safeNewsNum(o['windowHours']) || 24))),
+    priceNewsTiming: timing ?? undefined,
+  };
+}
+
+/** sanitize PriceNewsTiming——garbage 字段 reset 中性（V1/V5 防禦） */
+export function sanitizePriceNewsTiming(pt: unknown): PriceNewsTiming | null {
+  if (!pt || typeof pt !== 'object') return null;
+  const o = pt as Record<string, unknown>;
+  const dir = safeNewsStr(o['preNewsMoveDir']);
+  const validDir = (dir === 'up' || dir === 'down' || dir === 'flat') ? dir : 'flat';
+  const cadence = safeNewsNum(o['headlineCadence']);
+  const cadenceLevel = safeNewsStr(o['cadenceLevel']);
+  const clustering = safeNewsNum(o['sourceClustering']);
+  const dom = safeNewsStr(o['dominantAngle']);
+  return {
+    change1h: safeNewsNum(o['change1h']),
+    change4h: safeNewsNum(o['change4h']),
+    change24h: safeNewsNum(o['change24h']),
+    change3d: safeNewsNum(o['change3d']),
+    movedBeforeNews: o['movedBeforeNews'] === true,
+    preNewsMovePct: safeNewsNum(o['preNewsMovePct']),
+    preNewsMoveDir: validDir,
+    headlineCadence: cadence >= 0 ? cadence : 0,
+    cadenceLevel: (cadenceLevel === 'elevated' || cadenceLevel === 'low') ? cadenceLevel : 'normal',
+    sourceClustering: Math.max(0, Math.min(1, clustering)),
+    clusteringLevel: (() => {
+      const cl = safeNewsStr(o['clusteringLevel']);
+      return (cl === 'coordinated' || cl === 'independent') ? cl : 'mixed';
+    })(),
+    dominantAngle: (dom === 'BULLISH' || dom === 'BEARISH') ? dom : 'NEUTRAL',
+  };
+}
 
 // ─── Main entry ───
 
@@ -787,7 +922,8 @@ export async function fetchNewsForSymbols(
 // Label matches the News Reporter system prompt trigger exactly.
 
 function ageLabel(pubDate: Date | null): string {
-  if (!pubDate) return '?';
+  // v2.0.873-P9-news-motive-attack (V2): pubDate 垃圾（string/number）→ '?'——唔 crash
+  if (!(pubDate instanceof Date) || !Number.isFinite(pubDate.getTime())) return '?';
   const mins = Math.round((Date.now() - pubDate.getTime()) / 60_000);
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.round(mins / 60);
@@ -796,17 +932,20 @@ function ageLabel(pubDate: Date | null): string {
 }
 
 export function formatNewsForAgent(result: NewsSentimentResult | null): string {
-  if (!result || result.headlineCount === 0) {
+  // v2.0.873-P9-news-motive-attack (V3): garbage result（lexiconScore undefined /
+  // headlines 非 array / pubDate 垃圾元素）→ sanitize 至中性——唔 crash。
+  const clean = sanitizeNewsResult(result);
+  if (!clean || clean.headlineCount === 0) {
     // Still emit the trigger label so the News Reporter knows news was
     // attempted but unavailable — it should output NEUTRAL/HOLD per its
     // prompt ("Do NOT trade based on news alone — news is slow").
-    return `=== NEWS SENTIMENT ===\n${result?.symbol ?? '?'}: no recent news — NEUTRAL (no data)`;
+    return `=== NEWS SENTIMENT ===\n${clean?.symbol ?? '?'}: no recent news — NEUTRAL (no data)`;
   }
   const lines: string[] = [
     `=== NEWS SENTIMENT ===`,
-    `${result.symbol}: ${result.headlineCount} headlines (last ${result.windowHours}h), lexicon hint: ${result.lexiconHint} (${result.lexiconScore >= 0 ? '+' : ''}${result.lexiconScore.toFixed(2)}) — source: ${result.source}`,
+    `${clean.symbol}: ${clean.headlineCount} headlines (last ${clean.windowHours}h), lexicon hint: ${clean.lexiconHint} (${clean.lexiconScore >= 0 ? '+' : ''}${clean.lexiconScore.toFixed(2)}) — source: ${clean.source}`,
   ];
-  for (const h of result.headlines.slice(0, 8)) {
+  for (const h of clean.headlines.slice(0, 8)) {
     const emoji = h.title.match(new RegExp(`\\b(${[...POSITIVE_WORDS].slice(0, 12).join('|')})\\b`, 'i'))
       ? '🟢'
       : h.title.match(new RegExp(`\\b(${[...NEGATIVE_WORDS].slice(0, 12).join('|')})\\b`, 'i'))
@@ -825,10 +964,13 @@ export function formatNewsForAgent(result: NewsSentimentResult | null): string {
 // multiple positions are held. Empty results still emit a NEUTRAL line so the
 // agent knows news was attempted for that symbol.
 export function formatNewsForAgentMulti(results: (NewsSentimentResult | null)[]): string {
-  if (results.length === 0) return '';
+  // v2.0.873-P9-news-motive-attack (V2): results 非 array / garbage element /
+  // headlines 垃圾元素（null/Symbol/number title, pubDate string）→ 入口 sanitize
+  // ——唔 crash（持久化污染唔可以殺 formatter）。
+  if (!Array.isArray(results) || results.length === 0) return '';
   const blocks: string[] = [];
   for (let i = 0; i < results.length; i++) {
-    const r = results[i];
+    const r = sanitizeNewsResult(results[i]);
     if (!r || r.headlineCount === 0) {
       blocks.push(`${r?.symbol ?? '?'}: no recent news — NEUTRAL (no data)`);
       continue;
