@@ -192,3 +192,81 @@ export function shouldConfirmTrailingLock(
   const c = Number.isFinite(confirmCycles) && confirmCycles > 0 ? Math.floor(confirmCycles) : 12;
   return currentCycle - pending.sinceCycle >= c;
 }
+
+// ─── L3 trailing lock 決策（v2.0.873-P9-exit-lock-timing-fix）──────────────
+// 問題: runExitPriceLockGate 嘅 L3 確認式鎖掛「pending」係 no-op——set pending 後
+//   冇 continue，直接 fall through 到 final close（[EXIT-PRICE LOCK] 即刻鎖），
+//   「回吐 ≥50% → 等 60min 確認」嘅設計意圖根本冇生效。
+// 修復: 將 L3 決策抽成純函數（單一 source of truth），orchestrator 只負責
+//   wire——'hold' 時 continue（唔即鎖），'close' 時確認鎖，'none' 時 fall through
+//   到 final close（PAEL Phase C 即時鎖）。
+// 語義（還原 live-mfe.ts 註解嘅設計意圖）:
+//   - 回吐 ≥50% → 'hold'（pending，唔即鎖）
+//   - pending 期間創新高 → 'none'（取消 pending，fall through 到 final close——
+//     趨勢繼續，喺新高位即時鎖）
+//   - pending 期間 60min 冇新高 → 'close'（確認鎖）
+//   - pending 未屆滿 → 'hold'（繼續等）
+//   - 倉位已換（side/openedAt 唔 match）→ 'none'（棄舊 pending，fall through）
+export type TrailingLockAction = 'close' | 'hold' | 'none';
+
+export function decideTrailingLockAction(
+  existing: PendingTrailingLock | null | undefined,
+  peakPrice: number,
+  currentCycle: number,
+  liveMfe: number | null,
+  pnlPctNow: number,
+  leverage: number,
+  side: string | null | undefined,
+  openedAt: number | null | undefined,
+  confirmCycles: number = 12,
+): TrailingLockAction {
+  try {
+    if (existing) {
+      // A6: 倉位綁定驗證——side/openedAt 唔 match → 棄舊 pending，fall through
+      if (isPendingLockStale(existing, side, openedAt)) return 'none';
+      // 創新高 → 取消 pending，fall through（趨勢繼續，喺新高位即時鎖）
+      if (shouldCancelPendingLock(existing.peakPrice, peakPrice)) return 'none';
+      // 確認窗口屆滿 → 確認鎖
+      if (shouldConfirmTrailingLock(existing, currentCycle, confirmCycles)) return 'close';
+      // 未屆滿 → 繼續等（唔鎖）
+      return 'hold';
+    }
+    // 回吐 ≥50% → pending（唔即鎖）。shouldTrailingLock 內部已檢查
+    // pnlPctNow > 0 同 retrace ≥50%（margin % vs margin %——單位一致）。
+    // ATTACK-HARDENING: pnlPctNow 必須係 finite number——Symbol/NaN/Infinity
+    // 喺 ×100 前 guard（Symbol * 100 會 throw TypeError）。
+    if (typeof pnlPctNow !== 'number' || !Number.isFinite(pnlPctNow)) return 'none';
+    if (shouldTrailingLock(liveMfe, pnlPctNow * 100, leverage)) return 'hold';
+    return 'none';
+  } catch {
+    // ATTACK-HARDENING: getter bomb（Proxy throw）/ 任何 throw → 保守 fall through
+    // 到 final close（PAEL Phase C 即時鎖）——唔 crash，唔誤鎖。
+    return 'none';
+  }
+}
+
+// ─── 新鮮 unrealized PnL 重算（v2.0.873-P9-exit-lock-timing-fix）────────────
+// 問題: runExitPriceLockGate 嘅 `pnlNow = pos.unrealizedPnl` 對非 active symbol
+//   係 stale（WS 只訂閱 active symbol，HL API 每 cycle 更新 ~5min 滯後）——
+//   價格已回吐到蝕位時，stale 正值令 `pnlNow > 0` 照過，gate 喺蝕位照 close
+//   （giveback）。
+// 修復: 用 current price（marketState price / pos.currentPrice）重算 unrealized
+//   PnL，唔用 stale pos.unrealizedPnl。current price 無效 → fallback 原值。
+export function computeFreshUnrealizedPnl(
+  side: 'buy' | 'sell',
+  entryPrice: number,
+  currentPrice: number,
+  quantity: number,
+  fallbackPnl: number,
+): number {
+  // ATTACK-HARDENING: side 白名單——garbage side（Symbol/'hold'/''）唔可以當 buy 方向錯
+  if (side !== 'buy' && side !== 'sell') return fallbackPnl;
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+    return fallbackPnl;
+  }
+  // ATTACK-HARDENING: quantity 必須係 finite number——Symbol/NaN/Infinity
+  // 喺 priceDelta * quantity 前 guard（Symbol * number 會 throw TypeError）。
+  if (typeof quantity !== 'number' || !Number.isFinite(quantity)) return fallbackPnl;
+  const priceDelta = side === 'sell' ? entryPrice - currentPrice : currentPrice - entryPrice;
+  return priceDelta * quantity;
+}
