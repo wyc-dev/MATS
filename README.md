@@ -12,6 +12,10 @@ The **industry-first self-evolving trading brain** — where an LLM **reads the 
 - 🔄 **Close-Context Learning** — learns *how* trades close (tight-SL loss ≠ bad entry), so every lesson is accurate.
 - 🧯 **Plan G Hybrid Penalty Decay + Runs-Test τ** (v2.0.870-P16/P17) — fixes the "penalty death spiral": three-layer OR decay (idle floor / time floor / weighted edge) + Wald-Wolfowitz runs-test τ modulation (9-18h adaptive; loss streaks decay slower, ping-pong noise decays faster) — the system recovers from losing streaks by EVIDENCE, not by idle luck.
 - 🩹 **Self-Healing Data Reliability** (v2.0.870-P19'-P24) — every learner is instrumented with pipeline observability counters ("starvation must be loud"): conviction calibrator / direction verifier / close-decision calibrator; **MAE/MFE Historical Healer** recomputes past excursions from authoritative candles; Supabase writes are schema-drift resilient (a DB column lag can never silently zero the whole feed); and the trade-audit agent is **deployment-version aware** (knows when each fix went live, so it never accuses new code with pre-fix trades).
+- 📰 **Institutional News-Motive Decoder** (v2.0.873-P9-news-motive) — data-layer motive alerts: BULLISH+price↑ → 🚨 DISTRIBUTION-HYPE (fade news BUY) / BEARISH+price↓ → 🚨 ACCUMULATION-FUD (institutions accumulating) — the system no longer blindly trusts news (blind trust −1.02% vs skeptical +1.27%; DISTRIBUTION-HYPE case SILVER sell +12.3%).
+- 🛡️ **Real SL/TP Local Watcher** (v2.0.873-P9-sltp-watch) — HL native trigger is primary, local watcher is backup-of-record: every cycle checks real positions against HL authoritative price (xyz assets via allMids mid — WS doesn't subscribe xyz) — DRAM −14.6% "SL 裸奔" class losses now have a deterministic backstop.
+- 🎯 **Shadow-Informed Hierarchical Shrinkage Calibrator** (v2.0.873-P9-shadow-calib) — shadow per-symbol×side density 10× real fills the per-symbol sample-starvation deadlock (shadowWR<0.45 → WR 16.7% vs ≥0.55 → 57.1%, ρ=+0.1378).
+- 🔒 **Exit-Price Lock Timing Fix** (v2.0.873-P9-exit-lock-timing) — L3 confirmation-based trailing lock now actually works (pending no-op fixed) + fresh current-price PnL (stale unrealizedPnl no longer closes at a loss) — giveback −4.42% source cut.
 
 **60+ layers of cognition. Zero manual tuning. It evolves its own strategy — relentlessly.**
 
@@ -286,6 +290,8 @@ Each cycle (1-10 min, user-configurable): Terminal Agent checks rules → 5 sub-
 - **ANN-indexed memory at 10k records (v2.0.843)**: EXP vector memory now scales to 10,000 records via a lightweight IVF (Inverted File) with spherical k-means — 10k records scan only ~12% of vectors per query at >95% recall@10, up from brute-force O(N). `EXP_MAX_RECORDS` lifted 1000 → 10,000. Cold-start (<500 records) falls back to exact brute-force, identical to prior behavior.
 - **Asset-aware cross-transfer learning (v2.0.843)**: The Meta-Learner's feature weights follow a 3-level hierarchy — **symbol (finest) → category (transfer) → global (fallback)**. Each asset learns its own pattern independently, so SILVER's "OB imbalance works for me" isn't drowned out by BTC's different microstructure. Low volume ≠ unreliable — a thin-book asset has its own edge, and the weight is earned from its own data, not assumed from a volume tier. New assets bootstrap from their category's learned prior (transfer learning) then adapt.
 
+> ⚠️ **Deprecated / disabled components (v2.0.873-P9 現狀)** — 統計驗證證實噪音，已默認 OFF（env 可逆）: **OLR hard gate**（ρ=+0.02 噪音，軟乘數保留）/ **Q-RL expectancy gate**（ρ=+0.0064）/ **First-Passage multiplier**（claimed≥95% 實際 WR 39.1%）/ **Momentum-OLR conflict gate**（0 觸發）。**Paused**: active-exploration（UCB）、Bayesian OLR、bStocks 交易（P80-bstocks-hide——唔賺錢，服務層保留）。**Removed**: temporal-attention / cross-symbol-backbone / reward-shaping / world-model / risk-profile-edge-store（MiniLM）/ dcs-calculator。**唯一有預測力嘅入場特徵 = entryShadowWinRate（ρ=+0.106/+0.1378）**——統計（shadow 24h decay）做方向 lean，LLM 只做催化劑敘事補充。
+
 → Full evolution map in [NA.md](NA.md) · AttnRes design in [K.md](K.md) · Pipeline in [CHANGELOG.md](CHANGELOG.md)
 
 ### RIL — Reason Intelligence Layer
@@ -346,7 +352,7 @@ PAPER_MAX_POSITION_SIZE_PCT=0.20
 PAPER_MAX_DRAWDOWN_PCT=0.20
 RISK_STOP_LOSS_PCT=0.02
 RISK_TAKE_PROFIT_PCT=0.05
-HACP_CONSENSUS_THRESHOLD=0.60
+HACP_CONSENSUS_THRESHOLD=0.50
 HACP_TOTAL_TIMEOUT_MS=120000
 # Active exploration (UCB) — PAUSED by default until Edge Report proves edge
 ACTIVE_EXPLORATION_ENABLED=false
@@ -396,7 +402,7 @@ MATS is a **signal-computation backend + multi-client execution** architecture:
 | **Frontend** | mats_app (Expo React Native) + mats_frontend (React 18 + Vite + TradingView Chart) |
 | **Config** | Zod schema validation |
 | **Logging** | Winston (structured + file rotation) |
-| **Testing** | vitest — **2,050+ tests / 86 suites** (gitignored; every version attack-hardened: NaN propagation, Chinese regex boundary, cache starvation, poisoned state, side guards, dual-mode, calibration shrinkage...) |
+| **Testing** | vitest — **4,181+ tests** (4181 pass + 13 pre-existing, gitignored; every version attack-hardened: NaN propagation, Chinese regex boundary, cache starvation, poisoned state, side guards, dual-mode, calibration shrinkage...) |
 | **Crypto** | `@noble/curves` (HL phantom agent signing) |
 | **Vector Embedding** | Transformers.js MiniLM L6 v2 (384-dim, in-process, CPU) |
 
