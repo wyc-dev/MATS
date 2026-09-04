@@ -6433,6 +6433,7 @@ ${recentExamples}
     marketFeatures: Record<string, number>;
     olrPWin?: number;
     shadowWinRate?: number;
+    persistence?: Persistence;
   }>();
 
   /** v2.0.820: Stale-feed watchdog + auto-reconnect.
@@ -6764,11 +6765,19 @@ ${recentExamples}
         }
       } catch { /* non-critical */ }
       
+      // Query momentum-persistence classification at entry time
+      // (v2.0.873-P9-regime-switch: 存檔以便驗證「regime switch + persistence」組合)
+      let persistence: Persistence | undefined;
+      try {
+        persistence = this.getPersistence(sym);
+      } catch { /* non-critical */ }
+      
       // Store in precomputed map
       this.precomputedEntryFeatures.set(key, {
         marketFeatures,
         olrPWin,
         shadowWinRate,
+        persistence,
       });
       
       log.info(`🧬 [entry-features] Pre-computed for ${sym} ${side.toUpperCase()}: marketFeatures=${Object.keys(marketFeatures).length} keys, OLR=${olrPWin !== undefined ? (olrPWin * 100).toFixed(0) + '%' : 'N/A'}, shadow=${shadowWinRate !== undefined ? (shadowWinRate * 100).toFixed(0) + '%' : 'N/A'}`);
@@ -6819,6 +6828,11 @@ ${recentExamples}
         // Inject shadow win rate
         if (precomputed.shadowWinRate !== undefined && Number.isFinite(precomputed.shadowWinRate)) {
           pos.entryShadowWinRate = precomputed.shadowWinRate;
+        }
+        
+        // Inject momentum-persistence classification
+        if (precomputed.persistence !== undefined) {
+          pos.entryPersistence = precomputed.persistence;
         }
         
         return true;

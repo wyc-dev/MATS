@@ -1,10 +1,35 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-regime-switch
+> **作者**: YC Wong · **版本**: 2.0.873-P9-persistence-entry
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-regime-switch）**: vitest 4208 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-persistence-entry）**: vitest 4222 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.873-P9-persistence-entry（2026-09-04）：entryPersistence 數據基建 + 攻擊輪
+
+**主神指令**: 「要補數據基建（persistence 存檔），才可驗證 regime switch + persistence 組合」
+
+### 數據基建（零決策邏輯改動）
+
+`entryPersistence` 字段——開倉時存檔 persistence 分類（persistent_bear/range/neutral），同 entryShadowWinRate pattern 一致：
+
+- `types/index.ts`: +`import type { Persistence }` + `EntryFeatures.persistence` + `Position.entryPersistence` + `TradeRecord.entryPersistence`。
+- `index.ts`: `precomputedEntryFeatures` type +`persistence` + `precomputeEntryFeatures` 計算/存 `persistence`（`getPersistence(sym)`）+ `injectPrecomputedEntryFeatures` patch `entryPersistence`。
+- `portfolio.ts`: `openPosition`（×2）+ `importExchangePosition` + `closePosition` + `closeExchangePosition` copy `entryPersistence`。
+- `persistence.ts`: save positions/trades/realTrades/realPositions 加 `entryPersistence`（LOAD path 自動——spread-first）。
+
+### 攻擊輪（紅先 14 攻 1 真漏洞全修）
+
+V4 `classifyPersistenceDual` `dual` getter bomb（Proxy throw）→ `dual.score` 訪問 throw → 成個函數 try/catch → 保守 `'neutral'`。其餘 13 攻（null/NaN/Infinity/垃圾 primitive/垃圾 n/未來 ts/垃圾 maxHours/garbage candles）全部通過。
+
+### 盈利意義（量化金融師視角）
+
+純數據基建（零決策邏輯改動）——日後每單 trade 記錄開倉時嘅 persistence 分類，等 2-4 週新數據累積後，可驗證「regime switch + persistence」組合成效（解決 SNDK counterexample——SNDK 係 persistent_bear，SELL 永遠正確，唔應該「買 dip」）。
+
+**驗證**: 攻擊測試 14/14（紅先 1 fail → 綠後全過）; 全量 **4222 pass + 13 pre-existing（零新增）**; tsc clean。
 
 ---
 

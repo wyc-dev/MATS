@@ -377,6 +377,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       entryConsensusConfidence: (p as any).entryConsensusConfidence,
       entryOlrPWin: (p as any).entryOlrPWin,
       entryShadowWinRate: (p as any).entryShadowWinRate,
+      entryPersistence: (p as any).entryPersistence,
       regime: (p as any).regime,
       entryMarketFeatures: (p as any).entryMarketFeatures,
     }));
@@ -409,6 +410,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       entryConsensusConfidence: (t as any).entryConsensusConfidence,
       entryOlrPWin: (t as any).entryOlrPWin,
       entryShadowWinRate: (t as any).entryShadowWinRate,
+      entryPersistence: (t as any).entryPersistence,
       regime: (t as any).regime,
       entryMarketFeatures: (t as any).entryMarketFeatures,
       // v2.0.872-P8-heal-v2: heal 狀態持久化——之前白名單剝咗 maeMfeHealed，
@@ -455,6 +457,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       entryConsensusConfidence: (t as any).entryConsensusConfidence,
       entryOlrPWin: (t as any).entryOlrPWin,
       entryShadowWinRate: (t as any).entryShadowWinRate,
+      entryPersistence: (t as any).entryPersistence,
       regime: (t as any).regime,
       entryMarketFeatures: (t as any).entryMarketFeatures,
       // v2.0.872-P8-heal-v2: heal 狀態持久化——之前白名單剝咗 maeMfeHealed，
@@ -499,6 +502,7 @@ export function savePortfolio(portfolio: Readonly<Portfolio>, trades?: readonly 
       entryConsensusConfidence: (p as any).entryConsensusConfidence,
       entryOlrPWin: (p as any).entryOlrPWin,
       entryShadowWinRate: (p as any).entryShadowWinRate,
+      entryPersistence: (p as any).entryPersistence,
       regime: (p as any).regime,
       entryMarketFeatures: (p as any).entryMarketFeatures,
     })) : undefined;

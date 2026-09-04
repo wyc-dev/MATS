@@ -230,12 +230,17 @@ export function classifyPersistenceDual(
   bearThreshold = 0.55,
   bullThreshold = 0.55,
 ): 'persistent_bear' | 'persistent_bull' | 'range' | 'neutral' {
-  if (!dual || !Number.isFinite(dual.score) || !Number.isFinite(dual.bullScore)) return 'neutral';
-  const bt = Number.isFinite(bearThreshold) ? bearThreshold : 0.55;
-  if (dual.n >= 5 && dual.score >= bt) return 'persistent_bear';
-  if (dual.nBull >= 5 && dual.bullScore >= bt) return 'persistent_bull';
-  if (dual.n >= 5 && dual.score >= 0.45) return 'range';
-  return 'neutral';
+  try {
+    if (!dual || !Number.isFinite(dual.score) || !Number.isFinite(dual.bullScore)) return 'neutral';
+    const bt = Number.isFinite(bearThreshold) ? bearThreshold : 0.55;
+    if (dual.n >= 5 && dual.score >= bt) return 'persistent_bear';
+    if (dual.nBull >= 5 && dual.bullScore >= bt) return 'persistent_bull';
+    if (dual.n >= 5 && dual.score >= 0.45) return 'range';
+    return 'neutral';
+  } catch {
+    // ATTACK-HARDENING: getter bomb（Proxy throw）/ 任何 throw → 保守 neutral
+    return 'neutral';
+  }
 }
 
 /** staleness 純函數——cache 過期唔准用（fetch 失敗化石唔准做 HARD BLOCK）。 */

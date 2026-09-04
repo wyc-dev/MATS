@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-persistence-entry: entryPersistence 數據基建 + 攻擊輪（主神 2026-09-04「要補數據基建（persistence 存檔），才可驗證 regime switch + persistence 組合」）
+
+**背景**: 驗證「regime switch + persistence」組合需要每單 trade 開倉時嘅 persistence 分類（persistent_bear/range/neutral），但 persistence 係 runtime 動態計算（唔存檔），靜態 proxy（08-25）已過時。
+
+**實作（數據基建——同 entryShadowWinRate pattern 一致，零決策邏輯改動）**:
+- `types/index.ts`: +`import type { Persistence }` + `EntryFeatures.persistence` + `Position.entryPersistence` + `TradeRecord.entryPersistence`。
+- `index.ts`: `precomputedEntryFeatures` type +`persistence` + `precomputeEntryFeatures` 計算/存 `persistence`（`getPersistence(sym)`）+ `injectPrecomputedEntryFeatures` patch `entryPersistence`。
+- `portfolio.ts`: `openPosition`（×2）+ `importExchangePosition` + `closePosition` + `closeExchangePosition` copy `entryPersistence`。
+- `persistence.ts`: save positions/trades/realTrades/realPositions 加 `entryPersistence`（LOAD path 自動——spread-first）。
+
+**攻擊輪（紅先 14 攻 1 真漏洞全修）**: V4 `classifyPersistenceDual` `dual` getter bomb（Proxy throw）→ `dual.score` 訪問 throw → 成個函數 try/catch → 保守 `'neutral'`。其餘 13 攻（null/NaN/Infinity/垃圾 primitive/垃圾 n/未來 ts/垃圾 maxHours/garbage candles）全部通過。
+
+**驗證**: 攻擊測試 14/14（紅先 1 fail → 綠後全過）; 全量 **4222 pass + 13 pre-existing（零新增）**; tsc clean。
+
+**盈利意義（量化金融師視角）**: 純數據基建（零決策邏輯改動）——日後每單 trade 記錄開倉時嘅 persistence 分類，等 2-4 週新數據累積後，可驗證「regime switch + persistence」組合成效（解決 SNDK counterexample——SNDK 係 persistent_bear，SELL 永遠正確，唔應該「買 dip」）。
+
+---
 ## v2.0.873-P9-regime-switch: Regime Switch 方向偏置（mean-reversion vs trend-following 分界——主神 2026-09-04「係咪應該要識得判斷幾時用 mean-reversion & 幾時用 trend-following」）
 
 **觸發**: 主神深挖 SP500/DRAM 嘅 HOLD 行為 → 發現「trend 做方向源」唔係答案（逆勢 counter-trend 更賺錢）→ 揭示 MATS 嘅 edge 係 **mean-reversion（買 dip）**，唔係 trend-following。

@@ -781,6 +781,7 @@ export class PortfolioTracker {
       entryMarketFeatures: entryData?.marketFeatures,
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
+      entryPersistence: entryData?.persistence,
       regime: entryData?.regime,
       entryConsensusConfidence: entryData?.consensusConfidence,
     };
@@ -818,6 +819,7 @@ export class PortfolioTracker {
       entryMarketFeatures: entryData?.marketFeatures,
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
+      entryPersistence: entryData?.persistence,
       regime: entryData?.regime,
       entryConsensusConfidence: entryData?.consensusConfidence,
     };
@@ -1145,6 +1147,7 @@ export class PortfolioTracker {
       entryMarketFeatures: entryData?.marketFeatures,
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
+      entryPersistence: entryData?.persistence,
       regime: entryData?.regime,
       entryConsensusConfidence: entryData?.consensusConfidence,
     };
@@ -1750,6 +1753,7 @@ export class PortfolioTracker {
       entryMarketFeatures: pos.entryMarketFeatures,
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
+      entryPersistence: pos.entryPersistence,
       regime: pos.regime,
       closeRegime: pos.closeRegime,
       entryConsensusConfidence: pos.entryConsensusConfidence,
@@ -1995,6 +1999,7 @@ export class PortfolioTracker {
       entryMarketFeatures: pos.entryMarketFeatures,
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
+      entryPersistence: pos.entryPersistence,
       regime: pos.regime,
       closeRegime: pos.closeRegime,
       entryConsensusConfidence: pos.entryConsensusConfidence,
