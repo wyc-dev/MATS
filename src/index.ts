@@ -83,7 +83,7 @@ import { getSRZones } from './analysis/support-resistance.ts';
 import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, type ExecutionLensData, getATR } from './analysis/atr.ts';
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
-import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldTrailingLock, shouldColdStartLock, shouldCancelPendingLock, shouldConfirmTrailingLock, isPendingLockStale, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
+import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldColdStartLock, decideTrailingLockAction, computeFreshUnrealizedPnl, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
@@ -4005,7 +4005,18 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         }
         if (mfePricePct < threshold) continue;
 
-        const pnlNow = pos.unrealizedPnl ?? 0;
+        // v2.0.873-P9-exit-lock-timing-fix: 用 current price 重算 pnlNow——
+        // 非 active symbol 嘅 pos.unrealizedPnl 靠 HL API 每 cycle 更新（~5min 滯後），
+        // 價格已回吐到蝕位時 stale 正值令 gate 喺蝕位照 close（giveback）。
+        // 用 marketState price（WS/REST 最即時）重算，唔用 stale unrealizedPnl。
+        const curPrice = this.marketState?.getState(normalizeSymbol(sym))?.price ?? pos.currentPrice ?? 0;
+        const pnlNow = computeFreshUnrealizedPnl(
+          isSellSide(pos.side) ? 'sell' : 'buy',
+          pos.averageEntryPrice,
+          curPrice,
+          pos.quantity,
+          pos.unrealizedPnl ?? 0,
+        );
         if (!Number.isFinite(pnlNow) || pnlNow <= 0) continue;
 
         const holdMin = (Date.now() - (pos.openedAt ?? 0)) / 60000;
@@ -4027,31 +4038,37 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               ? pos.averageEntryPrice * (1 - liveMfe / 100)
               : pos.averageEntryPrice * (1 + liveMfe / 100);
             const existing = this._pendingTrailingLocks.get(symNorm);
-            if (existing) {
-              // A6（攻擊輪 2026-08-28, CRITICAL）: 倉位綁定驗證——side/openedAt 唔 match
-              // （close→re-open 反方向/同向新倉）→ 舊 pending 即棄,唔可以用錯倉嘅
-              // pending 誤鎖新倉。
-              if (isPendingLockStale(existing, pos.side, pos.openedAt ?? 0)) {
-                this._pendingTrailingLocks.delete(symNorm);
-                log.info(`🔓 [trailing-pending] ${sym} 倉位已換(side/openedAt 唔 match) → 棄舊 pending`);
-              } else if (shouldCancelPendingLock(existing.peakPrice, peakPrice)) {
-                this._pendingTrailingLocks.delete(symNorm);
-                log.info(`🔓 [trailing-pending] ${sym} 創新高 → 取消 pending（趨勢繼續，唔誤鎖 winner）`);
-              } else if (shouldConfirmTrailingLock(existing, this.totalCycles, 12)) {
-                this._pendingTrailingLocks.delete(symNorm);
-                const okT = await this.closeTrade(sym, `[TRAILING LOCK] ${sym} ${pos.side.toUpperCase()}: MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% 確認(60min 冇新高) → 鎖利`, 'exit_price_lock');
-                if (okT) {
-                  const rcT = buildCooldownEntry(pos.side, Date.now(), Number(process.env['REENTRY_COOLDOWN_MIN'] ?? '60') * 60_000);
-                  if (rcT) this.lockReentryCooldowns.set(normalizeSymbol(sym), rcT);
-                  log.info(`🔒 [trailing-lock] CLOSED ${sym} ${pos.side.toUpperCase()} @ 確認鎖利 — profit locked`);
-                  continue;
-                }
+            // v2.0.873-P9-exit-lock-timing-fix: L3 決策抽成純函數（單一 source of
+            // truth）——'hold' 時 continue（唔即鎖，等 60min 確認），'close' 時確認鎖，
+            // 'none' 時 fall through 到 final close（PAEL Phase C 即時鎖）。
+            const decision = decideTrailingLockAction(
+              existing,
+              peakPrice,
+              this.totalCycles,
+              liveMfe,
+              pnlPctNow,
+              pos.leverage ?? 1,
+              pos.side,
+              pos.openedAt ?? 0,
+            );
+            if (decision === 'close') {
+              this._pendingTrailingLocks.delete(symNorm);
+              const okT = await this.closeTrade(sym, `[TRAILING LOCK] ${sym} ${pos.side.toUpperCase()}: MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% 確認(60min 冇新高) → 鎖利`, 'exit_price_lock');
+              if (okT) {
+                const rcT = buildCooldownEntry(pos.side, Date.now(), Number(process.env['REENTRY_COOLDOWN_MIN'] ?? '60') * 60_000);
+                if (rcT) this.lockReentryCooldowns.set(normalizeSymbol(sym), rcT);
+                log.info(`🔒 [trailing-lock] CLOSED ${sym} ${pos.side.toUpperCase()} @ 確認鎖利 — profit locked`);
+                continue;
               }
-              // 未屆滿 → 繼續等（唔鎖）
-            } else if (shouldTrailingLock(liveMfe, pnlPctNow * 100, pos.leverage ?? 1) && pnlPctNow > 0 && pnlPctNow <= 0.5 * (liveMfe * Math.max(1, pos.leverage ?? 1))) {
-              this._pendingTrailingLocks.set(symNorm, { peakPrice, sinceCycle: this.totalCycles, side: isSellSide(pos.side) ? 'sell' : 'buy', openedAt: pos.openedAt ?? 0 });
-              log.info(`🔒 [trailing-pending] ${sym} MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% → pending 確認（60min 冇新高先鎖）`);
+              // okT false → fall through 到 final close（安全 fallback）
+            } else if (decision === 'hold') {
+              if (!existing) {
+                this._pendingTrailingLocks.set(symNorm, { peakPrice, sinceCycle: this.totalCycles, side: isSellSide(pos.side) ? 'sell' : 'buy', openedAt: pos.openedAt ?? 0 });
+                log.info(`🔒 [trailing-pending] ${sym} MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% → pending 確認（60min 冇新高先鎖）`);
+              }
+              continue; // ← 修復: pending 期間唔即鎖，等確認
             }
+            // decision === 'none' → fall through 到 final close（PAEL Phase C 即時鎖）
           }
         } catch { /* non-fatal */ }
 

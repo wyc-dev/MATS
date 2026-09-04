@@ -1,10 +1,42 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-news-motive
+> **作者**: YC Wong · **版本**: 2.0.873-P9-exit-lock-timing-attack
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-news-motive-attack）**: vitest 4151 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-exit-lock-timing-attack）**: vitest 4181 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.873-P9-exit-lock-timing（2026-09-04）：exit_price_lock 執行時序修復（L3 pending no-op + stale pnlNow）
+
+**主神指令**: 「深挖 exit_price_lock 執行時序」——先證後改。
+
+### 診斷（先證後改——exit_price_lock 全景 67 單）
+- **58 贏 +223.51% vs 9 蝕 −4.42%（淨 +219.09%）**——壓倒性賺錢，giveback 只係贏單 2%。
+- 搵到兩個「機制冇實現」嘅 code bug（唔係「機制設計錯」）:
+
+**Bug 1（🔴 HIGH）: L3 trailing lock「pending」係 no-op**——`runExitPriceLockGate` 嘅 L3 確認式鎖掛（`live-mfe.ts` 註解明言「回吐 ≥50% → pending（唔即鎖）」）`set pending` 後冇 `continue`，直接 fall through 到 final close（`[EXIT-PRICE LOCK]` 即刻鎖）——「確認式鎖掛」機制根本冇生效。
+
+**Bug 2（🟠 MED）: `pnlNow > 0` 用 stale `pos.unrealizedPnl`**——非 active symbol 嘅 unrealizedPnl 靠 HL API 每 cycle 更新（~5min 滯後），價格已回吐到蝕位時 stale 正值令 gate 喺蝕位照 close（giveback——bnb MFE +9.98% 收 −0.40%）。
+
+### 修復（production grade——純函數單一 source of truth）
+- 新 `decideTrailingLockAction()` 純函數（`src/lib/live-mfe.ts`）——L3 決策抽成 `'close' | 'hold' | 'none'` 三態：回吐 ≥50% → 'hold'（pending 唔即鎖）/ 創新高 → 'none'（取消 pending，fall through）/ 60min 冇新高 → 'close'（確認鎖）/ 未屆滿 → 'hold'。orchestrator 只負責 wire——'hold' 時 `continue`（修復核心）。
+- 新 `computeFreshUnrealizedPnl()` 純函數——用 current price（marketState price / pos.currentPrice）重算 unrealized PnL，唔用 stale `pos.unrealizedPnl`。
+- 順手清咗一個單位錯配 bug：原 `pnlPctNow <= 0.5 * (liveMfe * lev)` 係 fraction vs % 比較（永遠 true），且同 `shouldTrailingLock` 內部檢查重複——已移除。
+
+### 攻擊輪（v2.0.873-P9-exit-lock-timing-attack）——3 真漏洞全修
+- V1 `decideTrailingLockAction` `pnlPctNow=Symbol` → `Symbol*100` TypeError crash → `typeof number && Number.isFinite` 前置 guard。
+- V9 `existing` getter bomb（Proxy throw）→ 成個函數 try/catch → 保守 `'none'`（fall through 到 final close，唔 crash 唔誤鎖）。
+- V11 `computeFreshUnrealizedPnl` `quantity=Symbol` → `priceDelta*Symbol` crash → guard + side 白名單（garbage side 唔當 buy）。
+
+### 盈利提升分析（量化金融師——within-symbol ρ 一致性）
+- 「順勢」SELL boost（m4h −2~−0.5%，WR 53% n=15）within-symbol 分裂（GOLD/SILVER/DRAM 贏 vs SNDK/SKHX 蝕）❌ 否決。
+- 「追跌尾」SELL guard（m4h < −2%，WR 36% n=11）係 DRAM 效應（6/11，剔走 DRAM 後其餘 +2.12% 正）❌ 否決。
+- **真正盈利提升 = giveback 修復本身**（斬斷 stale pnlNow 喺蝕位照 close 嘅 −4.42% giveback + 令「確認式鎖掛」生效——counterfactual 40 單：誤鎖大贏 6→1 單、總 PnL 1.96→86.0%）。
+- 候選: DRAM persistent-loser cooldown 延伸（−17.33% 單一出血點，現有 6h cooldown 捉唔到跨日分散蝕單）——需 831 全流程驗證。
+
+**驗證**: 新測試 15 + 攻擊測試 15（全綠）; 全量 **4181 pass + 13 pre-existing（零新增）**; tsc clean。
 
 ---
 
