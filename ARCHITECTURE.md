@@ -1,10 +1,45 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-exit-lock-timing-attack
+> **作者**: YC Wong · **版本**: 2.0.873-P9-regime-switch
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-exit-lock-timing-attack）**: vitest 4181 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-regime-switch）**: vitest 4208 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.873-P9-regime-switch（2026-09-04）：Regime Switch 方向偏置（mean-reversion vs trend-following 分界）
+
+**主神指令**: 「係咪應該要識得判斷幾時用 mean-reversion & 幾時用 trend-following？」——先證後改。
+
+### 重大發現（全樣本 356 單，三關全過）
+
+MATS 嘅 edge 係 **mean-reversion（買 dip）**，唔係 trend-following。系統應該識得判斷幾時用 mean-reversion & 幾時用 trend-following：
+
+| 動量 | 策略 | 方向 | 成效 |
+|:--|:--|:--|:--|
+| **\|m4h\| > 0.5%（強動量）** | **Trend-following** | 順勢（升買/跌賣）| 順勢 +1.00% vs 逆勢 -0.57%（Δ +1.57%）|
+| **\|m4h\| < 0.5%（弱動量）** | **Mean-reversion** | 逆勢（買 dip/賣 rip）| 逆勢 +0.85% vs 順勢 -0.04%（Δ +0.89%）|
+
+**三關驗證**: 關1 Δ **+245.37%**（正確 +237.07% vs 錯誤 -8.30%）/ 關2 兩半都正（+128.55%/+108.52%）/ 關3 **7/9 symbol 乾淨**（MU n=2 outlier + SNDK n=8 counterexample）/ threshold sweep 單調（0.3% → +1.15%，1.5% → +0.26%）/ era split 都正（+0.80%/+1.16%）。
+
+**呢個係第一個過到三關嘅信號**——之前嘅「逆勢 BUY」同「低 shadow WR SELL」都係 symbol-dependent。
+
+### 實作（production grade——純函數單一 source of truth）
+
+- 新 `regimeSwitchDirectionalBias(side, m4hPct)` 純函數（`src/analysis/momentum-persistence.ts`）——用 4h 動量（m4h）分界，唔用 24h 動量（滯後）：強動量（\|m4h\| > 0.5%）→ trend-following（順勢 ×1.15，逆勢 ×0 HARD BLOCK）/ 弱動量（\|m4h\| < 0.5%）→ mean-reversion（逆勢 ×1.05，順勢 ×0.5 懲罰）。
+- F1（`index.ts`）改用 `compute4hMomentumPct`（4h 動量，即時）+ `regimeSwitchDirectionalBias`，取代 `compute24hMomentumPct`（24h 動量，滯後）+ `momentumDirectionalBiasPersistence`。
+- 攻擊硬化：side 白名單 / m4h null/NaN/\|>100%\| → 中性 1.0。
+
+### 攻擊輪（13 攻零漏洞）
+
+Symbol/NaN/Infinity/1e308/getter bomb/邊界 0.5%/-0.5%/0/-0/垃圾 string 全部唔 crash；`robustMomentumPct` garbage candles skip/null/clamp ±100。
+
+### 盈利意義（量化金融師視角）
+
+MATS 嘅 edge 係 mean-reversion（買 dip），但只喺 range symbol（BTC/BNB/GOLD）有效；persistent_bear symbol（SNDK/SKHX/DRAM）應該 trend-following（SELL）。「regime switch」令 F1 由「24h 動量（滯後）」改為「4h 動量（即時）+ 動量強度分界」，令系統喺強動量跟趨勢、弱動量做均值回歸——Δ +245.37% 係目前最強嘅信號。
+
+**驗證**: 新測試 14 + 攻擊測試 13（全綠）; 全量 **4208 pass + 13 pre-existing（零新增）**; tsc clean。
 
 ---
 

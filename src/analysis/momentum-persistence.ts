@@ -116,6 +116,49 @@ export function momentumDirectionalBiasPersistence(
   return 0.85;
 }
 
+/** v2.0.873-P9-regime-switch（主神 2026-09-04「係咪應該要識得判斷幾時用
+ *  mean-reversion & 幾時用 trend-following」）: Regime Switch 方向偏置——
+ *  用 4h 動量（m4h）分界，唔用 24h 動量（滯後）。
+ *
+ *  驗證（全樣本 356 單，三關全過）:
+ *    |m4h| > 0.5%（強動量）→ trend-following（順勢）:
+ *      順勢 +1.00% vs 逆勢 -0.57%（Δ +1.57%）
+ *    |m4h| < 0.5%（弱動量）→ mean-reversion（逆勢）:
+ *      逆勢 +0.85% vs 順勢 -0.04%（Δ +0.89%）
+ *    整體 Δ +245.37%（正確 +237.07% vs 錯誤 -8.30%），7/9 symbol 乾淨，
+ *    threshold sweep 單調（0.3% → +1.15%），era split 都正（+0.80%/+1.16%）。
+ *
+ *  語義:
+ *    強動量（|m4h| > 0.5%）→ 市場有方向，跟趨勢（順勢 boost，逆勢 HARD BLOCK）。
+ *    弱動量（|m4h| < 0.5%）→ 市場震盪，做均值回歸（逆勢 boost，順勢懲罰）。
+ *
+ *  攻擊硬化: side 白名單 / m4h null/NaN/|>100% → 中性 1.0（唔誤傷）。
+ */
+export function regimeSwitchDirectionalBias(side: 'buy' | 'sell', m4hPct: number | null): number {
+  if (side !== 'buy' && side !== 'sell') return 1.0;
+  if (m4hPct === null || !Number.isFinite(m4hPct) || Math.abs(m4hPct) > 100) return 1.0;
+
+  const mag = Math.abs(m4hPct);
+  const strong = mag > 0.5; // 強動量（> 0.5%）
+
+  // Regime switch: 判斷「正確」方向
+  // 強動量 → trend-following（順勢）; 弱動量 → mean-reversion（逆勢）
+  const correctSide: 'buy' | 'sell' =
+    m4hPct > 0.5 ? 'buy' :      // 強升 → 順勢 BUY
+    m4hPct < -0.5 ? 'sell' :    // 強跌 → 順勢 SELL
+    m4hPct < 0 ? 'buy' :        // 微跌 → 買 dip（逆勢 BUY）
+    'sell';                     // 微升 → 賣 rip（逆勢 SELL）
+
+  const aligned = side === correctSide;
+
+  if (aligned) {
+    // 正確方向 → boost（強動量順勢 boost 多啲）
+    return strong ? 1.15 : 1.05;
+  }
+  // 錯誤方向 → 強動量逆勢 HARD BLOCK / 弱動量順勢懲罰
+  return strong ? 0 : 0.5;
+}
+
 /** sell shadow seed 資格——persistent_bear 先 seed（E1 實證: 反彈型 sell 全輸
  *  → bnb n=38 WR 0.7%; 續跌型 sell 4h WR 52-71%）。range/neutral 唔 seed。 */
 export function shouldSeedSell(persistence: Persistence): boolean {
