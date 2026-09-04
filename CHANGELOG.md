@@ -4,6 +4,33 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-regime-switch: Regime Switch 方向偏置（mean-reversion vs trend-following 分界——主神 2026-09-04「係咪應該要識得判斷幾時用 mean-reversion & 幾時用 trend-following」）
+
+**觸發**: 主神深挖 SP500/DRAM 嘅 HOLD 行為 → 發現「trend 做方向源」唔係答案（逆勢 counter-trend 更賺錢）→ 揭示 MATS 嘅 edge 係 **mean-reversion（買 dip）**，唔係 trend-following。
+
+**重大發現（先證後改——全樣本 356 單，三關全過）**: 系統應該識得判斷幾時用 mean-reversion & 幾時用 trend-following，數據顯示個 signal 好乾淨：
+
+| 動量 | 策略 | 方向 | 成效 |
+|:--|:--|:--|:--|
+| **\|m4h\| > 0.5%（強動量）** | **Trend-following** | 順勢（升買/跌賣）| 順勢 +1.00% vs 逆勢 -0.57%（Δ +1.57%）|
+| **\|m4h\| < 0.5%（弱動量）** | **Mean-reversion** | 逆勢（買 dip/賣 rip）| 逆勢 +0.85% vs 順勢 -0.04%（Δ +0.89%）|
+
+**三關驗證**: 關1 Δ **+245.37%**（正確 +237.07% vs 錯誤 -8.30%）/ 關2 兩半都正（+128.55%/+108.52%）/ 關3 **7/9 symbol 乾淨**（MU n=2 outlier + SNDK n=8 counterexample）/ threshold sweep 單調（0.3% → +1.15%，1.5% → +0.26%）/ era split 都正（+0.80%/+1.16%）。
+
+**呢個係第一個過到三關嘅信號**——之前嘅「逆勢 BUY」同「低 shadow WR SELL」都係 symbol-dependent，但「regime switch」係乾淨嘅結構特徵。
+
+**實作（production grade——純函數單一 source of truth）**:
+- 新 `regimeSwitchDirectionalBias(side, m4hPct)` 純函數（`src/analysis/momentum-persistence.ts`）——用 4h 動量（m4h）分界，唔用 24h 動量（滯後）：強動量（\|m4h\| > 0.5%）→ trend-following（順勢 ×1.15，逆勢 ×0 HARD BLOCK）/ 弱動量（\|m4h\| < 0.5%）→ mean-reversion（逆勢 ×1.05，順勢 ×0.5 懲罰）。
+- F1（`index.ts`）改用 `compute4hMomentumPct`（4h 動量，即時）+ `regimeSwitchDirectionalBias`，取代 `compute24hMomentumPct`（24h 動量，滯後）+ `momentumDirectionalBiasPersistence`。
+- 攻擊硬化：side 白名單 / m4h null/NaN/\|>100%\| → 中性 1.0。
+
+**攻擊輪（13 攻零漏洞）**: Symbol/NaN/Infinity/1e308/getter bomb/邊界 0.5%/-0.5%/0/-0/垃圾 string 全部唔 crash；`robustMomentumPct` garbage candles skip/null/clamp ±100。
+
+**驗證**: 新測試 14 + 攻擊測試 13（全綠）; 全量 **4208 pass + 13 pre-existing（零新增）**; tsc clean。
+
+**盈利意義（量化金融師視角）**: MATS 嘅 edge 係 mean-reversion（買 dip），但只喺 range symbol（BTC/BNB/GOLD）有效；persistent_bear symbol（SNDK/SKHX/DRAM）應該 trend-following（SELL）。「regime switch」令 F1 由「24h 動量（滯後）」改為「4h 動量（即時）+ 動量強度分界」，令系統喺強動量跟趨勢、弱動量做均值回歸——Δ +245.37% 係目前最強嘅信號。
+
+---
 ## v2.0.873-P9-exit-lock-timing: exit_price_lock 執行時序修復（L3 pending no-op + stale pnlNow——主神 2026-09-04「深挖 exit_price_lock 執行時序」）
 
 **觸發**: 主神調查最近 10 單「做得差」→ 深挖 consensus close + shadow-gate + exit_price_lock 三條路徑。**先證後改**：exit_price_lock 全景 67 單 = 58 贏 +223.51% vs 9 蝕 −4.42%（淨 +219.09%）——壓倒性賺錢，giveback 只係贏單 2%。但搵到兩個「機制冇實現」嘅 code bug。

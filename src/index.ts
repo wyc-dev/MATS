@@ -95,7 +95,7 @@ import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './a
 import { computeMom24PctFromCandles, mom24EnvThresholds, shouldBlockMom24, shouldBlockChaseTail } from './analysis/mom24-guard.ts';
 import { shouldDeferToBoundary } from './analysis/boundary-align.ts';
 import { computeSrDistancePct, shouldShrinkSrSize } from './analysis/sr-size-gate.ts';
-import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
+import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, regimeSwitchDirectionalBias, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
@@ -5627,20 +5627,20 @@ ${recentExamples}
           log.warn(`⚠️ [5m-gate] ${sym} 查詢失敗: ${e instanceof Error ? e.message : String(e)} — 放行（唔 block 冇數據）`);
         }
       }
-      // F1: 動量方向偏置（順勢 boost / 逆勢逐段 / ≥8% hard block）
+      // F1: Regime Switch 方向偏置（v2.0.873-P9-regime-switch）
+      // 用 4h 動量（m4h）分界，唔用 24h 動量（滯後）:
+      //   |m4h| > 0.5%（強動量）→ trend-following（順勢 boost，逆勢 HARD BLOCK）
+      //   |m4h| < 0.5%（弱動量）→ mean-reversion（逆勢 boost，順勢懲罰）
+      // 驗證: 全樣本 356 單 Δ +245.37%，7/9 symbol 乾淨，threshold sweep 單調，era split 都正。
       if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
-        const mom = this.compute24hMomentumPct(sym);
-        // v2.0.870-sell-architecture: persistence-aware 閾值——E1 實證 persistent_bear
-        // （SNDK/SKHX/DRAM 類）mom<0 後 4h 續跌（WR 52-71%）——BUY 喺 mom<0 → HARD BLOCK
-        // （唔等 8%——歷史 SNDK mom -1~-4% 照開 BUY 全蝕, 原 8% 閾值太高）。
-        const persistence = this.getPersistence(sym);
-        const mult = momentumDirectionalBiasPersistence(action, mom, persistence);
+        const m4h = this.compute4hMomentumPct(sym);
+        const mult = regimeSwitchDirectionalBias(action, m4h);
         if (mult === 0) {
-          return { confidence: 0, blocked: true, reason: `mom=${mom?.toFixed(2) ?? 'n/a'}% ${persistence} 逆勢 → HARD BLOCK`, size: 0 };
+          return { confidence: 0, blocked: true, reason: `regime-switch: m4h=${m4h?.toFixed(2) ?? 'n/a'}% 強動量逆勢 → HARD BLOCK`, size: 0 };
         }
         if (mult !== 1.0) {
           confidence *= mult;
-          const r = `mom=${mom?.toFixed(2) ?? 'n/a'}% → ×${mult}`;
+          const r = `regime-switch: m4h=${m4h?.toFixed(2) ?? 'n/a'}% → ×${mult}`;
           // 繼續落 shadow-gate（唔 return——兩層都行）
           const sg = this.applyShadowGate(sym, action, confidence, sizePct);
           return { confidence: sg.confidence, blocked: sg.blocked, reason: sg.reason ?? r, size: sg.size };
