@@ -1,6 +1,8 @@
 // ─── AMACRF Core Types ───
 // All domain types for the Adaptive Multi-Agent Chaotic Regime Framework
 
+import type { Persistence } from '../analysis/momentum-persistence.ts';
+
 export type UUID = string;
 
 // ─── Entry-Time Features (v2.0.819) ───────────────────────────────────
@@ -16,6 +18,8 @@ export interface EntryFeatures {
   olrPWin?: number;
   /** Shadow-engine per-side win rate at entry time. */
   shadowWinRate?: number;
+  /** v2.0.873-P9-regime-switch: momentum-persistence 分類（persistent_bear/range/neutral）喺開倉時。 */
+  persistence?: Persistence;
   /** Market regime at entry (low_volatility / mean_reverting / trending_bull / …). */
   regime?: string;
   /** v2.0.837: HACP consensus confidence at entry time (for Meta-Calibrator). */
@@ -311,6 +315,8 @@ export interface Position {
   entryOlrPWin?: number;
   /** Entry-time shadow-engine per-side win rate. */
   entryShadowWinRate?: number;
+  /** v2.0.873-P9-regime-switch: Entry-time momentum-persistence 分類（persistent_bear/range/neutral）。 */
+  entryPersistence?: Persistence;
   /** Entry-time market regime. */
   regime?: string;
   /** v2.0.869-P14: Market regime at close time (set by setCloseRegime before close). */
@@ -606,6 +612,8 @@ export interface TradeRecord {
   entryOlrPWin?: number;
   /** Entry-time shadow-engine per-side win rate (copied from pos at close). */
   entryShadowWinRate?: number;
+  /** v2.0.873-P9-regime-switch: Entry-time momentum-persistence 分類（copied from pos at close）。 */
+  entryPersistence?: Persistence;
   /** Entry-time market regime (copied from pos at close). */
   regime?: string;
   /** v2.0.869-P14: Market regime at close time (copied from pos at close). */
