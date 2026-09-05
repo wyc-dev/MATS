@@ -47,6 +47,12 @@ Step C  驗證三關：
          關3 敏感性——threshold 鄰近組合全正（非孤立 peak）;分 symbol 分散（單 symbol 佔比 <60%）;
               within-symbol ρ 一致性（剔除最大 symbol 後 edge 仍在）
 Step D  裁決：三關全過 → 實作;任何一關 ❌ → 誠實否決（PLAN 記錄）
+Step D2  **第四關 time-locked holdout（v2.0.873-P9-audit-methodology）**——三關全過後、實作前強制:
+         - 樣本期最後 ≥20% 做時間鎖定 holdout（參數完全 frozen, 唔可以喺 holdout 結果出嚟後再 tune）;
+         - 樣本 <100 單 → walk-forward chained split（≥2 折）;
+         - holdout 唔過 / 唔穩定 → 誠實否決（PLAN 記錄「OOS 唔過」）——唔可以「再 tune 一次重跑」。
+         同時: 報告加 multiple-testing disclosure（已試候選數 X / 本候選第 Y 個）+ 重疊交易合併或標註
+         + 口徑三欄（margin-% sum vs equity-weighted + 成本有無）+ 數據來源四級分類。
 Step E  實作（production grade）→ tsc + 全量測試 → 三文檔同步（CHANGELOG/AGENT_PROMPT/ARCHITECTURE）
 ```
 
