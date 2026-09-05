@@ -6315,9 +6315,11 @@ ${recentExamples}
       const patchTrade = (trade: any): boolean => {
         if (!trade) return false;
         // Skip if already has features
-        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) {
+        if (trade.entryMarketFeatures !== undefined && trade.entryMarketFeatures !== null && typeof trade.entryMarketFeatures === 'object') {
           // 🚨 2026-09-05 污染事故回滾（audit-round2）: 已有開倉時 snapshot 嘅 entry features
           // 永遠唔可以重寫（用而家 state 覆寫 = look-ahead 污染——12:36 全量 349 單事故）。
+          // attack-round7 收緊: 「有 field」即 skip——**空 object {} 都唔可以 fall-through**
+          // （Object.keys>0 對 {} false → 之前會用而家 state 覆寫——guard 窿）。
           // 歷史 record 冇 source field → 只補 source 標記（來源未知 → 保守 'live-fallback'）,
           // 唔可以 fall through 去用而家 state 重建 features。
           if ((trade.entryShadowWinRateSource ?? trade.shadowWinRateSource) === undefined
@@ -7311,9 +7313,11 @@ ${recentExamples}
       const patchTradeRecord = (trade: any): boolean => {
         if (!trade) return false;
         // Skip if already has features (already patched by a previous call)
-        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) {
+        if (trade.entryMarketFeatures !== undefined && trade.entryMarketFeatures !== null && typeof trade.entryMarketFeatures === 'object') {
           // 🚨 2026-09-05 污染事故回滾（audit-round2）: 已有開倉時 snapshot 嘅 entry features
           // 永遠唔可以重寫（用而家 state 覆寫 = look-ahead 污染——12:36 全量 349 單事故）。
+          // attack-round7 收緊: 「有 field」即 skip——**空 object {} 都唔可以 fall-through**
+          // （Object.keys>0 對 {} false → 之前會用而家 state 覆寫——guard 窿）。
           // 歷史 record 冇 source field → 只補 source 標記（來源未知 → 保守 'live-fallback'）,
           // 唔可以 fall through 去用而家 state 重建 features。
           if ((trade.entryShadowWinRateSource ?? trade.shadowWinRateSource) === undefined
@@ -14382,9 +14386,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       const patchTradeRecord = (trade: any): boolean => {
         if (!trade) return false;
         // Skip if already has features (already patched by monkey-patch or previous call)
-        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) {
+        if (trade.entryMarketFeatures !== undefined && trade.entryMarketFeatures !== null && typeof trade.entryMarketFeatures === 'object') {
           // 🚨 2026-09-05 污染事故回滾（audit-round2）: 已有開倉時 snapshot 嘅 entry features
           // 永遠唔可以重寫（用而家 state 覆寫 = look-ahead 污染——12:36 全量 349 單事故）。
+          // attack-round7 收緊: 「有 field」即 skip——**空 object {} 都唔可以 fall-through**
+          // （Object.keys>0 對 {} false → 之前會用而家 state 覆寫——guard 窿）。
           // 歷史 record 冇 source field → 只補 source 標記（來源未知 → 保守 'live-fallback'）,
           // 唔可以 fall through 去用而家 state 重建 features。
           if ((trade.entryShadowWinRateSource ?? trade.shadowWinRateSource) === undefined
