@@ -1,12 +1,42 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-attack-round7
+> **作者**: YC Wong · **版本**: 2.0.873-P9-core-fixes
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-attack-round7）**: vitest 4266 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-core-fixes）**: vitest 4273 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
+
+## v2.0.873-P9-core-fixes（2026-09-05）：首輪四個核心問題全修（audit 離線反例全重現）
+
+**Audit 核查**: convLedger 結案 ✓; 四個核心問題——**全部驗證屬實並全修**（831 §29）:
+
+| # | 問題 | 反例 | 修復 |
+|:--|:--|:--|:--|
+| 1 | **F1 提前 return 跳 mom24-guard/chase-tail** | BUY m4h +0.8%（順勢 ×1.15）+ m24h +0.2%（接刀區）→ guard 呼叫 0 次放行——「F1 4h/guard 24h 零重疊」聲明唔成立 | blocked→return / **通過→fall-through 統一閘流程** |
+| 2 | **shadow 容量 shift 游標漏同步** | 滿 200 drain + 新 sample → shift → 下次 drain 返 0（應 1）; 連續 5 筆靜默丟失 | `capRecentResults()` helper（shift + lastDrainedIndex 同步——同 prune 先例）|
+| 3 | **bullScore 自證 100%** | bullMom==fwd 算式 → `if(bullMom>0)` 樣本必然 fwd>0 | bullMom 改過去窗（鏡像 bearMom）——測試過去升+未來跌 → bullScore=0 |
+| 4 | **drawdown 負權益歸零** | 全程負曲線 → 回撤報 0%（測謊機失明）| `\|peak\|` 分母——負權益照量度 |
+
+「管道接通但源頭壞」原型第 4-6 次——新鐵律: 閘門鏈統一累積（唔好分支內 return）/ 容量游標操作單一 helper / 對稱計算（過去 vs 未來）review 兩側。**驗證**: 7 新測試 + 全量 **4273 pass + 13 pre-existing**; tsc clean。
+
+---
+
+## v2.0.873-P9-multiplier-ablation(+fix)（2026-09-05）：乘數鏈消融診斷 + ledger 數據基建 + 源頭修復
+
+- **消融診斷**（36 trades, 1006 live attribution tradeId group）: 有效縮倉（base#1 0.84% / trend-alignment / macro）vs **誤傷/無效候選 6 個**（mae-pattern 2.44% / convexity 2.38% / success-pattern 2.33% —— shrink 咗全場最好 trades）+ base×convexity Jaccard **89%** 重複懲罰 + 6 gate **100% 出手**（無選擇性=uniform downweight）——「乘數鏈過度收縮」確診（P9-mfe-expose 誤傷 68-80% 乘數層證據）。
+- **誠實裁決**: 樣本細（36 trades）+ 無完整決策重播 → **唔動 gate**——列減法候選。
+- **數據基建（零決策邏輯）**: `entryConvictionLedger`（19 站位完整乘數向量）持久化（types/portfolio/persistence/index）——2-4 週後精確 per-gate mult=1 消融重播。
+- **🚨 源頭修復（audit exhaustive-grep 發現）**: lastConvLedger 只喺拒絕分支賦值、通過分支冇 → 開倉 stash 到「上一筆被拒」殘留/空——**修正為 if/else 前無條件賦值**; 既有 1006 筆標「修正前疑似污染」（消融診斷可能歸因錯位——需修正後樣本重驗）。新鐵律: 記錄基建源頭喺所有分支有賦值。
+
+---
+
+## v2.0.873-P9-audit-round2（2026-09-05）：來源生命周期修復 + 🚨 fallbackPatch 污染事故
+
+- **來源生命周期**: entryShadowWinRateSource 3 處漏接修復（openTrade/importExchangePosition/closeExchangePosition）+ payload 傳遞 + 後補機制 skip 條件 + 生命周期測試 5/5。
+- **🚨 污染事故（own regression, 誠實認領）**: fallbackPatchMissingTradeFeatures 12:36 將**全 349 單 entryMarketFeatures 用而家 state 重寫**——B4 guard「有 source 先 skip」對歷史（無 source）record 永不 skip → 全量 fall-through。**修復**: 3 處 guard「已有 features 永不覆寫」+ data 還原 + 實盤重啟。新鐵律: entry features 開倉後永不覆寫 / 新 field 引入時 guard 要諗舊 records / 實驗用 snapshot file（831 §24）。
+- 其他: F1 filter 邏輯反（放行垃圾）改「=== number && finite」+ 隔離計數; Roll D1 裁決隔離（主裁決唔用 look-ahead）; holdout 預隔離語義。
 
 ## v2.0.873-P9-attack-round7（2026-09-05）：source 生命周期 + fallbackPatch guard 周邊攻擊
 
