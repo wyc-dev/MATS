@@ -20,6 +20,9 @@ export interface EntryFeatures {
   shadowWinRate?: number;
   /** v2.0.873-P9-attack-round6: shadowWinRate 來源——'entry-snapshot'（開倉當刻）/ 'live-fallback'（回溯 fill）。 */
   shadowWinRateSource?: 'entry-snapshot' | 'live-fallback';
+  /** v2.0.873-P9-multiplier-ablation: 開倉時 complete conviction-gate 乘數向量（19 站位 convLedger）——
+   *  持久化先可以喺 2-4 週後做「移除 gate X」嘅精確消融重播（而家得 tradeId group proxy）。零決策邏輯。 */
+  entryConvictionLedger?: Array<{ gate: string; mult: number }>;
   /** v2.0.873-P9-regime-switch: momentum-persistence 分類（persistent_bear/range/neutral）喺開倉時。 */
   persistence?: Persistence;
   /** Market regime at entry (low_volatility / mean_reverting / trending_bull / …). */
@@ -319,6 +322,8 @@ export interface Position {
   entryShadowWinRate?: number;
   /** v2.0.873-P9-attack-round6: entryShadowWinRate 來源——'entry-snapshot'（開倉當刻 precompute）/ 'live-fallback'（缺 data 回溯 fill——資訊含量低, ρ 分析應剔除）。 */
   entryShadowWinRateSource?: 'entry-snapshot' | 'live-fallback';
+  /** v2.0.873-P9-multiplier-ablation: 開倉時 conviction-gate 乘數向量（copy from entryData）。 */
+  entryConvictionLedger?: Array<{ gate: string; mult: number }>;
   /** v2.0.873-P9-regime-switch: Entry-time momentum-persistence 分類（persistent_bear/range/neutral）。 */
   entryPersistence?: Persistence;
   /** Entry-time market regime. */
@@ -618,6 +623,8 @@ export interface TradeRecord {
   entryShadowWinRate?: number;
   /** v2.0.873-P9-attack-round6: entryShadowWinRate 來源（copied from pos）。 */
   entryShadowWinRateSource?: 'entry-snapshot' | 'live-fallback';
+  /** v2.0.873-P9-multiplier-ablation: 開倉時 conviction-gate 乘數向量（copied from pos at close）。 */
+  entryConvictionLedger?: Array<{ gate: string; mult: number }>;
   /** v2.0.873-P9-regime-switch: Entry-time momentum-persistence 分類（copied from pos at close）。 */
   entryPersistence?: Persistence;
   /** Entry-time market regime (copied from pos at close). */

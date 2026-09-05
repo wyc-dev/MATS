@@ -4,6 +4,22 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-multiplier-ablation: 乘數鏈消融診斷 + conviction ledger 數據基建（主神 2026-09-05）
+
+**背景**: D1 減法驗證證實乘數鏈過度收縮（gate 出手率 76%/零 boost/base avg 0.247）——本輪做完整消融診斷（PLAN_multiplier-ablation.md）。
+
+### 診斷結果（component-attribution live 1006 records → tradeId group 36 trades 100% 覆蓋）
+- **✅ 有效縮倉**: base#1（出手組 avg 0.84% vs 全場 1.60%）、trend-alignment（−0.03%）、macro（0.83%）
+- **🔴 誤傷/無效懲罰候選（6）**: mae-pattern（2.44%）、convexity（2.38%）、success-pattern（2.33%）、causal（2.06%）、reversal-point（2.04%）、eq-ev（2.24%）——**shrink 咗嘅 trades 反而係全場質素最好**
+- **🔁 重複懲罰**: base×convexity Jaccard **89%**、success-pattern×reversal-point 72%
+- **📐 6 個 gate 100% 出手**——「全出手 shrink」= 無選擇性 = uniform downweight
+
+### 誠實裁決 + 落地
+- **唔立即動任何 gate**（36 trades 樣本細 + convLedger 未持久化 → 冇完整「移除 gate X」決策重播 + 第四關 OOS 未過）——減法候選清單明確但需數據重驗（同 P9-deadweight 先例: 當時都係 269 單 counterfactual 先裁決）
+- **數據基建（零決策邏輯）**: `entryConvictionLedger`（19 站位完整乘數向量）加 types×3 + portfolio copy×5 + persistence×4 + index payload——由而家開始每 trade 持久化——**2-4 週後重跑消融 = 精確 per-gate mult=1 重播**（決策反轉 + 反轉 trade 實際 pnl——真 counterfactual）
+
+**驗證**: 全量 4266 pass + 13 pre-existing（零 regression）; tsc clean; 零決策邏輯改動（純數據記錄）。
+
 ## v2.0.873-P9-new-directions: Audit 新盈利方向評估 + 減法驗證（主神 2026-09-05）
 
 **背景**: Audit agent 提出 6 個「出其不意」研究方向 + 最值得先做嘅「減法驗證」。本座逐個驗證（對照已證偽清單/現有覆蓋/數據實證）——PLAN_audit-new-directions.md + 831 §26。
