@@ -4,6 +4,31 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-audit-methodology: Audit 方法論指控回應（2026-09-05）——研究流程升級「四關制」+ 口徑/來源標準（零 production 決策改動）
+
+**背景**: Audit agent 指控: ①已證偽方向唔應換名重做 ②「三關通過」唔係正式樣本外驗證 ③P70 +473%/+912% 係事後篩選 ④「有欄位」≠「當時真實記錄」（SL/TP backfill 92 真實 + 200 per-symbol 中位數近似）⑤逐筆 margin% 加總 ≠ 帳戶資本報酬率（+245.37% 要補口徑）。本座逐條核對 code/docs——**全部成立**（文件自己 §17.5 已承認「三關全過 ≠ 真 edge」; SL backfill 92/200 早已誠實記錄; premature-close-guard 嘅 +467% 係「剔走短蝕單」樣本內上限唔係 gate 可實現收益）。PLAN_audit-methodology-round.md。
+
+**落地（全部 docs/紀律層——零 production code）**:
+
+### 研究紀律「四關制」（AGENT_PROMPT §7 RESEARCH INTEGRITY + SystemEngineer Step D2）
+- **第四關 time-locked holdout**: 三關通過後, 樣本期最後 ≥20% 時間鎖定（參數 frozen, 唔再 tune）; 樣本 <100 單 → walk-forward chained ≥2 折; holdout 唔過 → 否決（唔可以「再 tune 一次」）。
+- **multiple-testing disclosure**: 報告記「已試候選 X / 本候選第 Y」——防「試 50 個中 1 個」虛高。
+- **重疊交易**: 同 symbol 並行多單（獨立樣本假設失效）→ 合併成交叉獨立 / 明確標註。
+
+### 計算口徑標準（口徑三欄）
+- Δ/回報必須標: ①per-trade margin-% sum（Σ pnlPct×100, 等權）vs per-trade avg vs **equity-weighted 帳戶報酬**——Σ margin% 唔可以叫「帳戶報酬率」②資金權重（n、outlier、size 加權?）③成本（funding/slippage/fee——無 → 標「上限」）。
+- **CHANGELOG 口徑追溯 4 處已補 ⚠️**: +245.37%（margin-basis Δ, in-sample 分組, 未扣成本）/ +467%（in-sample 上限——剔走短蝕單, gate 只 ×0.3）/ +912%（in-sample 上限, 含 margin-% + 無成本雙重高估）/ +292.70%（in-sample proxy 重放）。
+
+### 數據來源四級分類
+①observed（當時觀測值）②reconstructed（成交/日誌重建）③candle-estimate（candle 推算）④statistical-fill（統計填補, e.g. per-symbol 中位數——**④唔可以混充「真實 SL/TP 重播」**; SL/TP backfill 係 92 真實 + 200 近似, 引用要寫明 mix——831 §16.3「移除 SL/TP 近似重查」擴展成通則）。
+
+### 已證偽方向復活禁令（8 項清單——新候選先對照）
+全面收窄 SL（§13.2 三度否決）／全面延遲深虧損 close（§13.1）／Shadow WR 取代 OLR blend（§14）／單憑近期 WR 判 regime（§13.1 rolling）／每 cycle×asset LLM 校準（P9-shadow-calib Part B）／BNB 順勢 → 全面 roll（§20×2）／弱模型反向 = alpha／OLR/FP/Q-RL 高信心當 edge。**有同款構想 → 先引用原否決 + 新數據/新假設, 唔可以換名重做**。
+
+**審查**: premature-close-guard gate 條件本身唔係 look-ahead（開倉時已知歷史連續 2 筆短蝕）——audit「開倉時未知」對 gate 條件唔成立, 但對「+467% 回測剔走」成立——分開認領。
+
+**驗證**: 純文檔改動——tsc clean / 全量 4253 pass 不變; AGENT_PROMPT/SystemEngineer/831 §23/CHANGELOG 四處同步。
+
 ## v2.0.873-P9-attack-round6: 工具完整性攻擊輪（主神 2026-09-05「不擇手段攻擊啱啱修葺嘅 code」）——紅先 4 fail 全修 + E1 重大發現
 
 **背景**: 對上輪修葺嘅 rank-correlation.ts + 4 scripts 接入 + F1/roll 修正展開攻擊輪（PLAN_attack-round6-tool-integrity.md）。
@@ -119,7 +144,7 @@ p9-attrib 揭 gate:four-window ρ=undefined——hard-block 路徑 mult=0（常�
 | **\|m4h\| > 0.5%（強動量）** | **Trend-following** | 順勢（升買/跌賣）| 順勢 +1.00% vs 逆勢 -0.57%（Δ +1.57%）|
 | **\|m4h\| < 0.5%（弱動量）** | **Mean-reversion** | 逆勢（買 dip/賣 rip）| 逆勢 +0.85% vs 順勢 -0.04%（Δ +0.89%）|
 
-**三關驗證**: 關1 Δ **+245.37%**（正確 +237.07% vs 錯誤 -8.30%）/ 關2 兩半都正（+128.55%/+108.52%）/ 關3 **7/9 symbol 乾淨**（MU n=2 outlier + SNDK n=8 counterexample）/ threshold sweep 單調（0.3% → +1.15%，1.5% → +0.26%）/ era split 都正（+0.80%/+1.16%）。
+**三關驗證**: 關1 Δ **+245.37%**（正確 +237.07% vs 錯誤 -8.30%）⚠️ 口徑: per-trade margin-% sum（等權, in-sample 回歸分組——Σ margin% ≠ 帳戶資本報酬率, 未扣 funding/slippage）/ 關2 兩半都正（+128.55%/+108.52%）/ 關3 **7/9 symbol 乾淨**（MU n=2 outlier + SNDK n=8 counterexample）/ threshold sweep 單調（0.3% → +1.15%，1.5% → +0.26%）/ era split 都正（+0.80%/+1.16%）。
 
 **呢個係第一個過到三關嘅信號**——之前嘅「逆勢 BUY」同「低 shadow WR SELL」都係 symbol-dependent，但「regime switch」係乾淨嘅結構特徵。
 
@@ -2700,13 +2725,13 @@ tsc clean;41 相關測試綠
 
 **P1**:EV Filter 強化——`evToMultiplier` 負EV降權由 floor 0.75 → 兩檔(EV≤−0.1% ×0.15 災難桶 / EV<0 ×0.30 明顯負EV)。回測驗證:+473%。
 
-**P3**:短持倉懲罰安全版(`premature-close-guard`)——連續2筆<15min LOSS → ×0.3;4防線:連續2先觸發/24h衰減/S-R邊界豁免(≤50bps)/soft乘數。主神反問「會唔會永遠開唔到倉」—naive版會,安全版唔會。回測驗證:+467%。
+**P3**:短持倉懲罰安全版(`premature-close-guard`)——連續2筆<15min LOSS → ×0.3;4防線:連續2先觸發/24h衰減/S-R邊界豁免(≤50bps)/soft乘數。主神反問「會唔會永遠開唔到倉」—naive版會,安全版唔會。回測驗證:+467%（⚠️ in-sample 上限——counterfactual 剔走短蝕單, 實際 gate 只 ×0.3 懲罰, 非可實現收益）)
 
 **P6**:trend-alignment-gate 逆勢 penalty ×0.5→×0.1——trending_bear WR 11.1%。回測驗證:+253%。
 
 **P68-fix**:誤刪 EXP trades 修復——之前誤判 entry=100 係測試污染,其實 1216/1319 係真實盈利 trades(PnL +343.80)。已還原 trades.jsonl,`recordClose` 只 block 真正無效價(entry≤0/NaN)。
 
-**影響組合(P1+P3+P6)**:回測 PnL +912% (+2.30→+23.31)
+**影響組合(P1+P3+P6)**:回測 PnL +912% (+2.30→+23.31)（⚠️ in-sample 上限——全期間 sample 內 counterfactual, 含 margin-% sum 口徑 + 無成本扣除嘅雙重高估）
 
 56/56 相關測試綠;全量 2854 pass + 13 pre-existing
 
@@ -3703,7 +3728,7 @@ tests/p21-trade-postmortem-fixes.test.ts **11 綠**(蜃景重現對照組 + 原�
 
 ## v2.0.869-P15: Regime-Reversal Profit Lock(主神 組合信號鎖利指令)
 
-**背景(主神洞察)**:盈利倉喺 regime 反轉時鎖利,避免「贏變蝕」。回測驗證:MFE proxy 淨效果 +214%(改善 +292.70% − 副作用 −78.71%),組合信號(MFE AND regime 反轉)副作用接近 0 → 淨效果接近 +292.70%。
+**背景(主神洞察)**:盈利倉喺 regime 反轉時鎖利,避免「贏變蝕」。回測驗證:MFE proxy 淨效果 +214%(改善 +292.70% − 副作用 −78.71%),組合信號(MFE AND regime 反轉)副作用接近 0 → 淨效果接近 +292.70%（⚠️ in-sample proxy 重放, margin-% 口徑）
 
 ### 組件 1:RegimeWinRateLearner(`src/analysis/regime-win-rate-learner.ts`)
 - 記錄 (entryRegime, closeRegime, side, symbol, pnl, closedAt) 喺平倉時

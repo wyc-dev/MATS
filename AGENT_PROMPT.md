@@ -389,6 +389,14 @@ data/evolution/                 # portfolio-state.json, market-agent-config.json
 
 6. **TYPES ARE LAW**. Strict TypeScript: no `any` unless justified inline with a reason comment, no untyped params, no `@ts-ignore`. Every public function has explicit return type. Null/undefined handled explicitly, never assumed away.
 
+7. **RESEARCH INTEGRITY（v2.0.873-P9-audit-methodology, 2026-09-05——Audit agent 指控後制度化）**. 研究紀律 = 無可指摘。任何實驗報告必須包含:
+   - **口徑三欄**: (a) 計算口徑——`per-trade margin-% sum`（Σ pnlPct×100, 等權）/ per-trade avg / **equity-weighted 帳戶報酬**（三種唔同, **Σ margin% 唔可以叫「帳戶報酬率」**）; (b) 資金權重——幾多單、有冇 outlier 驅動、size 加權?; (c) 成本——funding/slippage/fee 有冇扣（無 → 標「未計成本, 上限」）。`+473%/+912%/+245.37%` 呢類數字全部要標「in-sample 上限」定「OOS 可實現」。
+   - **in-sample vs out-of-sample**: 三關（全樣本/兩半/敏感性）通過後, 加**第四關 time-locked holdout**——樣本期最後 ≥20% 時間鎖定（參數 frozen, 唔再 tune）；樣本 <100 單 → walk-forward chained ≥2 折。holdout 唔過 → 否決（唔可以「再 tune 一次」）。
+   - **multiple-testing disclosure**: 報告記錄「已試候選總數 X / 本候選順序 Y」——試 50 個中 1 個嘅過擬合, 唔應該扮成單一發現。
+   - **重疊交易**: 同 symbol 同期並行多單（重疊持倉）會令「獨立樣本」假設失效——要合併成交叉獨立樣本或明確標註。
+   - **數據來源分類**: 任何用作「真實重播」嘅數據要標四級來源——①observed（當時觀測值）②reconstructed（成交/日誌重建）③candle-estimate（candle 推算）④statistical-fill（統計填補, e.g. per-symbol 中位數）。**④唔可以混充「真實 SL/TP 重播」**（SL/TP backfill 係 92 真實 + 200 per-symbol 中位數近似——引用要寫明 mix）。
+   - **已證偽方向復活禁令**: 新候選先對照清單（831 §23 / CHANGELOG audit entry）——roll 持倉、全面收窄 SL、全面延遲深虧損 close、Shadow WR 取代 OLR blend、單憑近期 WR 判 regime、每 cycle×asset LLM 校準、弱模型反向。**有同款構想 → 先引用原否決 + 新數據/新假設, 唔可以換名重做**。
+
 ## KNOWN PITFALLS (from real production bugs — do not repeat)
 
 - **Average-rank Spearman for research ρ (v2.0.873-P9-tool-integrity, research tools)**: NEVER compute Spearman with naive `r[idx[i]] = i + 1` rank assignment — ties (大量同值, e.g. gate multipliers ×1.0/×0.5, shadow WR fallback fills) get arbitrary order → constant predictor scores ρ=±1. ALWAYS use `avgRankSpearman()` from `src/analysis/rank-correlation.ts` (average-rank + zero-variance protection → null + paired finite filter — independent filters shift (x[i],y[i]) pairs and can flip ρ sign). NEVER quote a ρ from CHANGELOG history without re-deriving with the average-rank version.
