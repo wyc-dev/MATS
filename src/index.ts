@@ -7050,6 +7050,8 @@ ${recentExamples}
         olrPWin: pre?.olrPWin,
         shadowWinRate: pre?.shadowWinRate,
         shadowWinRateSource: pre?.shadowWinRateSource,
+        // P9-multiplier-ablation: 開倉時完整性乘數向量（持久化——2-4 週後消融重播用）
+        entryConvictionLedger: this.gateLedgerCache.get(sym) ?? undefined,
         regime: this.marketState?.getState(sym)?.regime ?? this.marketState?.getState(this.marketAgent?.getSelectedSymbol() ?? '')?.regime,
         consensusConfidence: Number.isFinite(this.lastCycleConsensusConfidence)
           ? this.lastCycleConsensusConfidence
