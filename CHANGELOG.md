@@ -4,6 +4,27 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-new-directions: Audit 新盈利方向評估 + 減法驗證（主神 2026-09-05）
+
+**背景**: Audit agent 提出 6 個「出其不意」研究方向 + 最值得先做嘅「減法驗證」。本座逐個驗證（對照已證偽清單/現有覆蓋/數據實證）——PLAN_audit-new-directions.md + 831 §26。
+
+### 六候選裁決
+| # | 提議 | 裁決 |
+|:--|:--|:--|
+| 1 | 淨-EV 分位路由（取代乘數鏈）| ✅ merit——**D1 證實乘數鏈過度收縮**: gate 出手率 76%、全部 avg mult <1.0（零 boost）、base gate avg **0.247**、reversal-point/mae-pattern/chart-aware 出手率 100%——多個相關 shrink 連乘極度收縮 effectiveConfidence（P9-mfe-expose 誤傷 68-80% 嘅乘數層證據）|
+| 2 | 成本感知執行 | ⏸ 中期（funding 已量化 −1.6%; 執行層架構外）|
+| 3 | 波動標準化動量 | ⚠️ **D3 確認 `med×n×100`**——24h×25 vs 4h×5 threshold 跨窗不可直接比（per-window OK）|
+| 4 | 條件式退出 | ❌ 重疊 §16（現有離場已證分布下最優）|
+| 5 | 風險預算 | ⏸ 需驗證 correlation-budget 生效性 |
+| 6 | 消融實驗室 | ✅ 已部分覆蓋（GOT + attribution）|
+
+### 減法驗證（真實數據 349 單）
+**D2 純統計 lean 分層**: SWR 非單調（0.3-0.5 中間帶 +2.58% 最好）; **OLR>0.6 高信心 avg=−0.53%（反預測——831 §20/§14 第三次再現）**; 0.4-0.6 中間帶全最好——**「低-中置信度最好」+「極端信心反預測」係唯一跨源一致結構**——「純統計勝過多 Agent」唔成立（統計 lean 都有盲區）。
+
+**行動建議（列 pending——實盤 gate 改動需 831 全流程 + 第四關）**: ①乘數鏈消融實驗（P9-deadweight 延伸——每個高出手率 gate 單獨 counterfactual）②overconfidence 懲罰（OLR>0.6 反預測三次再現——唯一跨源一致結構）——都係「減法」方向（唔加新 gate, 先移除重複懲罰）。
+
+**驗證**: 純分析/文檔——零 production 決策邏輯改動; 4266 pass 不變; tsc clean。
+
 ## v2.0.873-P9-attack-round7: 攻擊輪——source 生命周期 + fallbackPatch guard 周邊（主神 2026-09-05「不擇手段攻擊啱啱修葺嘅 code」）
 
 **紅先 5 測試 1 fail → 修復 → 29/29 全綠**（attack-round7 5 新 + lifecycle 5 + rank-correlation 19）。
