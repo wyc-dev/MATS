@@ -32,10 +32,14 @@ function persistenceOf(symbol: string): 'persistent_bear' | 'range' | 'unknown' 
 function loadTrades(): Trade[] {
   const p = path.resolve(process.cwd(), 'data/evolution/portfolio-state.json');
   const s = JSON.parse(fs.readFileSync(p, 'utf8'));
-  // V3+V8 硬化（attack-round6）: object guard + pnl finite——persisted 污染唔可以入計算
-  return (s.realTrades ?? [])
-    .filter((t: any) => t && typeof t === 'object' && (t.status === undefined || t.status === 'closed'))
-    .filter((t: any) => typeof t.pnlPct !== 'number' || Number.isFinite(t.pnlPct));
+  // V3+V8 硬化（attack-round6 + audit-round2）: object guard + pnl **必須係 finite number**——
+  // 舊條件「!== 'number' || isFinite」會放行垃圾 string/undefined（邏輯反）→ 淨改善 NaN。
+  // object guard / 非 number pnl 全部被隔離。
+  const all = (s.realTrades ?? [])
+    .filter((t: any) => t && typeof t === 'object' && (t.status === undefined || t.status === 'closed'));
+  const isolated = all.length - all.filter((t: any) => typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct)).length;
+  if (isolated > 0) console.log(`⚠️ [data-quality] 隔離 ${isolated} 單非 finite pnlPct（persisted 污染——唔入計算）`);
+  return all.filter((t: any) => typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct));
 }
 
 function main() {

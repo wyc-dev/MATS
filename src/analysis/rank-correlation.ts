@@ -20,23 +20,31 @@
  *         （讀 element throw）唔再 crash（→ 該位視為無效）。
  */
 
-/** 安全讀取 array element——own-property + try/catch（getter bomb 免疫）；非有限 number → null */
+/** 安全讀取 array element——own-property + try/catch（getter bomb / Proxy trap 免疫）；非有限 number → null */
 function ownFinite(arr: unknown, i: number): number | null {
-  if (!Array.isArray(arr)) return null;
-  if (!Object.prototype.hasOwnProperty.call(arr, i)) return null;
   try {
+    if (!Array.isArray(arr)) return null;
+    if (!Object.prototype.hasOwnProperty.call(arr, i)) return null; // Proxy getOwnPropertyDescriptor trap 都會喺 try/catch 內
     const v = (arr as unknown[])[i] as unknown;
     return typeof v === 'number' && Number.isFinite(v) ? (v as number) : null;
   } catch {
-    return null; // getter bomb：讀唔到 → 該位無效（唔 crash）
+    return null; // getter bomb / Proxy trap（get / getOwnPropertyDescriptor / length）：讀唔到 → 該位無效（唔 crash）
   }
 }
 
-/** PAIRED 過濾——(x[i], y[i]) 同時有效先保留。長度取 min（同索引語義）。 */
+/** PAIRED 過濾——(x[i], y[i]) 同時有效先保留。長度取 min（同索引語義）。Array.isArray/length 讀取都包 try/catch。 */
 function finitePairs(xs: unknown, ys: unknown): Array<[number, number]> {
   const out: Array<[number, number]> = [];
-  if (!Array.isArray(xs) || !Array.isArray(ys)) return out;
-  const n = Math.min(xs.length, ys.length);
+  let xl = 0;
+  let yl = 0;
+  try {
+    if (!Array.isArray(xs) || !Array.isArray(ys)) return out;
+    xl = (xs as unknown[]).length; // Proxy length getter throw → catch → 空
+    yl = (ys as unknown[]).length;
+  } catch {
+    return out;
+  }
+  const n = Math.min(xl, yl);
   for (let i = 0; i < n; i++) {
     const x = ownFinite(xs, i);
     const y = ownFinite(ys, i);

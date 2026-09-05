@@ -391,10 +391,10 @@ data/evolution/                 # portfolio-state.json, market-agent-config.json
 
 7. **RESEARCH INTEGRITY（v2.0.873-P9-audit-methodology, 2026-09-05——Audit agent 指控後制度化）**. 研究紀律 = 無可指摘。任何實驗報告必須包含:
    - **口徑三欄**: (a) 計算口徑——`per-trade margin-% sum`（Σ pnlPct×100, 等權）/ per-trade avg / **equity-weighted 帳戶報酬**（三種唔同, **Σ margin% 唔可以叫「帳戶報酬率」**）; (b) 資金權重——幾多單、有冇 outlier 驅動、size 加權?; (c) 成本——funding/slippage/fee 有冇扣（無 → 標「未計成本, 上限」）。`+473%/+912%/+245.37%` 呢類數字全部要標「in-sample 上限」定「OOS 可實現」。
-   - **in-sample vs out-of-sample**: 三關（全樣本/兩半/敏感性）通過後, 加**第四關 time-locked holdout**——樣本期最後 ≥20% 時間鎖定（參數 frozen, 唔再 tune）；樣本 <100 單 → walk-forward chained ≥2 折。holdout 唔過 → 否決（唔可以「再 tune 一次」）。
+   - **in-sample vs out-of-sample**: 三關（全樣本/兩半/敏感性）通過後, 加**第四關 time-locked holdout**——樣本期最後 ≥20% 時間鎖定（參數 frozen, 唔再 tune）；樣本 <100 單 → walk-forward chained ≥2 折。holdout 唔過 → 否決（唔可以「再 tune 一次」）。⚠️ **holdout 必須喺候選提出前預隔離**——先分析完整資料再將「已經睇過嘅最後 20%」改名做 holdout = 污染（等於冇 holdout）。三關只用樣本期前 80%, holdout 段由始至終唔准入任何分析/調參。
    - **multiple-testing disclosure**: 報告記錄「已試候選總數 X / 本候選順序 Y」——試 50 個中 1 個嘅過擬合, 唔應該扮成單一發現。
    - **重疊交易**: 同 symbol 同期並行多單（重疊持倉）會令「獨立樣本」假設失效——要合併成交叉獨立樣本或明確標註。
-   - **數據來源分類**: 任何用作「真實重播」嘅數據要標四級來源——①observed（當時觀測值）②reconstructed（成交/日誌重建）③candle-estimate（candle 推算）④statistical-fill（統計填補, e.g. per-symbol 中位數）。**④唔可以混充「真實 SL/TP 重播」**（SL/TP backfill 係 92 真實 + 200 per-symbol 中位數近似——引用要寫明 mix）。
+   - **數據來源分類**: 歷史記錄冇來源標記時, 「同 symbol 同值」只能係 **fallback 嫌疑**（不可證明來源）——去重後子集只可以叫「fallback-嫌疑剔除樣本」, **唔可以叫「已確認真實 snapshot」**。真正的 entry-snapshot 只可以由 2026-09-05 後帶 `entryShadowWinRateSource` 標記嘅記錄提供。**數據來源分類**: 任何用作「真實重播」嘅數據要標四級來源——①observed（當時觀測值）②reconstructed（成交/日誌重建）③candle-estimate（candle 推算）④statistical-fill（統計填補, e.g. per-symbol 中位數）。**④唔可以混充「真實 SL/TP 重播」**（SL/TP backfill 係 92 真實 + 200 per-symbol 中位數近似——引用要寫明 mix）。
    - **已證偽方向復活禁令**: 新候選先對照清單（831 §23 / CHANGELOG audit entry）——roll 持倉、全面收窄 SL、全面延遲深虧損 close、Shadow WR 取代 OLR blend、單憑近期 WR 判 regime、每 cycle×asset LLM 校準、弱模型反向。**有同款構想 → 先引用原否決 + 新數據/新假設, 唔可以換名重做**。
 
 ## KNOWN PITFALLS (from real production bugs — do not repeat)
