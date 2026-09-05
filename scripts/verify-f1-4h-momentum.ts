@@ -32,7 +32,10 @@ function persistenceOf(symbol: string): 'persistent_bear' | 'range' | 'unknown' 
 function loadTrades(): Trade[] {
   const p = path.resolve(process.cwd(), 'data/evolution/portfolio-state.json');
   const s = JSON.parse(fs.readFileSync(p, 'utf8'));
-  return (s.realTrades ?? []).filter((t: any) => t.status === undefined || t.status === 'closed');
+  // V3+V8 硬化（attack-round6）: object guard + pnl finite——persisted 污染唔可以入計算
+  return (s.realTrades ?? [])
+    .filter((t: any) => t && typeof t === 'object' && (t.status === undefined || t.status === 'closed'))
+    .filter((t: any) => typeof t.pnlPct !== 'number' || Number.isFinite(t.pnlPct));
 }
 
 function main() {
@@ -47,9 +50,9 @@ function main() {
   console.log(`=== 候選 C: 「persistent_bear + m4h < -0.5% → block BUY」驗證 ===\n`);
   console.log(`逆勢 BUY (m4h < -0.5%) n=${counterBuy.length}\n`);
 
-  let blockedSum = 0; // 被 block 嘅單嘅 PnL（block 咗就慳返呢啲）
+  let blockedSum = 0; // Σ pnl（所有被 block 嘅單）
   let blockedN = 0;
-  let falsePositiveSum = 0; // 誤傷（block 咗但係贏單）
+  let falsePositiveSum = 0; // 誤傷（block 咗但係贏單——錯過盈利，純資訊）
   let falsePositiveN = 0;
 
   for (const t of counterBuy) {
@@ -74,9 +77,13 @@ function main() {
   }
 
   console.log(`\n=== 三關裁決 ===`);
-  console.log(`關1 (Δ): block 慳 ${blockedSum.toFixed(2)}%（${blockedN} 單）`);
-  console.log(`  誤傷: ${falsePositiveN} 單贏單，慳少 ${falsePositiveSum.toFixed(2)}%`);
-  const net = blockedSum - falsePositiveSum;
+  // 2026-09-05 修正（PLAN_tool-integrity-fix）: block 帶嚟嘅「改善」= −Σpnl——
+  // block 蝕單（pnl<0）慳返正數 / block 贏單（pnl>0）誤傷負數。
+  // 原 bug: blockedSum 直接當改善（符號反）+ 誤傷喺 blockedSum 之後再減一次（雙重計）。
+  const improvement = -blockedSum; // = 挽回虧損 + 錯過盈利（已含誤傷）
+  console.log(`關1 (Δ): block 挽回虧損 ${blockedSum < 0 ? `+${(-blockedSum).toFixed(2)}` : blockedSum.toFixed(2)}%（${blockedN} 單）`);
+  console.log(`  誤傷: ${falsePositiveN} 單贏單，錯過盈利 ${falsePositiveSum.toFixed(2)}%（已含喺 Δ 內——單次計）`);
+  const net = improvement;
   console.log(`  淨 Δ = ${net.toFixed(2)}%`);
 
   // 關2: 被 block 嘅單，兩半

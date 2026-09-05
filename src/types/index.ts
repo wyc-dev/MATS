@@ -18,6 +18,8 @@ export interface EntryFeatures {
   olrPWin?: number;
   /** Shadow-engine per-side win rate at entry time. */
   shadowWinRate?: number;
+  /** v2.0.873-P9-attack-round6: shadowWinRate 來源——'entry-snapshot'（開倉當刻）/ 'live-fallback'（回溯 fill）。 */
+  shadowWinRateSource?: 'entry-snapshot' | 'live-fallback';
   /** v2.0.873-P9-regime-switch: momentum-persistence 分類（persistent_bear/range/neutral）喺開倉時。 */
   persistence?: Persistence;
   /** Market regime at entry (low_volatility / mean_reverting / trending_bull / …). */
@@ -315,6 +317,8 @@ export interface Position {
   entryOlrPWin?: number;
   /** Entry-time shadow-engine per-side win rate. */
   entryShadowWinRate?: number;
+  /** v2.0.873-P9-attack-round6: entryShadowWinRate 來源——'entry-snapshot'（開倉當刻 precompute）/ 'live-fallback'（缺 data 回溯 fill——資訊含量低, ρ 分析應剔除）。 */
+  entryShadowWinRateSource?: 'entry-snapshot' | 'live-fallback';
   /** v2.0.873-P9-regime-switch: Entry-time momentum-persistence 分類（persistent_bear/range/neutral）。 */
   entryPersistence?: Persistence;
   /** Entry-time market regime. */
@@ -612,6 +616,8 @@ export interface TradeRecord {
   entryOlrPWin?: number;
   /** Entry-time shadow-engine per-side win rate (copied from pos at close). */
   entryShadowWinRate?: number;
+  /** v2.0.873-P9-attack-round6: entryShadowWinRate 來源（copied from pos）。 */
+  entryShadowWinRateSource?: 'entry-snapshot' | 'live-fallback';
   /** v2.0.873-P9-regime-switch: Entry-time momentum-persistence 分類（copied from pos at close）。 */
   entryPersistence?: Persistence;
   /** Entry-time market regime (copied from pos at close). */
