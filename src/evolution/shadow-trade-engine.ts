@@ -290,8 +290,22 @@ export class ShadowTradeEngine {
    *  v2.0.178: Added mfePct/maePct to recentResults so getStats() can compute
    *  MAE/MFE averages from historical results, not just current positions.
    *  v2.0.869-P2(主神 Shadow 升級):加 exitReason + pnlPct——學「邊個離場原因有 edge」
-   *  +「贏幾多/蝕幾多」——cap 50 → 100(主神要求「最近 100 個」) */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number }> = [];
+   *  +「贏幾多/蝕幾多」——cap 50 → 100(主神要求「最近 100 個」)
+   *  v2.0.873-P9-time-window: 加 resolvedAt（真實時間戳——cycle period 可變，
+   *  cycle 字段唔可靠）+ cap 100 → 200 + drain 唔清空（保留 buffer 俾
+   *  getStatsForWindow 用「最近 T 小時」嘅 WR）。
+   *
+   *  ═══ 後續 agent 跟進（候選 1/2/3——需新數據累積後驗證）═══
+   *  候選 1: 接駁 getStatsForWindow 到 shadow-gate——驗證「last T hours WR」
+   *          嘅預測力（ρ）比「累積 WR」（statsBySymbolSide）更高先接駁。
+   *  候選 2: Regime-Adaptive Window——getStatsForWindow 嘅 hours 參數根據
+   *          |m4h| 動態判斷（choppy → 1h，trending → 24h），同 regime switch
+   *          （regimeSwitchDirectionalBias）用同一個 signal。
+   *  候選 3: Shadow WR 兩邊蝕 = 震蕩市偵測——getStatsForWindow 攞 both long
+   *          and short WR，兩邊都 <50% → 震蕩市 → mean-reversion（唔係
+   *          trend-following）。呢個係「雙向確認」嘅 regime signal。
+   *  ═══════════════════════════════════════════════════════════════════ */
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; resolvedAt: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number }> = [];
 
   /**
    * v2.0.870-EMR: 持久化 per-symbol×side 累計統計——唔依賴 recentResults 緩衝區
@@ -1170,8 +1184,8 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
-        if (this.recentResults.length > 100) this.recentResults.shift();
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
+        if (this.recentResults.length > 200) this.recentResults.shift();
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
         resolved++;
@@ -1239,14 +1253,18 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
-        if (this.recentResults.length > 100) this.recentResults.shift();
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
+        if (this.recentResults.length > 200) this.recentResults.shift();
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
 
         resolved++;
       }
     }
+
+    // v2.0.873-P9-time-window: 每 cycle 尾清空「超過 4 個鐘」嘅 resolved records——
+    // 令 recentResults 反映「最近 4 個鐘」而唔係「累積全部」。
+    this.pruneOldResolved(4);
 
     return resolved;
   }
@@ -1532,6 +1550,7 @@ export class ShadowTradeEngine {
         outcome: rec.outcome,
         holdCycles: rec.holdCycles,
         cycle: 0,
+        resolvedAt: Date.now(),
         shadowType: 'aligned',
         exitReason: 'sl_tp',
         pnlPct: rec.pnlPct,
@@ -1679,6 +1698,10 @@ export class ShadowTradeEngine {
    * Includes the training features that were fed to OLR (entry/resolution
    * blend) so downstream systems train on the same feature distribution.
    */
+  /** v2.0.873-P9-time-window: 已 feed OLR 嘅 index——drain 唔清空 buffer，
+   *  只攞「上次 drain 之後」嘅新 trades（防 double-count）。 */
+  private lastDrainedIndex = 0;
+
   drainRecentResults(): Array<{
     id: string; symbol: string; side: 'buy' | 'sell';
     outcome: 'win' | 'loss'; holdCycles: number; cycle: number;
@@ -1686,7 +1709,11 @@ export class ShadowTradeEngine {
     shadowType: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded';
   }> {
     if (this.recentResults.length === 0) return [];
-    const drained = this.recentResults.map(r => ({
+    // v2.0.873-P9-time-window: 唔清空 buffer——只攞「上次 drain 之後」嘅新 trades
+    // （保留 buffer 俾 getStatsForWindow 用「最近 T 小時」嘅 WR）。
+    const newTrades = this.recentResults.slice(this.lastDrainedIndex);
+    this.lastDrainedIndex = this.recentResults.length;
+    return newTrades.map(r => ({
       id: r.id,
       symbol: r.symbol,
       side: r.side,
@@ -1700,8 +1727,48 @@ export class ShadowTradeEngine {
       pnlPct: r.outcome === 'win' ? Math.max(r.mfePct ?? 0, 0.001) : -Math.max(r.maePct ?? 0, 0.001),
       shadowType: r.shadowType ?? 'blind',
     }));
-    this.recentResults = [];
-    return drained;
+  }
+
+  /** v2.0.873-P9-time-window: 清空「超過 T 小時」嘅 resolved records——
+   *  令 recentResults 反映「最近 T 小時」而唔係「累積全部」。
+   *  用 resolvedAt（真實時間戳）——cycle period 可變，cycle 字段唔可靠。
+   *  由 checkPositions 每 cycle 尾 call（唔使 timestamp 排序——push 係時間順序）。 */
+  pruneOldResolved(hours = 4, now = Date.now()): number {
+    const cutoff = now - hours * 3600_000;
+    let removed = 0;
+    // recentResults 係時間順序（push 喺 resolve 時）——由頭（最舊）清走
+    while (this.recentResults.length > 0 && this.recentResults[0]!.resolvedAt < cutoff) {
+      this.recentResults.shift();
+      removed++;
+    }
+    if (removed > 0) {
+      // 清走咗 removed 個最舊 record——lastDrainedIndex 要同步減（防 index 錯位）
+      this.lastDrainedIndex = Math.max(0, this.lastDrainedIndex - removed);
+    }
+    return removed;
+  }
+
+  /** v2.0.873-P9-time-window: 用「最近 T 小時」嘅 resolved shadow trades 計 WR——
+   *  反映近期市況（唔係累積全部）。用 resolvedAt filter（時間順序）。 */
+  getStatsForWindow(symbol: string, hours: number): {
+    longWins: number; longLosses: number; shortWins: number; shortLosses: number;
+    longWR: number; shortWR: number; n: number;
+  } {
+    const sym = normalizeSymbol(symbol).toLowerCase();
+    const cutoff = Date.now() - hours * 3600_000;
+    const recent = this.recentResults.filter(r => r.symbol === sym && Number.isFinite(r.resolvedAt) && r.resolvedAt >= cutoff);
+    const longWins = recent.filter(r => r.side === 'buy' && r.outcome === 'win').length;
+    const longLosses = recent.filter(r => r.side === 'buy' && r.outcome === 'loss').length;
+    const shortWins = recent.filter(r => r.side === 'sell' && r.outcome === 'win').length;
+    const shortLosses = recent.filter(r => r.side === 'sell' && r.outcome === 'loss').length;
+    const longTotal = longWins + longLosses;
+    const shortTotal = shortWins + shortLosses;
+    return {
+      longWins, longLosses, shortWins, shortLosses,
+      longWR: longTotal > 0 ? longWins / longTotal : 0,
+      shortWR: shortTotal > 0 ? shortWins / shortTotal : 0,
+      n: recent.length,
+    };
   }
 
   /**
@@ -1785,7 +1852,12 @@ export class ShadowTradeEngine {
           }));
       }
       if (data.recentResults) {
-        this.recentResults = data.recentResults;
+        // v2.0.873-P9-time-window: resolvedAt fallback——舊 persisted 數據冇 resolvedAt
+        // → 當 now（唔會即刻被 prune 清走）。
+        this.recentResults = (data.recentResults as any[]).map(r => ({
+          ...r,
+          resolvedAt: Number.isFinite(r?.resolvedAt) ? r.resolvedAt : Date.now(),
+        }));
       }
       if (data.idCounter) {
         this.idCounter = data.idCounter;
