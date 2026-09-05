@@ -49,22 +49,45 @@ async function getCandles(coin: string, startTs: number, endTs: number) {
   } catch { return null; }
 }
 
+/** candle 數值（V10 硬化: HL API 歷史 candle 嘅 OHLC 係 string——831 §13.2③ 教訓; garbage → null） */
+function candleNum(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+/** candle timestamp 安全轉換（garbage → -Infinity, 永遠唔 match） */
+function candleTs(c: any): number {
+  if (!c || typeof c !== 'object') return -Infinity;
+  const n = Number(c.t);
+  return Number.isFinite(n) ? n : -Infinity;
+}
+
 /** 模擬 roll: entry 揸住, MFE≥0.5% 上移 SL 至 breakeven, MFE≥1% 後 trail 50% */
 function simulateRoll(entry: number, side: 'buy' | 'sell', candles: any[], openTs: number, exitBy: { at?: number; type: string } | null, oppOpenTs: number | null) {
+  // V11 硬化: entry 非有限/零 → 唔可以除零; side 白名單
+  if (!Number.isFinite(entry) || entry === 0 || (side !== 'buy' && side !== 'sell')) {
+    return { stop: false, pnlPct: 0, exitReason: 'bad-input' };
+  }
   const dir = side === 'buy' ? 1 : -1;
   let sl = entry * (1 - dir * 0.015);
   let peak = entry, breakevenArmed = false;
-  const startIdx = candles.findIndex((c: any) => c.t >= openTs - 300_000);
+  const startIdx = candles.findIndex((c: any) => candleTs(c) >= openTs - 300_000);
   if (startIdx < 0) return { stop: false, pnlPct: 0, exitReason: 'no-candle' };
-  const oppIdx = oppOpenTs ? candles.findIndex((c: any) => c.t >= oppOpenTs) : -1;
-  const endIdx = exitBy?.at ? candles.findIndex((c: any) => c.t >= exitBy.at) : candles.length;
+  const oppIdx = oppOpenTs ? candles.findIndex((c: any) => candleTs(c) >= oppOpenTs) : -1;
+  const endIdx = exitBy?.at ? candles.findIndex((c: any) => candleTs(c) >= exitBy.at) : candles.length;
   const lastIdx = Math.min(endIdx > startIdx ? endIdx : candles.length, oppIdx > startIdx ? oppIdx : candles.length) - 1;
   if (lastIdx < startIdx) return { stop: false, pnlPct: 0, exitReason: 'no-window' };
   let exitPx: number | null = null; let exitReason = 'end';
   for (let i = startIdx; i <= lastIdx; i++) {
     const c = candles[i];
-    const hi = c.h, lo = c.l, clo = c.c;
-    const mfe = (dir * (hi - entry)) / entry;
+    // V12 硬化: candle element null/垃圾 → 保守退出（唔 crash, 唔靜默 NaN）
+    if (!c || typeof c !== 'object') return { stop: false, pnlPct: 0, exitReason: 'bad-candle' };
+    const hi = candleNum(c.h), lo = candleNum(c.l), clo = candleNum(c.c);
+    if (hi === null || lo === null || clo === null) return { stop: false, pnlPct: 0, exitReason: 'bad-candle' };
+    // 2026-09-05 修正（PLAN_tool-integrity-fix）: BREAKEVEN 嘅 MFE 必須方向感知——
+    // BUY 睇 candle high / SELL 睇 candle low。原 bug: 雙向都用 high → SELL 永遠唔 arm
+    // breakeven → 34% 嘅 SELL 單模擬被扭曲（多咗 SL hit）。
+    const mfe = (dir * ((dir > 0 ? hi : lo) - entry)) / entry;
     if (!breakevenArmed && mfe >= 0.005) { sl = entry; breakevenArmed = true; }
     const peakMfe = dir > 0 ? (peak - entry) / entry : (entry - peak) / entry;
     if (peakMfe >= 0.01) sl = entry + dir * 0.5 * peakMfe * entry;
@@ -82,15 +105,19 @@ function simulateRoll(entry: number, side: 'buy' | 'sell', candles: any[], openT
 
 /** entry→lock 期間 5m MAE（smoothness proxy——pullback 深度細 = smooth） */
 function computeMaeToLock(entry: number, side: 'buy' | 'sell', candles: any[], openTs: number, lockTs: number): number {
-  const startIdx = candles.findIndex((c: any) => c.t >= openTs - 300_000);
-  const endIdx = candles.findIndex((c: any) => c.t >= lockTs);
+  if (!Number.isFinite(entry) || entry === 0) return 0;
+  const startIdx = candles.findIndex((c: any) => candleTs(c) >= openTs - 300_000);
+  const endIdx = candles.findIndex((c: any) => candleTs(c) >= lockTs);
   if (startIdx < 0 || endIdx <= startIdx) return 0;
   const dir = side === 'buy' ? 1 : -1;
   let worst = 0;
   for (let i = startIdx; i < endIdx; i++) {
     const c = candles[i];
-    const adverse = dir > 0 ? (entry - c.l) / entry : (c.h - entry) / entry;
-    worst = Math.max(worst, adverse);
+    if (!c || typeof c !== 'object') continue;
+    const h = candleNum(c.h), l = candleNum(c.l);
+    if (h === null || l === null) continue;
+    const adverse = dir > 0 ? (entry - l) / entry : (h - entry) / entry;
+    if (Number.isFinite(adverse)) worst = Math.max(worst, adverse);
   }
   return worst;
 }
@@ -121,6 +148,9 @@ function computeMaeToLock(entry: number, side: 'buy' | 'sell', candles: any[], o
     let roll = simulateRoll(t.entryPrice, t.side, candles, openTs, null, opp ? opp.openedAt : null);
 
     // D1: chase = 同向 re-entry 價位對現倉不利（buy 越買越高 / sell 越賣越低）
+    // ⚠️ 2026-09-05 標註（PLAN_tool-integrity-fix）: D1 依賴「lock 之後 12h 內」嘅 re-entry ——
+    // 呢個係事後歸因變量（lock 當刻唔可觀測），只可作事後 partition 分析，
+    // 唔可以當鎖利當刻已知嘅實時 gate 條件。主實驗（全樣本/兩半/剔 outlier）冇用 D1。
     let d1Chase: boolean | null = null;
     if (sameDir && sameDir.entryPrice && t.entryPrice) {
       d1Chase = t.side === 'buy' ? sameDir.entryPrice > t.entryPrice : sameDir.entryPrice < t.entryPrice;

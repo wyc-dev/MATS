@@ -6353,6 +6353,8 @@ ${recentExamples}
             const shadowStats = this.shadowEngine.getStatsForSymbol(sym);
             if (shadowStats) {
               trade.entryShadowWinRate = trade.side === 'buy' ? shadowStats.longWinRate : shadowStats.shortWinRate;
+              // P9-attack-round6: fallback 來源標記——回溯 fill（資訊含量低）, ρ 分析剔除
+              trade.entryShadowWinRateSource = 'live-fallback';
             }
           } catch { /* non-critical */ }
         }
@@ -6828,6 +6830,7 @@ ${recentExamples}
         // Inject shadow win rate
         if (precomputed.shadowWinRate !== undefined && Number.isFinite(precomputed.shadowWinRate)) {
           pos.entryShadowWinRate = precomputed.shadowWinRate;
+          pos.entryShadowWinRateSource = 'entry-snapshot';
         }
         
         // Inject momentum-persistence classification
@@ -7313,6 +7316,7 @@ ${recentExamples}
         // Inject shadow win rate
         if (shadowWinRate !== undefined && Number.isFinite(shadowWinRate)) {
           trade.entryShadowWinRate = shadowWinRate;
+          trade.entryShadowWinRateSource = 'entry-snapshot';
         }
 
         return true;
@@ -14383,6 +14387,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // Inject shadow win rate
         if (tradeShadowWinRate !== undefined && Number.isFinite(tradeShadowWinRate)) {
           trade.entryShadowWinRate = tradeShadowWinRate;
+          trade.entryShadowWinRateSource = 'entry-snapshot';
         }
         
         return true;

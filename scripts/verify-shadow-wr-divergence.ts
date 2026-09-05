@@ -10,6 +10,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { avgRankSpearman } from '../src/analysis/rank-correlation.ts';
 
 interface Trade {
   symbol?: string;
@@ -25,23 +26,8 @@ function loadTrades(): Trade[] {
   const p = path.resolve(process.cwd(), 'data/evolution/portfolio-state.json');
   const s = JSON.parse(fs.readFileSync(p, 'utf8'));
   const rt = (s.realTrades ?? []) as Trade[];
-  return rt.filter((t) => t.status === undefined || (t as any).status === 'closed');
-}
-
-function spearman(xs: number[], ys: number[]): number {
-  const n = xs.length;
-  if (n < 3) return 0;
-  const rank = (arr: number[]): number[] => {
-    const idx = arr.map((_, i) => i).sort((a, b) => arr[a] - arr[b]);
-    const r = new Array(n).fill(0);
-    for (let i = 0; i < n; i++) r[idx[i]] = i + 1;
-    return r;
-  };
-  const rx = rank(xs);
-  const ry = rank(ys);
-  let d2 = 0;
-  for (let i = 0; i < n; i++) d2 += (rx[i] - ry[i]) ** 2;
-  return 1 - (6 * d2) / (n * (n * n - 1));
+  // V3 硬化（attack-round6）: persisted 污染可能含 null/garbage element——object guard 先
+  return rt.filter((t) => t && typeof t === 'object' && (t.status === undefined || (t as any).status === 'closed'));
 }
 
 function main() {
@@ -49,12 +35,32 @@ function main() {
   const withSwr = trades.filter((t) => typeof t.entryShadowWinRate === 'number' && Number.isFinite(t.entryShadowWinRate) && typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct));
   console.log(`有 entryShadowWinRate 嘅 real trades: n=${withSwr.length} / ${trades.length}`);
 
+  // P9-attack-round6（E1 發現）: entryShadowWinRateSource 分層——fallback fill 記錄
+  // （live-fallback）係回溯快照（資訊含量低）; entry-snapshot 先係開倉當刻真值。
+  // 歷史記錄冇 source field——以「symbol×value 出現次數」做 proxy（出現 >1 次 = fallback 嫌疑）。
+  const src = withSwr.map((t) => t.entryShadowWinRateSource ?? (t as any).shadowWinRateSource);
+  const snap = withSwr.filter((_, i) => src[i] === 'entry-snapshot');
+  if (snap.length > 0) {
+    const r = avgRankSpearman(snap.map((t) => t.entryShadowWinRate!), snap.map((t) => t.pnlPct!));
+    console.log(`[Source] entry-snapshot n=${snap.length} ρ=${r === null ? 'undefined' : r.toFixed(4)}（開倉當刻真值）`);
+  }
+  const cnt: Record<string, number> = {};
+  for (const t of withSwr) {
+    const k = `${(t.symbol ?? '?').toLowerCase()}|${t.entryShadowWinRate!.toFixed(6)}`;
+    cnt[k] = (cnt[k] ?? 0) + 1;
+  }
+  const unique = withSwr.filter((t) => cnt[`${(t.symbol ?? '?').toLowerCase()}|${t.entryShadowWinRate!.toFixed(6)}`] === 1);
+  if (unique.length >= 3) {
+    const r = avgRankSpearman(unique.map((t) => t.entryShadowWinRate!), unique.map((t) => t.pnlPct!));
+    console.log(`[Source] 每 symbol×value 只出現一次（無 fallback 嫌疑）n=${unique.length} ρ=${r === null ? 'undefined' : r.toFixed(4)}`);
+  }
+
   // 關1: 全樣本 ρ
   const xs = withSwr.map((t) => t.entryShadowWinRate!);
   const ys = withSwr.map((t) => t.pnlPct!);
-  const rho = spearman(xs, ys);
-  console.log(`\n[關1] 全樣本 ρ(entryShadowWinRate, pnlPct) = ${rho.toFixed(4)}`);
-  console.log(`  → ${Math.abs(rho) < 0.1 ? '零預測力（shadow WR 係噪音）' : Math.abs(rho) < 0.2 ? '弱預測力' : '有預測力'}`);
+  const rho = avgRankSpearman(xs, ys);
+  console.log(`\n[關1] 全樣本 ρ(entryShadowWinRate, pnlPct) = ${rho === null ? 'undefined（零變異/樣本不足）' : rho.toFixed(4)}`);
+  console.log(`  → ${rho === null ? '無法判定（無排名資訊）' : Math.abs(rho) < 0.1 ? '零預測力（shadow WR 係噪音）' : Math.abs(rho) < 0.2 ? '弱預測力' : '有預測力'}`);
 
   // 關2: 分桶
   const buckets = [
@@ -81,15 +87,15 @@ function main() {
   }
   for (const [sym, g] of bySym) {
     if (g.length < 3) continue;
-    const r = spearman(g.map((t) => t.entryShadowWinRate!), g.map((t) => t.pnlPct!));
+    const r = avgRankSpearman(g.map((t) => t.entryShadowWinRate!), g.map((t) => t.pnlPct!));
     const sum = g.reduce((a, t) => a + t.pnlPct! * 100, 0);
-    console.log(`  ${sym.padEnd(12)} n=${String(g.length).padEnd(4)} ρ=${r.toFixed(3)}  Σ=${sum.toFixed(2)}%`);
+    console.log(`  ${sym.padEnd(12)} n=${String(g.length).padEnd(4)} ρ=${r === null ? 'undefined'.padEnd(7) : r.toFixed(3).padEnd(7)}  Σ=${sum.toFixed(2)}%`);
   }
 
   // 額外: 對比 OLR ρ（對照組）
   const withOlr = trades.filter((t) => typeof t.entryOlrPWin === 'number' && Number.isFinite(t.entryOlrPWin) && typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct));
-  const rhoOlr = spearman(withOlr.map((t) => t.entryOlrPWin!), withOlr.map((t) => t.pnlPct!));
-  console.log(`\n[對照] 全樣本 ρ(entryOlrPWin, pnlPct) = ${rhoOlr.toFixed(4)} (n=${withOlr.length})`);
+  const rhoOlr = avgRankSpearman(withOlr.map((t) => t.entryOlrPWin!), withOlr.map((t) => t.pnlPct!));
+  console.log(`\n[對照] 全樣本 ρ(entryOlrPWin, pnlPct) = ${rhoOlr === null ? 'undefined' : rhoOlr.toFixed(4)} (n=${withOlr.length})`);
 }
 
 main();

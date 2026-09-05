@@ -1,10 +1,68 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-time-window
+> **作者**: YC Wong · **版本**: 2.0.873-P9-attack-round6
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-time-window）**: vitest 4237 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-attack-round6）**: vitest 4253 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.873-P9-attack-round6（2026-09-05）：工具完整性攻擊輪——紅先 4 fail 全修 + E1 Shadow WR ρ 假象
+
+**主神指令**: 「不擇手段使用任何出其不意的更刁鑽(併發/狀態注入/持久化污染)的攻擊方案，盡一切可能導致剛才修葺的代碼及週邊的 functions / modules 崩潰，並以完美的方式修復漏洞，思考任何可以令系統提升盈利機會…先測試及定立修正方案先」
+
+### 攻擊輪（紅先 9 測試 4 fail → 綠後 16/16）
+
+| # | 向量 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1 | NaN **配對錯位**（獨立 filter 令 (x[i],y[i]) shift, ρ +0.5→−1）| 🔴 | `rank-correlation.ts` paired-filter |
+| V2 | Proxy/defineProperty **getter bomb** | 🔴 | own-property + try/catch（讀唔到 → 無效位）|
+| V3 | persisted **null element** → `t.status` crash | 🔴 | 5 scripts 對象化（污染注入實測 no-crash）|
+| V8 | garbage pnlPct → NaN 傳播 | 🟠 | loadTrades finite filter |
+| V10 | HL candle OHLC **string**（831 §13.2③ 三度重現）| 🟠 | `candleNum()` coerce + `candleTs()` |
+| V11 | entry=0 除零 | 🟡 | bad-input guard |
+| V12 | candle null element | 🟠 | bad-candle 保守退出 |
+
+### E1 ★ 重大誠實發現: entryShadowWinRate ρ 正訊號 = fallback fill 假象
+
+**根因**: index.ts L6351 對缺 `entryShadowWinRate` 嘅 trade 用**運行時** `getStatsForSymbol()` 回溯填——51% 記錄同期同值（bnb 0.3771×38 跨 20 日 / btc 0.4326×24）。
+
+**量化**（349 單 122 有 SWR）:
+```
+ρ_all（含 fallback）            = +0.086
+ρ_clean1（每 symbol×value 首單） = −0.112
+ρ_unique（value 只一次, n=49）  = −0.039
+```
+→ 「ρ=+0.106/+0.1378 唯一有預測力」嘅**正訊號係 bnb（賺錢 symbol）fallback 記錄嘅 symbol 效應假象**——真 snapshot 中性至負。live shadow-gate / blendShadowCalibration 用 live decayed stats（唔直接受污染）——但引述基礎降級。
+
+**記錄層 fix（零決策邏輯數據基建）**: `entryShadowWinRateSource?: 'entry-snapshot' | 'live-fallback'` 全鏈（types EntryFeatures/Position/TradeRecord + persistence 4 處 + index 4 處 + portfolio 5 處 copy）——由而家開始每單記錄來源, 2-4 週後 shadow WR 預測力乾淨重驗。
+
+**E2**: 候選 C 半 gate ❌（n=6 < 831 門檻 n≥15, 列 pending）。**E3**: 四窗 attribution 標 NOISE（hard-block mult=0 常數, GOT 先係正確量度）。
+
+**驗證**: 16/16 新測試 + 全量 **4253 pass + 13 pre-existing（零新增）**; tsc clean; 污染注入實測 5 scripts no-crash + restore cmp 一致。
+
+---
+
+## v2.0.873-P9-tool-integrity（2026-09-05）：研究工具完整性修復——三指控全坐實
+
+**背景**: 外部 agent 指控三個研究工具錯誤——本座隔離重現**全部坐實**（PLAN_tool-integrity-fix.md）:
+
+### ① 統一 Average-Rank Spearman（4 檔接入）
+- 新 `src/analysis/rank-correlation.ts` `avgRankSpearman()`——平均秩 + 秩嘅 Pearson + **零變異保護**（唯一值 <2 → null）+ paired finite filter + getter 免疫。
+- 4 檔同款無平均秩 bug: verify-shadow-wr-divergence / p9-attrib-validate / 66-olr-blend-swap / 70-round-number-features 全部接入。
+- 影響: 全樣本 ρ 0.071→0.086（結論不變）; within-symbol **bnb −0.010→+0.091 反轉**; `gate:four-window` 揭 **ρ=undefined（零變異）**。
+
+### ② verify-f1-4h-momentum 淨 Δ 符號（候選 C）
+- `blockedSum` 直接當改善（符號反）+ 誤傷雙重計; 合成 [-10,+6] → −10（應 +4）。
+- **真實數據反轉**: 淨 Δ **−11.93% → +6.75%**——但否決規則（誤傷贏單一概否決）不變 → 裁決仍否決; n=6 未達門檻。
+
+### ③ roll-expanded SELL breakeven 方向
+- MFE 雙向用 candle high（SELL 應 low）——SELL 佔鎖類 close 34%; mirror path 重現 BUY 0% / SELL −2%。
+- 修正後三關: Δ **−139.5pp → −108.0pp**（改善但結論不變: 維持 lock-churn, ROLL 止蝕率 92% vs ACTUAL WR 90%）。
+- D1「追價」標明 look-ahead（lock 後資訊, 只可事後歸因唔可實時條件）。
+
+**驗證**: 7 新測試 + 全量 **4244 pass + 13 pre-existing**; tsc clean; 零 production 決策邏輯改動（純研究工具 + 數據基建）。
 
 ---
 

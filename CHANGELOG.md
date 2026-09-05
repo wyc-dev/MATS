@@ -4,6 +4,73 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-attack-round6: 工具完整性攻擊輪（主神 2026-09-05「不擇手段攻擊啱啱修葺嘅 code」）——紅先 4 fail 全修 + E1 重大發現
+
+**背景**: 對上輪修葺嘅 rank-correlation.ts + 4 scripts 接入 + F1/roll 修正展開攻擊輪（PLAN_attack-round6-tool-integrity.md）。
+
+### 攻擊輪（紅先 9 測試 4 fail → 綠後 16/16 全過）
+| # | 向量 | 嚴重 | 修復 |
+|:--|:-----|:--|:-----|
+| V1 | **NaN 配對錯位**——獨立 filter 令 (x[i],y[i]) 配對 shift（xs=[1,NaN,2,3] vs [30,20,10,40] 正確 ρ=+0.5 → 現行 −1）| 🔴 HIGH | **paired-filter**: 同索引同時有效先保留（finitePairs）|
+| V1b | NaN 兩側都要 paired 剔除 | 🟠 MED | 同上 |
+| V2 | **Proxy array getter bomb**（讀 element throw）→ crash | 🔴 HIGH | own-property + try/catch——讀唔到 → 該位無效（唔 crash）|
+| V2b | defineProperty 個別 index getter → 其餘有效位照算 | 🟠 MED | 同上（有效配對 (1,1),(2,2),(4,3) → ρ=+1）|
+| V3 | **persisted 污染**——realTrades 含 null/garbage element → `t.status` crash | 🔴 HIGH | 5 個 scripts loadTrades/filters 加 object guard（verify-shadow-wr / attrib / f1 / 66 / 70）；污染注入實測 5/5 唔 crash |
+| V8 | f1 pnlPct garbage（'NaN-STRING'/NaN）→ NaN 傳播 | 🟠 MED | loadTrades 加 pnl finite filter + object guard |
+| V10 | roll HL candle OHLC 係 **string**（831 §13.2③ 教訓）→ mfe NaN 靜默退化 | 🟠 MED | 新 `candleNum()` coerce + `candleTs()` 安全轉換 |
+| V11 | roll entry=0/負 → division by zero | 🟡 LOW | entry finite/非零 guard + side 白名單 → bad-input |
+| V12 | roll candle element null → c.h crash | 🟠 MED | bad-candle 保守退出（唔 crash 唔靜默 NaN）|
+
+**驗證**: 污染注入實測（portfolio-state 插 null/garbage/NaN-pnl 5 處 + attribution 插 null）→ 5 scripts 全 no-crash → restore 後檔案 cmp 一致; 新攻擊測試 9 + 原測試 7 = 16/16; 全量 **4253 pass + 13 pre-existing（零新增）**; tsc clean。
+
+### E1 ★ 重大誠實發現: entryShadowWinRate ρ 正訊號 = fallback fill 假象
+**根因**: L6351 fallback fill——trade 缺 entryShadowWinRate 時用 `getStatsForSymbol()`（運行時 snapshot）回溯填 → **51% 記錄係同期同值**（bnb 0.3771×38 跨 20 日 / btc 0.4326×24）。
+
+**量化（349 單 122 有 SWR）**:
+```
+ρ_all（含 fallback）            = +0.0860（弱正）
+ρ_clean1（每 symbol×value 最早 1 單）= −0.1118（負）
+ρ_clean2（剔除出現 >2 次 group）  = −0.0119（中性）
+ρ_unique（value 只出現一次, n=49） = −0.0393（中性略負）
+```
+→ 「entryShadowWinRate ρ=+0.106/+0.1378 唯一有預測力」嘅**正訊號主要係 bnb/btc fallback 記錄嘅 symbol 效應假象**（fallback 記錄集中在 bnb 呢個賺錢 symbol）——剔除後真 snapshot 係中性至負。⚠️ live shadow-gate / blendShadowCalibration 用嘅係 live decayed stats（唔係 entry record）——唔受此污染直接影響, 但「shadow WR 有預測力」嘅引述基礎要降級, **日後 ρ 分析必須分辨 source**。
+
+**記錄層 fix（零決策邏輯, 數據基建）**: types +EntryFeatures/Position/TradeRecord `entryShadowWinRateSource?: 'entry-snapshot' | 'live-fallback'` + persistence 4 處 + index 4 處（L6351 fallback 標 live-fallback / 其餘 3 處 snapshot 標 entry-snapshot）+ portfolio 5 處 copy——**由而家開始每單記錄來源**, 2-4 週後 shadow WR 預測力可乾淨重驗。verify-shadow-wr-divergence 加 source 分層輸出。
+
+### E2 候選 C 半 gate —— ❌ 否決（831 樣本門檻）
+persistent_bear + m4h<−0.5% BUY shrink size 構想——n=6 未達 n≥15（831 §10）, 唔實作, 列 pending。
+
+### E3 四窗 gate 零變異（純觀測）
+p9-attrib 揭 gate:four-window ρ=undefined——hard-block 路徑 mult=0（常數）——attribution 對 hard-block 無意義（block 咗冇成交點會有 pnl）; 四窗有效量度 = GOT hit rate（已有）——attribution 桶標記 NOISE 即可, 唔郁 code。
+
+### 驗證全量
+**4253 pass + 13 pre-existing（零新增）; tsc clean; vite build 未郁（純 src/types + persistence 數據字段）**。
+
+## v2.0.873-P9-tool-integrity: 研究工具完整性修復（主神 2026-09-05——另一 agent 指控三個研究工具錯誤，先證後改全坐實）
+
+**背景**: 外部 agent 指控: ①Spearman 無平均秩 → 常數預測算成 ρ=±1 完美預測 ②verify-f1-4h-momentum 淨 Δ 符號錯誤 ③roll-expanded SELL breakeven 用 candle high（應 low）。本座隔離重現——**三個指控全部坐實**（PLAN_tool-integrity-fix.md）。
+
+### ① 統一 Average-Rank Spearman（4 檔接入, 單一 source of truth）
+- 新 `src/analysis/rank-correlation.ts` `avgRankSpearman()`——平均秩（ties 取平均）+ 秩嘅 Pearson + **零變異保護**（任一側唯一值 <2 → null——「未定義」而非 ±1）+ NaN/Infinity 過濾。
+- 接入 4 個有同款 bug 嘅 scripts: `verify-shadow-wr-divergence.ts` / `p9-attrib-validate.ts` / `66-olr-blend-swap.ts` / `70-round-number-features.ts`。
+- 隔離重現: 常數 0.5×8 vs 遞增 → 舊 ρ=+1 → 平均秩版 **null** ✓
+- **真實數據影響**（349 單）: 全樣本 ρ(entryShadowWinRate,pnl) 0.071→0.086（結論不變: 零預測力）; within-symbol **bnb −0.010→+0.091（反轉）**、btc 0.179→0.099——幅度改變但方向大致保持。⚠️ 歷史引述 ρ=+0.106/+0.1378 係唔同時點樣本，同樣受 ties 影響風險——**日後引述必須用平均秩版重算**。
+- **p9-attrib 新誠實資訊**: `gate:four-window` ρ=**undefined（零變異）**——出手時 mult 係常數，舊版會報假 ρ。
+
+### ② verify-f1-4h-momentum 淨 Δ 符號修正（候選 C）
+- 原 bug: `blockedSum`（被 block 單 PnL）直接當改善（符號反）+ 誤傷喺其後再減一次（雙重計）。合成數據 [-10,+6] → 腳本 −10（應 +4）/ [-10,−5] → 腳本 −15+否決（應 +15 過關）。
+- **真實數據結局反轉**: 候選 C（persistent_bear + m4h<−0.5% block BUY）淨 Δ **−11.93% → +6.75%**——但否決主因係「誤傷 SNDK 贏單 counterexample」（規則不變）→ **最終裁決不變（否決）**, 唯量化數字錯。n=6 未達 831 門檻（n≥15）——等樣本累積用正確數字重驗。
+- 修正: `improvement = −blockedSum`（誤傷已含內, 單次計）。
+
+### ③ roll-expanded SELL breakeven 方向修正 + D1 標註
+- 原 bug: `mfe = (dir*(c.h−entry))/entry`——BUY/SELL 都用 candle high → SELL 永遠唔 arm breakeven（mirror path 重現: BUY 0% 出場 / SELL 直插 SL −2%）。SELL 佔近 30 日 79 單鎖類 close 嘅 34%（27 單）。
+- 修正: BUY 睇 high / SELL 睇 low。重跑三關: 全樣本 n=39（25 單 fetch skip）ROLL Δ **−139.5pp → −108.0pp**（改善 31.5pp——部分 SELL 單由直插 SL 變 breakeven）——但 ROLL 止蝕率仍 92%、ACTUAL WR 90% vs ROLL 26%、兩半全負 → **結論不變: 維持 lock-churn**。
+- D1（lock 後 re-entry 判「追價」）加醒目註釋: 事後歸因變量（lock 當刻不可觀測），只可 partition 分析，唔可作實時 gate 條件——831 §20.3「冇事前可觀測組合」結論不受影響。
+
+**驗證**: 新測試 7（常數→null / ties 平均秩 / 無 ties=標準公式 / n<3 / NaN / ±1 / 長度不一）全綠; 全量 **4244 pass（4237 + 7 新）+ 13 pre-existing（零新增）**; tsc clean。**零決策邏輯改動**——src/trading/ src/config/ src/data/ .env 一字不動，production code 零 spearman 計算（只有歷史 comment）。
+
+**後續**: ①候選 C 樣本 n≥15 後用正確算法重驗 ②歷史 ρ 引述若重用必須平均秩版 ③roll 重跑 fetch 覆蓋率 39/79 需改善（HL 30 日前 candle 限制——可考慮本地 candle cache）。
+
 ## v2.0.873-P9-time-window: Time-Window Shadow WR 數據基建（resolvedAt + 唔清空 + 清空 4 個鐘以外——主神 2026-09-04「buffer 留幾耐？清空 4 個鐘以外就 OK」）
 
 **背景**: 驗證「last T hours WR」嘅預測力需要 recent shadow trades 嘅數據，但 `recentResults` 被 `drainRecentResults` 清空（feed OLR 後）。主神洞察：數據係時間順序，`slice(-N)` 就係「last N trades」；但 cycle period 可調校（1-10 分鐘），所以「time-based window」必須用 `resolvedAt` timestamp（唔可以用 `cycle` 字段）。
