@@ -132,12 +132,15 @@ export function expectancy(returns: number[]): number {
 
 /** Maximum drawdown as a percentage of the running peak. */
 export function maxDrawdownPct(cumulativeReturns: number[]): number {
+  // 🚨 2026-09-05（audit 核心問題 #4）: 原 `peak > 0 ? … : 0`——累積曲線一直為負（如連續 −10%）
+  // → peak 從不 >0 → 回撤全程報 0%（測謊機失明）。修正: 由 running max 計回撤, 分母用 |peak|
+  // （peak 負 → 負權益區間嘅跌幅照能量度; peak=0 → 0 防除零）。
   let peak = cumulativeReturns[0] ?? 0;
   let maxDD = 0;
   for (const v of cumulativeReturns) {
     if (v > peak) peak = v;
-    const dd = peak > 0 ? (peak - v) / peak : 0;
-    if (dd > maxDD) maxDD = dd;
+    const dd = peak !== 0 ? (peak - v) / Math.abs(peak) : 0;
+    if (Number.isFinite(dd) && dd > maxDD) maxDD = Math.max(0, dd);
   }
   return maxDD * 100; // as %
 }
