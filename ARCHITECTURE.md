@@ -1,10 +1,29 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-attack-round6
+> **作者**: YC Wong · **版本**: 2.0.873-P9-attack-round7
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-attack-round6）**: vitest 4253 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-attack-round7）**: vitest 4266 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.873-P9-attack-round7（2026-09-05）：source 生命周期 + fallbackPatch guard 周邊攻擊
+
+**主神指令**: 「不擇手段使用任何出其不意的更刁鑽(併發/狀態注入/持久化污染)的攻擊方案，盡一切可能導致剛才修葺的代碼及週邊的 functions / modules 崩潰」——紅先 5 測試 1 fail → 29/29 全綠。
+
+### 漏洞
+| # | 漏洞 | 嚴重 | 修復 |
+|:--|:--|:--|:--|
+| A1 | garbage `entryShadowWinRateSource`（'banana'/''/42/'ENTRY-SNAPSHOT'/null）流入 position/trade——source 判斷被污染 | 🔴 | `sanitizeShadowSource()` 白名單（portfolio 5 處 copy 統一）|
+| B1/B5 | **fallbackPatch guard 空 object 窿**——`Object.keys({}).length > 0` = false → fall-through 用而家 state 覆寫（12:36 污染事故同類）| 🔴 | 3 處 guard 收緊「有 field（即使空 {}）→ 永不覆寫; 只補 source='live-fallback'」|
+
+### 盈利提升裁決（先證後改）
+- **E3 roll 主裁決（修正後真實數據）**: n=54 Δ=**−175.1pp** WR 26% → 不過關——**lock-churn 正確**; D1∧D2 診斷隔離（唔計入裁決）✓
+- **E2 source 標記首日**: 122 歷史 trade 已標 'live-fallback'; 新實盤 trade 有 clean 'entry-snapshot'——2-4 週後 shadow WR ρ 重驗有真分層樣本（by proxy 嫌疑 upgrade 到 formal field）
+- **E1 數據品質**: 「有 field 即 skip」——空 object 被清空嘅 snapshot 唔會再被 fallback 覆寫
+
+**驗證**: 全量 **4266 pass + 13 pre-existing（零新增）**; tsc clean; 實盤 data 穩定（111 unique momentumLong + 122 source 標記）+ zero error log + bnb 倉位正常（margin 8.45）。
 
 ---
 
