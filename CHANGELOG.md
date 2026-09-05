@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-multiplier-ablation-fix: 🚨 convLedger 源頭缺口修復（主神 2026-09-05——audit 致命發現全驗證）
+
+**背景**: Audit agent 用 exhaustive grep 發現 `lastConvLedger` 只喺 conviction-gate **拒絕分支**賦值（L14108），**通過分支（passed: true）冇賦值** → 開倉時 stash（L6760）讀到「上一筆被拒候選」殘留向量 / null → **錯誤歸因**。呢個係執行期語意問題（型別 clean / 測試過——因為唔係型別問題）——「管道全接通但源頭壞」，同 tool-integrity fallback-fill、attack-round2 生命周期同一失敗原型第三次出現。
+
+**驗證（先證後改）**: grep 確認兩分支賦值不對稱 → 時序模擬「拒 A → 過 B → 開 B」: buggy 版 cache[B]=rejected-A（❌ 錯誤歸屬）/ fixed 版=passed-B（✅）。
+
+**修復**: `this.lastConvLedger = convLedger;` 移為 if/else 前**無條件執行**（拒絕分支舊行移除）——通過 trade 攞到自己向量。
+
+**影響處理（誠實）**:
+- 🚨 既有 **1006 筆 attribution records 標「修正前、疑似污染」**——消融 script（p9-multiplier-ablation.ts）加醒目警告 + `data/evolution/_docs-data-notes.md` 記錄——**唔可以作為 gate 生產裁決證據**
+- §27 消融診斷「mae-pattern/convexity 誤傷候選」**可能係歸因錯位假象**——方向保留但需修正後樣本（2-4 週）重驗
+- 修復後 entryConvictionLedger 先係乾淨樣本——2-4 週消融重播計劃不變（數據源頭而家正確）
+
+**方法論**: 新鐵律——新增記錄基建時要驗證「源頭喺**所有**分支有賦值」（unconditional assignment 係防禦模式）；「管道通」≠「源頭啱」。
+
+**驗證**: 全量 4266 pass + 13 pre-existing（零 regression）; tsc clean; 時序模擬 buggy→fixed.
+
 ## v2.0.873-P9-multiplier-ablation: 乘數鏈消融診斷 + conviction ledger 數據基建（主神 2026-09-05）
 
 **背景**: D1 減法驗證證實乘數鏈過度收縮（gate 出手率 76%/零 boost/base avg 0.247）——本輪做完整消融診斷（PLAN_multiplier-ablation.md）。

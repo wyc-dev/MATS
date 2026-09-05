@@ -14104,8 +14104,13 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // When effective confidence is exactly at the threshold (e.g. 0.49 == 0.49),
         // floating-point arithmetic may produce 0.48999... < 0.49 → HOLD by 0.001%.
         // At exactly the threshold, the signal is strong enough to trade.
+        // 🚨 v2.0.873-P9-multiplier-ablation-fix（audit 源頭缺口驗證）: lastConvLedger 必須喺
+        // if/else 之前**無條件**賦值——原 bug 只喺拒絕分支寫, 通過分支（passed:true）唔寫 →
+        // 開倉時 stash 到嘅係「上一筆被拒候選」殘留（唔同 symbol/cycle）/ null——
+        // entryConvictionLedger 對已開倉交易係空值或錯誤値（錯誤歸因——1006 筆既有 attribution
+        // 疑似同一污染源）。修正後通過 trade 攞到自己嗰條向量。
+        this.lastConvLedger = convLedger;
         if (gateAction !== 'hold' && effectiveConfidence <= adjustedThreshold - 0.001) {
-          this.lastConvLedger = convLedger;
           const blendStr = comboBlendUsed
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;

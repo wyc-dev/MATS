@@ -14,6 +14,9 @@ const d = JSON.parse(fs.readFileSync('data/evolution/component-attribution.json'
 const R = (d.records ?? []) as Rec[];
 const live = R.filter((r) => typeof r.cycleId === 'number' && r.cycleId > 0);
 const gate = live.filter((r) => String(r.componentId ?? '').startsWith('gate:') && r.tradeId);
+// 🚨 2026-09-05 源頭缺口（audit 驗證後）: 修正前嘅 attribution records 可能掛錯向量——
+// lastConvLedger 舊 bug 只喺「拒絕分支」寫入 → 通過 trade 開倉時 stash 到「上一筆被拒候選」殘留。
+// 以下診斷係「結構性代理」——唔可以單獨作為 gate 裁決證據（修正後樣本 2-4 週先可用）。
 console.log(`records: ${R.length} | live: ${live.length} | gate×live: ${gate.length}`);
 
 // ── Step 1: tradeId group ──
