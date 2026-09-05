@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-core-fixes: 首輪四個核心問題全修（主神 2026-09-05——audit 第二輪核查離線反例全重現）
+
+**背景**: Audit 核查: convLedger（70cee12）結案 ✓; 但首輪四個核心問題全部仍在——本座逐個重現（離線反例）+ 全修。831 §29 完整記錄。
+
+### #1 F1 提前 return 跳閘（index.ts）
+mult≠1 分支 call shadow-gate 後 **return** → 跳過 mom24-guard/chase-tail——反例「BUY、m4h +0.8%（順勢 ×1.15）、m24h +0.2%（接刀區）」→ 繞過 guard 放行。**修復**: shadow-gate blocked→return / 通過→fall-through 統一閘流程（F1 4h 同 guard 24h 唔保證零重疊——註解原聲明唔成立）。
+
+### #2 shadow 容量 shift 游標漏同步（shadow-trade-engine）
+prune 有同步但**容量 cap 兩個 shift() 冇**——buffer 滿 200 drain 後新增觸發 shift → 下次 drain 返 0（應 1）、連續 5 筆靜默丟失。**修復**: 抽 `capRecentResults()` helper（shift + lastDrainedIndex 同步——單一 source of truth）——測試「填 200 + push + cap → 下次 drain 攞到新 sample」✓。
+
+### #3 persistence bullScore 自證 100%（computePersistenceDual）
+bullMom 同 fwd 相同算式（i+fw→i）→ `if (bullMom>0)` 樣本必然 fwd>0 → bullScore 機械 100%（下跌側正確、上升側自證）。**修復**: bullMom 改過去 lb 窗（鏡像）——測試「過去升+未來跌」→ nBull=1 + bullScore=0。⚠️ 影響 persistence 分類/探索條件/bullScore 消費者——修正後先可信。
+
+### #4 backtest drawdown 負權益歸零
+`peak > 0 ? … : 0`——全程負曲線 → 回撤報 0%（測謊機失明）。**修復**: `|peak|` 分母——負權益照量度。⚠️ 複利問題（cumulative 相加）仍在——caller 層需 equity curve（標註）。
+
+**方法論**: 「管道接通但源頭壞」第 4-6 次——閘門鏈必須統一累積（唔好分支內 return）、容量/游標操作單一 helper、對稱計算（過去 vs 未來）review 兩側。
+
+**驗證**: 新測試 7 + 全量 **4273 pass + 13 pre-existing（零 regression）**; tsc clean。
+
 ## v2.0.873-P9-multiplier-ablation-fix: 🚨 convLedger 源頭缺口修復（主神 2026-09-05——audit 致命發現全驗證）
 
 **背景**: Audit agent 用 exhaustive grep 發現 `lastConvLedger` 只喺 conviction-gate **拒絕分支**賦值（L14108），**通過分支（passed: true）冇賦值** → 開倉時 stash（L6760）讀到「上一筆被拒候選」殘留向量 / null → **錯誤歸因**。呢個係執行期語意問題（型別 clean / 測試過——因為唔係型別問題）——「管道全接通但源頭壞」，同 tool-integrity fallback-fill、attack-round2 生命周期同一失敗原型第三次出現。

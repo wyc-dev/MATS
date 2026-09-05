@@ -205,7 +205,10 @@ export function computePersistenceDual(
     if (age > cut || age < 0) continue; // hard cutoff / 未來垃圾
     const w = Math.exp(-age / tau);
     const bearMom = ((cs[i]!.c - cs[i - lb]!.c) / cs[i - lb]!.c) * 100;
-    const bullMom = ((cs[i + fw]!.c - cs[i]!.c) / cs[i]!.c) * 100;
+    // 🚨 2026-09-05（audit 核心問題 #3）: bullMom 原用「未來窗」（i+fw→i）同 fwd 完全一樣算式
+    // → if (bullMom > 0) 篩出嘅樣本必然 fwd > 0 → upScore 機械式 100%（自證）。
+    // 修正: 鏡像下跌側——bullMom 用「過去 lb 窗」（i-lb→i）判斷升市時刻, fwd 保持未來（獨立）。
+    const bullMom = ((cs[i]!.c - cs[i - lb]!.c) / cs[i - lb]!.c) * 100;
     const fwd = ((cs[i + fw]!.c - cs[i]!.c) / cs[i]!.c) * 100;
     if (bearMom < 0) { // 跌市時刻——sell 環境
       dn += w; if (fwd < 0) down += w; cntDown++;

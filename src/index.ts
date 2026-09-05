@@ -5641,9 +5641,14 @@ ${recentExamples}
         if (mult !== 1.0) {
           confidence *= mult;
           const r = `regime-switch: m4h=${m4h?.toFixed(2) ?? 'n/a'}% → ×${mult}`;
-          // 繼續落 shadow-gate（唔 return——兩層都行）
+          // 🚨 2026-09-05（audit 核心問題 #1）: 原 code 喺度 return——跳過 mom24-guard 同 chase-tail
+          // （F1 用 4h、guard 用 24h——唔保證零重疊——強 m4h + 接刀區 m24h 會繞過 guard）。
+          // 修正: shadow-gate blocked → return; 通過 → 繼續落統一閘流程（mom24/chase-tail）。
           const sg = this.applyShadowGate(sym, action, confidence, sizePct);
-          return { confidence: sg.confidence, blocked: sg.blocked, reason: sg.reason ?? r, size: sg.size };
+          if (sg.blocked) return { confidence: 0, blocked: true, reason: sg.reason ?? r, size: 0 };
+          confidence = sg.confidence;
+          if (sg.size !== undefined && Number.isFinite(sg.size)) sizePct = sg.size;
+          // fall through → mom24-guard / chase-tail（唔 return）
         }
       }
       // v2.0.873-P9-mom24-guard: 精確 24h 動量 BUY filter（831.md §6.2 六關全過 Δ+140.7%）

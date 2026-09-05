@@ -1185,7 +1185,7 @@ export class ShadowTradeEngine {
         }
 
         this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
-        if (this.recentResults.length > 200) this.recentResults.shift();
+        this.capRecentResults(200);
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
         resolved++;
@@ -1254,7 +1254,7 @@ export class ShadowTradeEngine {
         }
 
         this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
-        if (this.recentResults.length > 200) this.recentResults.shift();
+        this.capRecentResults(200);
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
 
@@ -1701,6 +1701,16 @@ export class ShadowTradeEngine {
   /** v2.0.873-P9-time-window: 已 feed OLR 嘅 index——drain 唔清空 buffer，
    *  只攞「上次 drain 之後」嘅新 trades（防 double-count）。 */
   private lastDrainedIndex = 0;
+
+  /** 🚨 2026-09-05（audit 核心問題 #2）: 容量 cap 統一 trim——shift 後同步 lastDrainedIndex
+   *  （同 pruneOldResolved 先例）。原 2 個 resolve 路徑直接 shift 冇同步 → 下次 drain 攞少樣本
+   *  （buffer 滿時新增 sample 靜默丟失）。單一 source of truth。 */
+  private capRecentResults(cap = 200): void {
+    while (this.recentResults.length > cap) {
+      this.recentResults.shift();
+      this.lastDrainedIndex = Math.max(0, this.lastDrainedIndex - 1);
+    }
+  }
 
   drainRecentResults(): Array<{
     id: string; symbol: string; side: 'buy' | 'sell';
