@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-time-window: Time-Window Shadow WR 數據基建（resolvedAt + 唔清空 + 清空 4 個鐘以外——主神 2026-09-04「buffer 留幾耐？清空 4 個鐘以外就 OK」）
+
+**背景**: 驗證「last T hours WR」嘅預測力需要 recent shadow trades 嘅數據，但 `recentResults` 被 `drainRecentResults` 清空（feed OLR 後）。主神洞察：數據係時間順序，`slice(-N)` 就係「last N trades」；但 cycle period 可調校（1-10 分鐘），所以「time-based window」必須用 `resolvedAt` timestamp（唔可以用 `cycle` 字段）。
+
+**實作（數據基建——零決策邏輯改動）**:
+- `recentResults` 加 `resolvedAt: number`（真實時間戳——cycle period 可變，cycle 字段唔可靠）。
+- 3 個 push 加 `resolvedAt: Date.now()`（force_resolve / sl_tp / backfill）。
+- `drainRecentResults` 唔清空（追蹤 `lastDrainedIndex`——只攞「新 trades」防 double-count，保留 buffer 俾 getStatsForWindow）。
+- 新 `pruneOldResolved(hours)`——清空「超過 T 小時」嘅 record（由頭清走，同步減 lastDrainedIndex 防 index 錯位）。
+- 新 `getStatsForWindow(symbol, hours)`——用「最近 T 小時」計 WR（long/short）。
+- `checkPositions` 尾 call `pruneOldResolved(4)`（每 cycle 清空 4 個鐘以外）。
+- `load` 加 `resolvedAt` fallback（舊 persisted 數據兼容）。
+
+**攻擊輪（紅先 9 攻零漏洞）**: Symbol/null/undefined symbol / NaN/Infinity/負數/1e308 hours / 垃圾 now / 空 buffer / 連續 drain 全部唔 crash。
+
+**驗證**: 新測試 6 + 攻擊測試 9（全綠）; 全量 **4237 pass + 13 pre-existing（零新增）**; tsc clean。
+
+**後續 agent 跟進（候選 1/2/3——已寫入 code 註解）**: ①接駁 getStatsForWindow 到 shadow-gate（驗證「last T hours WR」ρ 比「累積 WR」高先接駁）②Regime-Adaptive Window（hours 根據 |m4h| 動態判斷——choppy 1h / trending 24h）③Shadow WR 兩邊蝕 = 震蕩市偵測（both long and short WR <50% → mean-reversion）。
+
+---
 ## v2.0.873-P9-persistence-entry: entryPersistence 數據基建 + 攻擊輪（主神 2026-09-04「要補數據基建（persistence 存檔），才可驗證 regime switch + persistence 組合」）
 
 **背景**: 驗證「regime switch + persistence」組合需要每單 trade 開倉時嘅 persistence 分類（persistent_bear/range/neutral），但 persistence 係 runtime 動態計算（唔存檔），靜態 proxy（08-25）已過時。

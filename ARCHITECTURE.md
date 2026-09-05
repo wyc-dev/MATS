@@ -1,10 +1,38 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-persistence-entry
+> **作者**: YC Wong · **版本**: 2.0.873-P9-time-window
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（v2.0.873-P9-persistence-entry）**: vitest 4222 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（v2.0.873-P9-time-window）**: vitest 4237 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## v2.0.873-P9-time-window（2026-09-04）：Time-Window Shadow WR 數據基建
+
+**主神指令**: 「buffer 留幾耐？清空 4 個鐘以外就 OK」
+
+### 數據基建（零決策邏輯改動）
+
+- `recentResults` 加 `resolvedAt: number`（真實時間戳——cycle period 可調校，cycle 字段唔可靠）。
+- 3 個 push 加 `resolvedAt: Date.now()`（force_resolve / sl_tp / backfill）。
+- `drainRecentResults` 唔清空（追蹤 `lastDrainedIndex`——只攞「新 trades」防 double-count，保留 buffer 俾 getStatsForWindow）。
+- 新 `pruneOldResolved(hours)`——清空「超過 T 小時」嘅 record（由頭清走，同步減 lastDrainedIndex 防 index 錯位）。
+- 新 `getStatsForWindow(symbol, hours)`——用「最近 T 小時」計 WR（long/short）。
+- `checkPositions` 尾 call `pruneOldResolved(4)`（每 cycle 清空 4 個鐘以外）。
+- `load` 加 `resolvedAt` fallback（舊 persisted 數據兼容）。
+
+### 攻擊輪（紅先 9 攻零漏洞）
+
+Symbol/null/undefined symbol / NaN/Infinity/負數/1e308 hours / 垃圾 now / 空 buffer / 連續 drain 全部唔 crash。
+
+### 後續 agent 跟進（候選 1/2/3——已寫入 code 註解）
+
+1. 接駁 `getStatsForWindow` 到 shadow-gate（驗證「last T hours WR」ρ 比「累積 WR」高先接駁）。
+2. Regime-Adaptive Window（hours 根據 |m4h| 動態判斷——choppy 1h / trending 24h）。
+3. Shadow WR 兩邊蝕 = 震蕩市偵測（both long and short WR <50% → mean-reversion）。
+
+**驗證**: 新測試 6 + 攻擊測試 9（全綠）; 全量 **4237 pass + 13 pre-existing（零新增）**; tsc clean。
 
 ---
 
