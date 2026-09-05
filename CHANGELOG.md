@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-audit-round2: 來源生命周期修復 + 🚨 fallbackPatch 污染事故（主神 2026-09-05 Audit 第二輪驗收）
+
+**背景**: Audit agent 驗收確認三個原研究工具錯誤可結案，但指出: ①實盤來源標籤生命周期丟失（importExchangePosition/closeExchangePosition/openTrade 3 處漏接 + payload 冇傳 + 後補機制 skip 條件）②F1 垃圾 PnL 防護邏輯反（放行 string/undefined）③Roll D1 註解禁止但裁決仍用 ④Proxy getOwnPropertyDescriptor/length trap 喺 try/catch 外 ⑤holdout 必須預隔離唔可事後命名 ⑥歷史 fallback 記錄只能係嫌疑唔可叫「已確認 snapshot」。**全部驗證成立**。
+
+### 修復（production-grade）
+- **來源生命周期**: portfolio.ts 補 3 處 source copy（openTrade L822 / importExchangePosition L1150 / closeExchangePosition L2003）+ index.ts entryData payload 兩 branch 傳 source + precomputedEntryFeatures map type 加 field。新生命周期測試 5/5（payload→開倉→匯入→平倉→無 data 誠實 undefined）。
+- **F1 filter**: `!== 'number' || isFinite`（邏輯反）→ `=== 'number' && Number.isFinite` + 隔離數量報告。[-0.10,'NaN-STRING'] 舊版 → NaN 污染, 新版隔離。
+- **Roll D1 裁決隔離**: D1∧D2 只輸出「事後歸因診斷」, 主裁決改用全樣本 Δ（唔含 look-ahead）——移除「過關: 條件性實作建議（D1∧D2 gate）」分支; 負 entry → bad-input; realTrades null 排序前 object guard。
+- **Proxy 加固**: rank-correlation finitePairs/ownFinite 全 try/catch（Array.isArray/length/getOwnPropertyDescriptor/get trap）——新測試 3/3。
+- **docs**: holdout「預隔離」語義（三關只用前 80%, holdout 段由始至終唔准入分析）; 歷史 fallback 記錄標「嫌疑」唔可以叫「已確認 snapshot」。
+
+### 🚨 污染事故（本輪最大發現——誠實認領）
+`fallbackPatchMissingTradeFeatures()` 於 12:36 將**全部 349 單 realTrades 嘅 entryMarketFeatures 用「而家」market state 重寫**（統一常數——開倉時 snapshot 被 look-ahead 污染）。根因: ①B4 guard「有 features 且有 source 先 skip」——歷史 records 全部冇 source（field 當日先加）→ guard 永唔成立 → 全量 fall through 重建 features ②fallback 設計對「已存在 snapshot」本應 read-only。
+**修復**: 3 處 guard 統一——**已有 features 永不覆寫, 只補 'live-fallback' source 標記**。**恢復**: /tmp backup 還原（111 unique momentumLong）→ verify-f1 恢復 +6.75% → 實盤進程重啟（新 guard）→ 40s+ 後 data 111 unique 穩定 → bnb 實盤倉位 re-sync（HL marginUsed=8.453 確認）。831 §24 完整紀錄 + 4 條新鐵律（entry features 永不覆寫 / 新 field guard 要諗舊 records / 實驗用 snapshot file / fallback 只補缺）。
+
+### ⏸ 第二階段（Audit 第 7 點核心問題——需 831 全流程）
+F1 提前 return 跳過後續入場閘 / shadow buffer 容量裁剪與 drain 游標同步 / persistence 條件與結果同段數據 / backtest-validation 統計——交易/學習核心, 唔合併本輪標示完成, 另行 PLAN。
+
+**驗證**: 4261 pass（4253 + 5 lifecycle + 3 proxy）+ 13 pre-existing（零新增）; tsc clean; 實盤重啟後零異常 log。
+
 ## v2.0.873-P9-audit-methodology: Audit 方法論指控回應（2026-09-05）——研究流程升級「四關制」+ 口徑/來源標準（零 production 決策改動）
 
 **背景**: Audit agent 指控: ①已證偽方向唔應換名重做 ②「三關通過」唔係正式樣本外驗證 ③P70 +473%/+912% 係事後篩選 ④「有欄位」≠「當時真實記錄」（SL/TP backfill 92 真實 + 200 per-symbol 中位數近似）⑤逐筆 margin% 加總 ≠ 帳戶資本報酬率（+245.37% 要補口徑）。本座逐條核對 code/docs——**全部成立**（文件自己 §17.5 已承認「三關全過 ≠ 真 edge」; SL backfill 92/200 早已誠實記錄; premature-close-guard 嘅 +467% 係「剔走短蝕單」樣本內上限唔係 gate 可實現收益）。PLAN_audit-methodology-round.md。

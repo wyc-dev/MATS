@@ -23,7 +23,8 @@
 import * as fs from 'fs';
 
 const pf = JSON.parse(fs.readFileSync('data/evolution/portfolio-state.json', 'utf8'));
-const trades = (pf.realTrades || []).slice().sort((a: any, b: any) => (a.openedAt || 0) - (b.openedAt || 0));
+// audit-round2: persisted realTrades 可能含 null/garbage——排序/查詢前對象化（candle 防護層之前）
+const trades = (pf.realTrades || []).filter((t: any) => t && typeof t === 'object').slice().sort((a: any, b: any) => (a.openedAt || 0) - (b.openedAt || 0));
 
 const LOCK_REASONS = new Set(['exit_price_lock', 'profit_lock', 'regime_reversal_lock']);
 const WINDOW_START = Date.now() - 30 * 86_400_000;
@@ -64,8 +65,8 @@ function candleTs(c: any): number {
 
 /** 模擬 roll: entry 揸住, MFE≥0.5% 上移 SL 至 breakeven, MFE≥1% 後 trail 50% */
 function simulateRoll(entry: number, side: 'buy' | 'sell', candles: any[], openTs: number, exitBy: { at?: number; type: string } | null, oppOpenTs: number | null) {
-  // V11 硬化: entry 非有限/零 → 唔可以除零; side 白名單
-  if (!Number.isFinite(entry) || entry === 0 || (side !== 'buy' && side !== 'sell')) {
+  // V11 硬化（audit-round2）: entry 非有限/≤0（負 entry 無意義）→ 唔可以除零; side 白名單
+  if (!Number.isFinite(entry) || entry <= 0 || (side !== 'buy' && side !== 'sell')) {
     return { stop: false, pnlPct: 0, exitReason: 'bad-input' };
   }
   const dir = side === 'buy' ? 1 : -1;
@@ -193,8 +194,9 @@ function computeMaeToLock(entry: number, side: 'buy' | 'sell', candles: any[], o
   const noOut = results.filter(r => Math.abs(r.delta) <= 50 && Math.abs(r.actual) <= 30);
   stat(noOut, '剔 outlier');
 
-  console.log('\n════════ D1×D2 判別 ─═══════════');
-  console.log('判別假設: chase re-entry（D1）AND smooth（D2）→ roll 應該贏');
+  console.log('\n════════ D1×D2 診斷（⚠️ 事後歸因——唔具部署資格）════════');
+  console.log('D1（lock 後 re-entry 判追價）依賴鎖利後先發生嘅資訊——lock 當刻不可觀測。');
+  console.log('以下只係事後 partition 診斷，唔可以作為實時 gate 條件; 主裁決以關1/關2/關2b 為準。');
   const d1t = results.filter(r => r.d1Chase === true);
   const d1f = results.filter(r => r.d1Chase === false);
   const d2t = results.filter(r => r.d2Smooth);
@@ -216,11 +218,17 @@ function computeMaeToLock(entry: number, side: 'buy' | 'sell', candles: any[], o
   const bothN = both.length;
   const hitWR = bothN > 0 ? both.filter(r => r.delta > 0).length / bothN : 0;
   fs.writeFileSync('/tmp/roll-exp-result.json', JSON.stringify({ results, summary: { bothDelta, bothN, hitWR } }));
+  // ── 主裁決（audit-round2: 只用唔含 look-ahead 嘅全樣本/兩半/剔 outlier——D1 唔准參與裁決）──
+  const allDelta = results.reduce((s, r) => s + r.delta, 0);
+  const allN = results.length;
+  const allWinRate = allN > 0 ? results.filter(r => r.delta > 0).length / allN : 0;
+  fs.writeFileSync('/tmp/roll-exp-result.json', JSON.stringify({ results, summary: { bothDelta, bothN, hitWR, allDelta, allN, allWinRate } }));
   console.log(`\n════════ 裁決 ════════════`);
-  console.log(`D1∧D2 命中子集: n=${bothN} Δ=${bothDelta.toFixed(1)}pp 命中率 ${(hitWR * 100).toFixed(0)}%`);
-  if (bothN >= 15 && bothDelta > 0 && hitWR >= 0.6) {
-    console.log('→ 過關: 條件性實作建議（D1∧D2 gate + env 回滾）');
+  console.log(`主裁決（全樣本, 唔含 look-ahead）: n=${allN} Δ=${allDelta.toFixed(1)}pp 勝率 ${(allWinRate * 100).toFixed(0)}%`);
+  console.log(`D1∧D2 診斷子集（事後歸因, 唔計入裁決）: n=${bothN} Δ=${bothDelta.toFixed(1)}pp 命中率 ${(hitWR * 100).toFixed(0)}%`);
+  if (allN >= 15 && allDelta > 0) {
+    console.log('→ 過關（OOS 第四關前只係候選——需 time-locked holdout 再驗證）');
   } else {
-    console.log('→ 不過關: 樣本/Δ/命中率未達標——維持現狀（churn 係啱嘅, 誠實記錄）');
+    console.log('→ 不過關: 全樣本 Δ 唔正或樣本不足——維持現狀（lock-churn 係啱嘅, 誠實記錄）');
   }
 })().catch(e => { console.error('FATAL', e); process.exit(1); });

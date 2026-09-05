@@ -6315,7 +6315,17 @@ ${recentExamples}
       const patchTrade = (trade: any): boolean => {
         if (!trade) return false;
         // Skip if already has features
-        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) {
+          // 🚨 2026-09-05 污染事故回滾（audit-round2）: 已有開倉時 snapshot 嘅 entry features
+          // 永遠唔可以重寫（用而家 state 覆寫 = look-ahead 污染——12:36 全量 349 單事故）。
+          // 歷史 record 冇 source field → 只補 source 標記（來源未知 → 保守 'live-fallback'）,
+          // 唔可以 fall through 去用而家 state 重建 features。
+          if ((trade.entryShadowWinRateSource ?? trade.shadowWinRateSource) === undefined
+              && typeof trade.entryShadowWinRate === 'number' && Number.isFinite(trade.entryShadowWinRate)) {
+            trade.entryShadowWinRateSource = 'live-fallback'; // 來源不明——誠實標記
+          }
+          return false;
+        }
         
         // Build features for this trade's symbol
         const sym = normalizeSymbol(trade.symbol);
@@ -6435,6 +6445,7 @@ ${recentExamples}
     marketFeatures: Record<string, number>;
     olrPWin?: number;
     shadowWinRate?: number;
+    shadowWinRateSource?: 'entry-snapshot' | 'live-fallback';
     persistence?: Persistence;
   }>();
 
@@ -6779,6 +6790,7 @@ ${recentExamples}
         marketFeatures,
         olrPWin,
         shadowWinRate,
+        shadowWinRateSource: 'entry-snapshot',
         persistence,
       });
       
@@ -7007,6 +7019,7 @@ ${recentExamples}
             marketFeatures: entryMarketFeatures,
             olrPWin: entryOlrPWin,
             shadowWinRate: entryShadowWinRate,
+            shadowWinRateSource: 'entry-snapshot',
           });
         } else {
           // Otherwise, pre-compute from current market state
@@ -7034,6 +7047,7 @@ ${recentExamples}
         marketFeatures: pre?.marketFeatures,
         olrPWin: pre?.olrPWin,
         shadowWinRate: pre?.shadowWinRate,
+        shadowWinRateSource: pre?.shadowWinRateSource,
         regime: this.marketState?.getState(sym)?.regime ?? this.marketState?.getState(this.marketAgent?.getSelectedSymbol() ?? '')?.regime,
         consensusConfidence: Number.isFinite(this.lastCycleConsensusConfidence)
           ? this.lastCycleConsensusConfidence
@@ -7297,7 +7311,17 @@ ${recentExamples}
       const patchTradeRecord = (trade: any): boolean => {
         if (!trade) return false;
         // Skip if already has features (already patched by a previous call)
-        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) {
+          // 🚨 2026-09-05 污染事故回滾（audit-round2）: 已有開倉時 snapshot 嘅 entry features
+          // 永遠唔可以重寫（用而家 state 覆寫 = look-ahead 污染——12:36 全量 349 單事故）。
+          // 歷史 record 冇 source field → 只補 source 標記（來源未知 → 保守 'live-fallback'）,
+          // 唔可以 fall through 去用而家 state 重建 features。
+          if ((trade.entryShadowWinRateSource ?? trade.shadowWinRateSource) === undefined
+              && typeof trade.entryShadowWinRate === 'number' && Number.isFinite(trade.entryShadowWinRate)) {
+            trade.entryShadowWinRateSource = 'live-fallback'; // 來源不明——誠實標記
+          }
+          return false;
+        }
         // Skip if symbol doesn't match
         if (normalizeSymbol(trade.symbol) !== symNorm) return false;
         // Skip if side doesn't match
@@ -14358,7 +14382,17 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       const patchTradeRecord = (trade: any): boolean => {
         if (!trade) return false;
         // Skip if already has features (already patched by monkey-patch or previous call)
-        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) return false;
+        if (trade.entryMarketFeatures && Object.keys(trade.entryMarketFeatures).length > 0) {
+          // 🚨 2026-09-05 污染事故回滾（audit-round2）: 已有開倉時 snapshot 嘅 entry features
+          // 永遠唔可以重寫（用而家 state 覆寫 = look-ahead 污染——12:36 全量 349 單事故）。
+          // 歷史 record 冇 source field → 只補 source 標記（來源未知 → 保守 'live-fallback'）,
+          // 唔可以 fall through 去用而家 state 重建 features。
+          if ((trade.entryShadowWinRateSource ?? trade.shadowWinRateSource) === undefined
+              && typeof trade.entryShadowWinRate === 'number' && Number.isFinite(trade.entryShadowWinRate)) {
+            trade.entryShadowWinRateSource = 'live-fallback'; // 來源不明——誠實標記
+          }
+          return false;
+        }
         
         // Determine the correct features for this record's symbol+side
         const tradeSym = normalizeSymbol(trade.symbol);
