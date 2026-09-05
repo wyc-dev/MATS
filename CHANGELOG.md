@@ -4,6 +4,26 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-attack-round7: 攻擊輪——source 生命周期 + fallbackPatch guard 周邊（主神 2026-09-05「不擇手段攻擊啱啱修葺嘅 code」）
+
+**紅先 5 測試 1 fail → 修復 → 29/29 全綠**（attack-round7 5 新 + lifecycle 5 + rank-correlation 19）。
+
+### A1: entryShadowWinRateSource 垃圾值流入（🔴）
+garbage source（'banana'/''/42/'ENTRY-SNAPSHOT'/null）會流入 position/trade——下游 `source === 'entry-snapshot'` 判斷被污染。**修復**: `sanitizeShadowSource()` 白名單（'entry-snapshot'|'live-fallback'|undefined）——portfolio 5 處 copy 統一。
+
+### B1/B5: fallbackPatch guard「空 object 窿」（🔴 HIGH——污染事故同類）
+`Object.keys(entryMarketFeatures).length > 0` 對 **{} 空 object 為 false** → guard fall-through → 用而家 state 覆寫（look-ahead 污染路徑重開）。**修復**: 3 處 guard 收緊——`!== undefined && !== null && typeof === 'object'` = **「有 field 即 skip」（即使空 {}）**——831 §24 鐵律 1 強化: 寧願留空好過污染。
+
+### E1 驗證（不成立）
+roll-openedAt NaN → `(a.openedAt || 0)` NaN falsy → 0——排序安全——唔係漏洞。
+
+### 盈利提升分析（先證後改）
+- **E3 roll 主裁決（修正後真實數據）**: 全樣本 n=54 Δ=**−175.1pp** 勝率 26% → **不過關——維持 lock-churn 誠實否決**; D1∧D2 診斷（n=25 Δ=−52pp 28%）確認為事後歸因、唔計入裁決——D1 隔離生效。
+- **E2 source 標記首日**: 實盤 fallbackPatch 已為 122 單（有 entryShadowWinRate 嘅歷史 trade）補 'live-fallback'——由今日起新開倉實盤 trade 有 clean 'entry-snapshot'——2-4 週後 shadow WR ρ 重驗有真分層樣本。verify-shadow-wr-divergence 已支援 source 分層輸出。
+- **E1 數據品質**: 空 object guard 收緊令「被清空嘅 snapshot」唔會再被 fallback 覆寫——data integrity 保護。
+
+**驗證**: 全量 **4266 pass（4261+5）+ 13 pre-existing（零新增）**; tsc clean; 實盤重啟後 data 穩定（111 unique momentumLong + 122 source 標記）+ zero error log + bnb 倉位正常（marginUsed 8.45）。
+
 ## v2.0.873-P9-audit-round2: 來源生命周期修復 + 🚨 fallbackPatch 污染事故（主神 2026-09-05 Audit 第二輪驗收）
 
 **背景**: Audit agent 驗收確認三個原研究工具錯誤可結案，但指出: ①實盤來源標籤生命周期丟失（importExchangePosition/closeExchangePosition/openTrade 3 處漏接 + payload 冇傳 + 後補機制 skip 條件）②F1 垃圾 PnL 防護邏輯反（放行 string/undefined）③Roll D1 註解禁止但裁決仍用 ④Proxy getOwnPropertyDescriptor/length trap 喺 try/catch 外 ⑤holdout 必須預隔離唔可事後命名 ⑥歷史 fallback 記錄只能係嫌疑唔可叫「已確認 snapshot」。**全部驗證成立**。

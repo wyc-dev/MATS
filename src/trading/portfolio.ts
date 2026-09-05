@@ -302,6 +302,11 @@ export function restoreRealPositionRecord(rp: Record<string, unknown>, normSym: 
   } as unknown as Position;
 }
 
+/** attack-round7: shadowWinRateSource 白名單 sanitize——垃圾值/garbage → undefined（唔污染下游 'entry-snapshot'/'live-fallback' 判斷） */
+function sanitizeShadowSource(v: unknown): 'entry-snapshot' | 'live-fallback' | undefined {
+  return v === 'entry-snapshot' || v === 'live-fallback' ? v : undefined;
+}
+
 export class PortfolioTracker {
   private portfolio: Portfolio;
   /** Callback so PaperTradingEngine can capture trades from SL/TP closes */
@@ -781,7 +786,7 @@ export class PortfolioTracker {
       entryMarketFeatures: entryData?.marketFeatures,
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
-      entryShadowWinRateSource: entryData?.shadowWinRateSource,
+      entryShadowWinRateSource: sanitizeShadowSource(entryData?.shadowWinRateSource),
       entryPersistence: entryData?.persistence,
       regime: entryData?.regime,
       entryConsensusConfidence: entryData?.consensusConfidence,
@@ -820,7 +825,7 @@ export class PortfolioTracker {
       entryMarketFeatures: entryData?.marketFeatures,
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
-      entryShadowWinRateSource: entryData?.shadowWinRateSource,
+      entryShadowWinRateSource: sanitizeShadowSource(entryData?.shadowWinRateSource),
       entryPersistence: entryData?.persistence,
       regime: entryData?.regime,
       entryConsensusConfidence: entryData?.consensusConfidence,
@@ -1149,7 +1154,7 @@ export class PortfolioTracker {
       entryMarketFeatures: entryData?.marketFeatures,
       entryOlrPWin: entryData?.olrPWin,
       entryShadowWinRate: entryData?.shadowWinRate,
-      entryShadowWinRateSource: entryData?.shadowWinRateSource,
+      entryShadowWinRateSource: sanitizeShadowSource(entryData?.shadowWinRateSource),
       entryPersistence: entryData?.persistence,
       regime: entryData?.regime,
       entryConsensusConfidence: entryData?.consensusConfidence,
@@ -1756,7 +1761,7 @@ export class PortfolioTracker {
       entryMarketFeatures: pos.entryMarketFeatures,
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
-      entryShadowWinRateSource: pos.entryShadowWinRateSource,
+      entryShadowWinRateSource: sanitizeShadowSource(pos.entryShadowWinRateSource),
       entryPersistence: pos.entryPersistence,
       regime: pos.regime,
       closeRegime: pos.closeRegime,
@@ -2003,7 +2008,7 @@ export class PortfolioTracker {
       entryMarketFeatures: pos.entryMarketFeatures,
       entryOlrPWin: pos.entryOlrPWin,
       entryShadowWinRate: pos.entryShadowWinRate,
-      entryShadowWinRateSource: pos.entryShadowWinRateSource,
+      entryShadowWinRateSource: sanitizeShadowSource(pos.entryShadowWinRateSource),
       entryPersistence: pos.entryPersistence,
       regime: pos.regime,
       closeRegime: pos.closeRegime,
