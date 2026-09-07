@@ -4,6 +4,23 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## ⏳ Pending Validation 索引（等數據累積 → 到期重驗）
+
+> **鐵律**: 以下項目已落地但驗證依賴數據累積——**未有驗證結果前，唔准作為 production 決策證據**（831 §28/§29 誠實原則）。驗證觸發 = 乾淨樣本累積足夠（實盤開倉稀疏，預估 2-4 週；shadow 管道若擴充可提前）。
+
+| # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
+|:--|:---|:---|:---|:---|
+| P1 | convLedger 消融重播（multiplier-ablation-fix） | §27 六誤傷候選（mae-pattern/convexity/success-pattern/causal/reversal-point/eq-ev）真偽裁決 | 1006 舊筆標污染；修正後 entryConvictionLedger 樣本累積中 | 2-4 週 |
+| P2 | shadow WR ρ 重驗（attack-round6/7） | ρ 預測力——E1 fallback 假象 vs bnb symbol 效應 | 122 舊筆 live-fallback；clean entry-snapshot 累積中 | 2-4 週 |
+| P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
+| P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
+| P5 | 6 soft gate 誤傷 counterfactual（mfe-expose-attack） | gate 系統性過度保守裁決 | 每 gate 10-19 樣本（269 單標準） | 2-4 週 |
+| P6 | 候選 C: persistent_bear + m4h<−0.5% block BUY（tool-integrity） | 正確算法重驗（−11.93%→+6.75% 反轉後） | n=6（門檻 n≥15） | n 累積 |
+| P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
+| P8 | time-window 候選 1/2/3 接駁（time-window） | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+
+---
+
 ## v2.0.873-P9-core-fixes: 首輪四個核心問題全修（主神 2026-09-05——audit 第二輪核查離線反例全重現）
 
 **背景**: Audit 核查: convLedger（70cee12）結案 ✓; 但首輪四個核心問題全部仍在——本座逐個重現（離線反例）+ 全修。831 §29 完整記錄。

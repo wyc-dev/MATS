@@ -2,6 +2,23 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 
 **Version**: 2.0.873-P9-core-fixes · **Tests**: ~4,100 total (vitest, gitignored — 4273 pass / 13 pre-existing failures in v2.0.854-attack2-nan-price.test.ts + v2.0.868-attack, unrelated; 另 9 個 legacy `node:test` 格式 file vitest 收集唔到「No test suite found」+ 1 個測已刪代碼嘅死 file——開發噪音，非 regression，主神裁決唔使理) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
 
+## ⏳ Pending Validation 索引（等數據累積 → 到期重驗）
+
+> **鐵律**: 以下項目已落地但驗證依賴數據累積——**未有驗證結果前，唔准作為 production 決策證據**（831 §28/§29 誠實原則）。驗證觸發 = 乾淨樣本累積足夠（實盤開倉稀疏，預估 2-4 週；shadow 管道若擴充可提前）。
+
+| # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
+|:--|:---|:---|:---|:---|
+| P1 | convLedger 消融重播（multiplier-ablation-fix） | §27 六誤傷候選（mae-pattern/convexity/success-pattern/causal/reversal-point/eq-ev）真偽裁決 | 1006 舊筆標污染；修正後 entryConvictionLedger 樣本累積中 | 2-4 週 |
+| P2 | shadow WR ρ 重驗（attack-round6/7） | ρ 預測力——E1 fallback 假象 vs bnb symbol 效應 | 122 舊筆 live-fallback；clean entry-snapshot 累積中 | 2-4 週 |
+| P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
+| P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
+| P5 | 6 soft gate 誤傷 counterfactual（mfe-expose-attack） | gate 系統性過度保守裁決 | 每 gate 10-19 樣本（269 單標準） | 2-4 週 |
+| P6 | 候選 C: persistent_bear + m4h<−0.5% block BUY（tool-integrity） | 正確算法重驗（−11.93%→+6.75% 反轉後） | n=6（門檻 n≥15） | n 累積 |
+| P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
+| P8 | time-window 候選 1/2/3 接駁（time-window） | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+
+---
+
 - **v2.0.873-P9-core-fixes**（主神 2026-09-05——audit 第二輪核查離線反例全重現）: ①**F1 提前 return 跳 mom24-guard/chase-tail**（mult≠1 分支 shadow-gate 後 return——F1 4h/guard 24h「零重疊」聲明唔成立——反例 BUY m4h+0.8% + m24h+0.2% 接刀區繞行）→ blocked→return/通過→fall-through 統一閘流程 ②**shadow 容量 shift 游標漏同步**（prune 有同步但 2 個 cap shift() 冇——滿 buffer drain 後新 sample 靜默丟失）→ 抽 `capRecentResults()` helper（shift + lastDrainedIndex 同步）③**computePersistenceDual bullScore 自證 100%**（bullMom==fwd 算式）→ bullMom 改過去窗（鏡像 bearMom）④**maxDrawdownPct 負權益歸零**（peak>0 guard）→ |peak| 分母。**「管道接通但源頭壞」原型第 4-6 次**——閘門鏈統一累積/cap helper/對稱計算。測試 7 新 + 全量 4273 pass + 13 pre-existing。
 
 - **v2.0.873-P9-multiplier-ablation-fix**（audit exhaustive-grep 致命發現全驗證）: **lastConvLedger 只喺 conviction-gate 拒絕分支賦值、通過分支冇** → 開倉時 stash 到「上一筆被拒候選」殘留 → entryConvictionLedger 對開倉 trade 係空/錯值 + 既有 1006 attribution 系統性錯掛。**修復**: 無條件賦值（if/else 前）; 時序模擬「拒 A→過 B→開 B」buggy=rejected-A/fixed=passed-B。既有 1006 筆標「修正前疑似污染」——消融 script 加警告。新鐵律: 記錄基建要驗證源頭喺**所有**分支有賦值。
