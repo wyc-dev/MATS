@@ -50,7 +50,10 @@ export const shadowCandidateConfig = {
 export type ShadowCandidateMode = 'explore' | 'confirm';
 
 function finiteOr(v: unknown): number | undefined {
-  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+  // ATTACK-round: 極端 pnl(±1e308)令 permutation edge null 爆 → gate 全面誤 FAIL。
+  // pnl 係 margin fraction,合理域 ±1.0(=±100% margin);clamp 保護統計。
+  return Math.min(Math.max(v, -1.0), 1.0);
 }
 
 /** 純函數: Spearman ρ(兩個數值序列)——共用(events 版 + permutation 版) */
@@ -107,8 +110,11 @@ export function splitmix32(seed: number): () => number {
  *  返回 ρ_crit = max(floor, permNull)。 */
 export function permutationRhoThreshold(events: ShadowEventLike[], featureKey: string, iterations?: number, pctile?: number): { rhoCrit: number; nullP99: number } {
   const cfg = shadowCandidateConfig;
-  const its = iterations ?? cfg.permIterations;
-  const pct = pctile ?? cfg.permPctile;
+  // ATTACK-round: iterations=1e9 → 10 億次 loop DoS;0/負 → 空 null 分佈。cap + guard。
+  const itsRaw = Number.isFinite(iterations) ? (iterations as number) : cfg.permIterations;
+  const its = Math.min(Math.max(1, Math.floor(itsRaw)), Math.max(cfg.permIterations, 2000));
+  const pctRaw = Number.isFinite(pctile) ? (pctile as number) : cfg.permPctile;
+  const pct = Math.min(Math.max(pctRaw, 0.5), 0.999); // percentile 合理域
   const pairs: Array<[number, number]> = [];
   for (const e of events) {
     const f = finiteOr(e[featureKey]);
@@ -138,7 +144,8 @@ export function permutationRhoThreshold(events: ShadowEventLike[], featureKey: s
  *  edge_crit = max(minEdgeFloorPct, null99)——大樣本真 edge 高 → 門檻低;random → 門檻高(唔誤 PASS) */
 export function permutationEdgeThreshold(events: ShadowEventLike[], featureKey: string, iterations?: number): { edgeCritPct: number; nullP99: number } {
   const cfg = shadowCandidateConfig;
-  const its = iterations ?? cfg.permIterations;
+  const itsRaw = Number.isFinite(iterations) ? (iterations as number) : cfg.permIterations;
+  const its = Math.min(Math.max(1, Math.floor(itsRaw)), Math.max(cfg.permIterations, 2000)); // ATTACK-round: cap
   const pairs: Array<[number, number]> = [];
   for (const e of events) {
     const f = finiteOr(e[featureKey]);
@@ -248,8 +255,13 @@ export function evaluateShadowCandidate(
     const start = options.startedAt ?? (n > 0 ? Math.min(...events.filter((e) => e && finiteOr(e.resolvedAt) !== undefined).map((e) => (e.resolvedAt as number))) : now);
     if ((now - start) / 86_400_000 < cfg.minAgeDays) return { verdict: 'INSUFFICIENT', reason: `運行日數唔夠: < ${cfg.minAgeDays} 日`, n };
   }
+  // ATTACK-round: featureSpec null/undefined → .feature crash。→ INSUFFICIENT(冇候選特徵唔可以判)
+  if (!Array.isArray(featureSpec) && (featureSpec === null || featureSpec === undefined || typeof featureSpec !== 'object' || typeof (featureSpec as { feature?: unknown }).feature !== 'string')) {
+    return { verdict: 'INSUFFICIENT', reason: '無有效候選特徵(featureSpec 不可信)——唔可以判', n };
+  }
   const isExplore = Array.isArray(featureSpec);
   const keys = isExplore ? (featureSpec as string[]) : [(featureSpec as { feature: string }).feature];
+  if (keys.length === 0) return { verdict: 'INSUFFICIENT', reason: '候選特徵清單為空', n };
 
   // 每個候選特徵: 自適應 ρ_crit + 自適應 edge_crit(permutation, A-D 改善)+ 兩段 + tail + coverage
   const passed: Array<{ k: string; rho: number; edge: number }> = [];
