@@ -15,7 +15,8 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 | P5 | 6 soft gate 誤傷 counterfactual（mfe-expose-attack） | gate 系統性過度保守裁決 | 每 gate 10-19 樣本（269 單標準） | 2-4 週 |
 | P6 | 候選 C: persistent_bear + m4h<−0.5% block BUY（tool-integrity） | 正確算法重驗（−11.93%→+6.75% 反轉後） | n=6（門檻 n≥15） | n 累積 |
 | P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
-| P8 | time-window 候選 1/2/3 接駁（time-window） | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+| P8 | time-window 候選 1/2/3 接駁（time-window）
+| P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
 
 ---
 
