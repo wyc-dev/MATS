@@ -19,6 +19,46 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 | P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
 | P8 | time-window 候選 1/2/3 接駁（time-window）
 | P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+| P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09 新增)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 閾值 / cycle 粒度 / PAEL threshold 高於細 MFE)──潛在 +86.8 margin%(等權) | 86 筆 exit_price_lock(17 誤標已修復由今日起乾淨累積) | candle 級重放 + entry-quality per-symbol 閾值對照 |
+
+---
+
+## v2.0.873-P9-exit-lock-label-fix（2026-09-09：exit_price_lock 大蝕離場 anomaly 根治 + 攻擊輪 + 量化分析）
+
+> 主神「查 anomaly & 今日瘋狂蝕錢嘅主因」→ 全面診斷: exit_price_lock 喺大蝕離場唔係「鎖利機制壞」——係 **`getMfeLockAdvice`「鎖利」冇檢查當前盈利** + **PAEL cold-start 漏 holdMin**。全量 4468 pass + 13 pre-existing（零新增 regression）, tsc clean。
+
+### 診斷（先證後改——三筆蝕單 100% 重現）
+- **Bug A**: `getMfeLockAdvice`(close-decision-calibrator.ts:303)——MFE ≥ 2×ATR 且 `retraced ≥ 30%` 即建議鎖利,但 **retraced 冇上限、冇檢查「而家仲贏唔贏」**——retraced=100%(已完全回吐,而家係大蝕)照觸發 → consensus close 被 `resolveClosePipelineReason` 誤標 `exit_price_lock`。實錘: 09-08 SELL SILVER −11.7% / BUY SNDK −4.4% / SELL DRAM −9.4%（mfePct 1.96/7.36/2.85% margin, curFav 全負, retraced=100%）。learning-weight.ts 契約「exit_price_lock never a loss」被打破。
+- **Bug B**: `runExitPriceLockGate` 嘅 `!profile` 冷啟動分支漏咗 holdMin guard（profile 路徑有）→ 3 分鐘 MFE spike 即鎖（BUY SILVER 09-08 04:43→04:46, live MFE 0.21%×10x ≥ 0.5% margin, 微蝕 −0.2% 連 fee 都 cover 唔到）。
+- **全樣本 counterfactual（328 筆 realTrades）**: exit_price_lock 共 86 筆 = **17 筆蝕位誤標（20%）** + 69 筆真鎖利——誤標非單一事件,係系統性。
+
+### Fix A（getMfeLockAdvice 加「當前盈利」guard）
+- 簽名加 `curFavPct?: number | null`——**「鎖利」必須有利可鎖**: curFav 必須 finite 且 > 0 先准鎖。
+- 優先序: 顯式 finite 值（call site 計好,防 stale pos.unrealizedPnl 假正）> undefined → implied 反推 `mfe×(1−retraced)`（數學等價,向後兼容）> 顯式垃圾（null/NaN/Infinity）→ 唔鎖,唔回落 implied。
+- 2 個 call sites 傳入現成 curFav（index.ts L12950 consensus-mfeLock / L11378 PROFIT-GUARD-mfeLockOverride——TS 強制）。
+
+### Fix B（PAEL cold-start holdMin guard）
+- `!profile` 分支加同 profile 路徑一致嘅 `holdMin < exitPriceLockConfig.minHoldMinutes → continue`（15min）——3 分鐘假鎖根治。
+
+### 攻擊輪（P9-exit-lock-label-attack——7 向量, 1 真漏洞修復）
+| # | 向量 | 結果 |
+|:--|:--|:--|
+| V1 | garbage primitive（Symbol/NaN/Infinity/±0/string/object 全位置注入）| 🟢 全防（唔 crash 唔鎖）|
+| V2 | Proxy/defineProperty getter bomb（curFav/mfe/symbol/side）| 🟢 全防|
+| **V3** | **mfePct=1e308 + 正常 atr → 假鎖 + reason toFixed(1e308) 輸出 300+ 位污染 agent context** | 🔴 **修**: `MAX_LOCK_MFE_PCT=10`（同 reversal-point MAX_EXCURSION=10 / live-mfe MAX_LIVE_MFE_PCT=50 對稱）——**reject 唔 clamp**（clamp 會令污染值變成「最強證據」——gate-outcome prematureRate 先例）|
+| V4 | retraced vs curFav 矛盾輸入（顯式 curFav>0 + retraced=1.0）| 🟢 唔 crash（完全回吐語義優先）|
+| V5 | curFav 顯式 denormal 微利（1e-9/1e-300/-0）| 🟢 唔 crash（call site 真實計算唔會產生）|
+| V6 | 併發 Promise.all × 100 | 🟢 無 shared state、結果一致|
+| V7 | mfe/atr/retraced/curFav 極端組合矩陣（11×11×11×11）| 🟢 全部唔 crash|
+
+### 量化金融分析（盈利提升方向——P10 pending,唔實裝新 gate）
+- **17 筆 full-retrace 誤標單**: MFE median **2.97%**（真鎖利組 4.85%）——**細 MFE 倉係回吐重災區**; 最終 median −0.4%, total −$3.21。
+- **潛在鎖利收益**: 如喺 retraced 30% 即鎖（鎖到 70% MFE）→ 17 筆由 **−40.5 → +46.3 margin%**（等權, +86.8 改善）。
+- 診斷: reversal-point lock / PAEL 對細 MFE 單嘅鎖利窗口（pnl>0 期間 retraced≥30%）可能被 perSymbolMfeP50 閾值或 cycle 粒度 miss——**列入 P10（candle 級重放驗證後先定案,831 門檻）**。
+
+### 驗證
+- 新測試 17（label-fix 10 + attack 7）+ 3 個 pre-existing 測試正名（mae-macro C2 / mae-extreme E9——舊期望鎖定「完全回吐照鎖」bug 行為,已修正為正確語義）; 全量 **4468 pass + 13 pre-existing（零新增）**; tsc clean。
+- 現有 F2/F3 向後兼容（implied 反推）; 今日兩筆賺單（DRAM +15.1%/+7.4%）保持 exit_price_lock 零誤傷。
 
 ---
 

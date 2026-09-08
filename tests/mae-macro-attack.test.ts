@@ -145,8 +145,12 @@ describe('v2.0.869 Part 3/4/5/6 刁鑽攻擊(併發/狀態注入/持久化污染
       const cc = new CloseDecisionCalibrator(path.join(tmpDir, 'cc2.json'));
       expect(() => cc.getMfeLockAdvice('skhx', 'sell', 0.02, 0.01, 1e308)).not.toThrow();
       expect(() => cc.getMfeLockAdvice('skhx', 'sell', 0.02, 0.01, -1e308)).not.toThrow();
+      // P9-exit-lock-label-fix (2026-09-08): retraced=1e308 clamp 到 1.0 = 完全回吐——
+      //   「鎖利」必須有利可鎖,完全回吐(implied curFav = mfe×(1−1) = 0)→ 唔鎖。
+      //   舊期望 true 係 bug 行為(09-08 三筆蝕單 −11.7%/−4.4%/−9.4% 正正因此被誤標
+      //   exit_price_lock)——已修正為 false。
       const r = cc.getMfeLockAdvice('skhx', 'sell', 0.02, 0.01, 1e308);
-      expect(r.shouldLock).toBe(true); // clamp 到 1——鎖利
+      expect(r.shouldLock).toBe(false); // 完全回吐 → 冇 profit 可鎖
     });
   });
 });

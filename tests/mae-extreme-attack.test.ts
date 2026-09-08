@@ -133,13 +133,17 @@ describe('v2.0.869 MAE 模式極端攻擊(數值極限/架構級/周邊 modules)
     expect(() => pa.getLosingMultiplier('skhx', undefined as unknown as 'buy')).not.toThrow();
   });
 
-  it('E9: getMfeLockAdvice——mfePct/atrPct 極端組合(1e308/1e-308)——唔 crash', () => {
+  it('E9: getMfeLockAdvice——mfePct/atrPct 極端組合(1e308/1e-308)——唔 crash + 唔假鎖', () => {
     const cc = new CloseDecisionCalibrator(path.join(tmpDir, 'cc.json'));
     expect(() => cc.getMfeLockAdvice('skhx', 'sell', 1e308, 1e-308, 0.5)).not.toThrow();
     expect(() => cc.getMfeLockAdvice('skhx', 'sell', 1e-308, 1e308, 0.5)).not.toThrow();
     expect(() => cc.getMfeLockAdvice('skhx', 'sell', 1e308, 1e308, 1e308)).not.toThrow();
+    // P9-exit-lock-label-attack (V3, 2026-09-09): mfePct=1e308 係污染——reject 唔 clamp
+    // (同 live-mfe MAX_LIVE_MFE_PCT=50 / reversal-point MAX_EXCURSION=10 對稱;
+    //  clamp 會令污染值變成「最強證據」)。舊期望 true = bug 行為(1e308 天文 MFE 假鎖
+    //  + reason toFixed 輸出 300+ 位污染 agent context)——已修正為 false。
     const r = cc.getMfeLockAdvice('skhx', 'sell', 1e308, 1e-308, 0.5);
-    expect(r.shouldLock).toBe(true); // 1e308 >= 2×1e-308 且回吐 50%
+    expect(r.shouldLock).toBe(false); // 1e308 > MAX_LOCK_MFE_PCT → reject
   });
 
   it('E10: 併發——record + getProfile + getMaePattern + getReopenMultiplier 全交錯(500 call)——唔 crash', () => {

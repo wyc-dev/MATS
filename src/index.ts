@@ -4013,6 +4013,13 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // margin-basis 0.5% fallback threshold（P9-lock-pipeline 驗證——舊 price-basis
         // 0.5% 喺 10x 下 = margin 5% 先觸發,令浮盈 1-3% 蝕單全部漏走）——樣本疏 symbol 都有鎖利機會。
         if (!profile) {
+          // P9-exit-lock-label-fix (Bug B, 2026-09-08): cold-start fallback 漏咗 holdMin guard——
+          // profile 路徑(下方 L3 前)有「開倉 ≥ minHoldMinutes 先准鎖」,呢度冇 → 3 分鐘 MFE spike
+          // 即鎖(BUY SILVER 09-08 04:43→04:46, live MFE 0.21%×10x ≥ 0.5% margin threshold,微蝕 −0.2%,
+          // 連 fee 都 cover 唔到)。exitPriceLockConfig 註解原意「a 5-min MFE spike is noise, not a zone」
+          // ——cold-start 同 profile 路徑一致執行（開倉 <15min 嘅浮盈係噪音,唔係鎖利區）。
+          const holdMinCold = Number.isFinite(pos.openedAt) ? (Date.now() - (pos.openedAt ?? 0)) / 60000 : 0;
+          if (holdMinCold < exitPriceLockConfig.minHoldMinutes) continue;
           const liveMfeP = this.computeLiveMfePricePct(sym, isSellSide(pos.side) ? 'sell' : 'buy', pos.averageEntryPrice, pos.openedAt ?? 0);
           // P1-lock-fix（stale-price 假正, SILVER −11.7% 事故）: pos.unrealizedPnl 靠 HL API
           // 每 cycle 更新(≤5min 滯後)——price 已回吐到蝕位時 stale 正值會令冷啟動鎖喺蝕位觸發。
@@ -11375,7 +11382,7 @@ ${recentExamples}
               const retraced = posMfe > 0 ? Math.max(0, Math.min(1, (posMfe - curFav) / posMfe)) : 0;
               const atrVal = this.atrCacheThisCycle.get(String(sym).toLowerCase()) ?? 0;
               const atrPct = atrVal > 0 && pos.averageEntryPrice > 0 ? atrVal / pos.averageEntryPrice : 0;
-              const lockAdvice = this.closeCalibrator.getMfeLockAdvice(sym, isSellSide(pos.side) ? 'sell' : 'buy', posMfe, atrPct, retraced);
+              const lockAdvice = this.closeCalibrator.getMfeLockAdvice(sym, isSellSide(pos.side) ? 'sell' : 'buy', posMfe, atrPct, retraced, curFav);
               if (lockAdvice.shouldLock) {
                 mfeLockOverride = true;
                 log.info(`🔒 [mfe-lock-override] ${sym}: ${lockAdvice.reason}——override PROFIT GUARD——直接 close(鎖利)`);
@@ -12947,7 +12954,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               // ATR 來源:atrCacheThisCycle(美元)→ 除以 entryPrice 轉 pct
               const atrVal = this.atrCacheThisCycle.get(String(psc.symbol).toLowerCase()) ?? 0;
               const atrPct = atrVal > 0 && pos.averageEntryPrice > 0 ? atrVal / pos.averageEntryPrice : 0;
-              const lockAdvice = this.closeCalibrator.getMfeLockAdvice(psc.symbol, isSellSide(pos.side) ? 'sell' : 'buy', posMfe, atrPct, retraced);
+              const lockAdvice = this.closeCalibrator.getMfeLockAdvice(psc.symbol, isSellSide(pos.side) ? 'sell' : 'buy', posMfe, atrPct, retraced, curFav);
               if (lockAdvice.shouldLock) {
                 mfeLock = true;
                 log.info(`🔒 [mfe-lock] ${psc.symbol}: ${lockAdvice.reason}——唔 hold——直接 close(鎖利)`);

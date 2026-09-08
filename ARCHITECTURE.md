@@ -23,6 +23,7 @@
 | P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
 | P8 | time-window 候選 1/2/3 接駁（time-window）
 | P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+| P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 / cycle 粒度)——潛在 +86.8 margin% | 86 筆 exit_price_lock(17 誤標已修復) | candle 級重放 + entry-quality 閾值對照 |
 
 ---
 

@@ -119,6 +119,13 @@ export type CloseCalibState = {
 } & Record<string, unknown>;
 
 export class CloseDecisionCalibrator {
+  /** P9-exit-lock-label-attack (V3): 合理 MFE 上限(margin %)——同 reversal-point
+   *  MAX_EXCURSION=10、live-mfe MAX_LIVE_MFE_PCT=50(price %)對稱。真實 margin
+   *  move <1000%(10x 下 price ±100% 都清算)——1e308 天文數字只可能係污染。
+   *  reject 唔 clamp(clamp 會令污染值變成「最強證據」——gate-outcome prematureRate
+   *  reject 先例)——同時防 toFixed(1e308) 輸出 300+ 位數字污染 agent context。 */
+  private static readonly MAX_LOCK_MFE_PCT = 10;
+
   /** P22-A: tradeId dedup(process 級防線;防雙路徑/重試雙計) */
   private recordedTradeIds = new Set<string>();
 
@@ -299,15 +306,46 @@ export class CloseDecisionCalibrator {
    *  鎖利條件(soft——判斷層——唔 hard block):
    *    MFE ≥ 2×ATR 且已回吐 ≥ 30% → 建議 close(鎖利)
    *    MFE ≥ 1.5×ATR 且已回吐 ≥ 50% → 建議 close(鎖利)
+   *
+   *  P9-exit-lock-label-fix (2026-09-08): 「鎖利」必須有利可鎖——
+   *    retraced=100%(已完全回吐,而家係大蝕)照觸發鎖利 = learning-weight 契約違反
+   *    (learning-weight.ts 註解「exit_price_lock never a loss」假設被打破;
+   *    實錘 09-08 SELL SILVER −11.7% / BUY SNDK −4.4% / SELL DRAM −9.4%
+   *    三筆 consensus close 被誤標 exit_price_lock)。
+   *    curFavPct(當前盈利, margin %)必須 finite 且 > 0 先准鎖利:
+   *    - 顯式傳入 → 用實時值(兩個 call site 已計好 curFav——防 stale pos.unrealizedPnl 假正)
+   *    - 冇傳 → implied 反推 curFav = mfe × (1 − retraced)(數學等價,向後兼容舊 call site)
+   *    - 兩者皆無效/≤0 → 唔鎖(保守——冇 profit 資訊唔可以鎖)
    */
-  getMfeLockAdvice(symbol: string, side: 'buy' | 'sell', mfePct: number, atrPct: number, retracedPct: number): { shouldLock: boolean; reason: string } {
+  getMfeLockAdvice(symbol: string, side: 'buy' | 'sell', mfePct: number, atrPct: number, retracedPct: number, curFavPct?: number | null): { shouldLock: boolean; reason: string } {
     try {
       const sym = String(symbol ?? '').replace(/[\x00-\x1F]/g, '').slice(0, 24);
       const rawSide = String(side ?? '').toLowerCase();
       const normSide: 'buy' | 'sell' = (rawSide === 'sell' || rawSide === 'short') ? 'sell' : 'buy';
       if (!sym || !Number.isFinite(mfePct) || mfePct <= 0) return { shouldLock: false, reason: 'no MFE' };
+      // P9-exit-lock-label-attack (V3): 天文數字 MFE(1e308)係污染——reject 唔 clamp
+      // (clamp 會令污染值變成「最強證據」——gate-outcome prematureRate reject 先例)。
+      // 上限同 reversal-point MAX_EXCURSION=10、live-mfe MAX_LIVE_MFE_PCT=50(price %)
+      // 對稱:真實 margin move <1000%(10x 下 price ±100% 都清算)——1e308 只可能係污染。
+      // 同時防 toFixed(1e308) 輸出 300+ 位數字污染 agent context reason。
+      if (mfePct > CloseDecisionCalibrator.MAX_LOCK_MFE_PCT) return { shouldLock: false, reason: `MFE out of range (>${CloseDecisionCalibrator.MAX_LOCK_MFE_PCT} margin)` };
       if (!Number.isFinite(atrPct) || atrPct <= 0) return { shouldLock: false, reason: 'no ATR' };
       const retraced = Number.isFinite(retracedPct) ? Math.max(0, Math.min(1, retracedPct)) : 0;
+      // P9-exit-lock-label-fix: 「鎖利」必須有利可鎖——curFav 必須 finite 且 > 0。
+      //   顯式 finite 值 → 用實值(call site 已計好,防 stale pos.unrealizedPnl 假正);
+      //   undefined(未傳) → implied = mfe×(1−retraced)(數學等價,向後兼容舊 call site);
+      //   顯式垃圾(null/NaN/Infinity/string) → 唔鎖,唔回落 implied(傳錯嘢唔可以靠補鑊)。
+      let curFav: number | null;
+      if (typeof curFavPct === 'number' && Number.isFinite(curFavPct)) {
+        curFav = curFavPct;
+      } else if (curFavPct === undefined && Number.isFinite(mfePct)) {
+        curFav = (mfePct as number) * (1 - retraced);
+      } else {
+        curFav = null;
+      }
+      if (curFav === null || curFav <= 0) {
+        return { shouldLock: false, reason: 'no current profit to lock (retraced fully / losing)' };
+      }
       if (mfePct >= 2 * atrPct && retraced >= 0.3) {
         return { shouldLock: true, reason: `${sym} ${normSide.toUpperCase()} MFE ${(mfePct * 100).toFixed(1)}% ≥ 2×ATR(${(atrPct * 100).toFixed(1)}%) 且已回吐 ${(retraced * 100).toFixed(0)}% → 鎖利` };
       }

@@ -1,6 +1,6 @@
 You are a senior staff software engineer owning the MATS codebase — ~74,500 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
-**Version**: 2.0.873-P9-postmortem-hardening · **Tests**: ~4,400 total (vitest, gitignored — 4405 pass / 13 pre-existing failures in v2.0.854-attack2-nan-price.test.ts + v2.0.868-attack, unrelated; 另 9 個 legacy `node:test` 格式 file vitest 收集唔到「No test suite found」+ 1 個測已刪代碼嘅死 file——開發噪音，非 regression，主神裁決唔使理) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.873-P9-exit-lock-label-fix · **Tests**: ~4,500 total (vitest, gitignored — 4468 pass / 13 pre-existing failures in v2.0.854-attack2-nan-price.test.ts + v2.0.868-attack, unrelated; 另 9 個 legacy `node:test` 格式 file vitest 收集唔到「No test suite found」+ 1 個測已刪代碼嘅死 file——開發噪音，非 regression，主神裁決唔使理) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
 
 ## ⏳ Pending Validation 索引（等數據累積 → 到期重驗）
 
@@ -17,6 +17,7 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 | P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
 | P8 | time-window 候選 1/2/3 接駁（time-window）
 | P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+| P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 / cycle 粒度)——潛在 +86.8 margin% | 86 筆 exit_price_lock(17 誤標已修復) | candle 級重放 + entry-quality 閾值對照 |
 
 ---
 
