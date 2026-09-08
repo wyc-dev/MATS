@@ -22,6 +22,38 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-audit-full-close（2026-09-08：audit 6 實證問題全收復 + OpenAI Upgrade ①②③ + 2 輪攻擊）
+
+> 背景: 外部 audit 報告 6 個實證問題(Shadow 報酬口徑/研究庫/backtest 可信度/Correlation Budget/冷啟動鎖利/Q-RL 隔離)+ 4 個盈利方向。本輪全數收復 + OpenAI「Research Acceleration」映射落地。**全量 4389 pass + 13 pre-existing,零 regression,tsc clean。**
+
+### P0 正確性止血(audit #1/#2/#3/#5 實錘修復)
+- **#1a OLR future leakage**(c4f9b89): 入場預測器 training features 曾含結算先知 mfePct/maePct/mfeToPnlRatio(兩條 resolve 路徑)→ 抽 `buildShadowTrainingFeatures` 純函數 substring 防守剔除——訓練/推理特徵口徑一致。
+- **#1b shadow 結算時序**(476ec79): outcome 由累積極值合併(TP/SL 都觸及→loss)→ 逐 cycle 首觸及先後(`decideShadowOutcome` 純函數)——「TP 先中」唔再錯標 loss;同 cycle 保守 SL-first;跨站 candle(straddle−300s 涵蓋開倉)確認係正確設計(p29 鎖定)。
+- **#1c 入場前 candle 污染**(8d197bb): 「完全開倉前」支(t<open−300s)唔可以觸發結算——測試鎖死。
+- **#2 研究庫**(cddab35/31743e5/00ca63d/8d197bb): save() 存全量(唔再 slice-50 丟 150 筆配對)+ `lastDrainedIndex` 持久化(重啟唔重送, OLR 重複學習根治)+ `pruneStaleSymbols` 游標同步 + `entryShadowEVAtOpen→PnlSumAtOpen` 正名 + 新 `EventArchive`(research/event-archive.ts)——**長期 append-only 研究檔案**(id 冪等去重)——recentResults 4h 窗以外嘅「entry+結果」配對全部留住。
+- **#3 backtest-validation**(cb141f4/2976d63): `maxDrawdownPct` peak=0 起始曲線唔再報 0(回報空間跌幅);bootstrap 雙尾(P(\|mean\|≥\|obs\|),正/負鏡像對稱)+ 真 stationary(幾何 block length);walkForward overfit → overall **唔准宣稱 edge**;修正 2·min 近似 all-zeros 假顯著。
+- **#5 冷啟動鎖利**(000675b): stale pos.unrealizedPnl 假正→鎖利 gate 喺蝕位觸發(SILVER −11.7% 事故)——主路徑 curPrice 無效→唔鎖;冷啟動實時重算+null→唔鎖。
+
+### 風險硬化(#4 + 監控三層 + 2 輪攻擊)
+- **#4 Correlation Budget 硬風控**(430fae7): notional = price×qty(重複槓桿 10 倍修正)、實盤計入、fetch 完整 coin 名、exceeded → executeTrade block。
+- **#4 原子化預留**(78f30ee): `canOpenWithReserve`——已持倉 effective + **待成交訂單**(HL open orders 潛在曝險)+ **跳空 buffer**(gap p95,floor 0.3%)≤ budget 先准開新倉。
+- **TailWatchdog**(e53b139): per-symbol 尾部事件監控(時間窗+筆數窗雙軌,低頻 symbol 防過早回復;單筆嚴重尾 <−11% 直接 caution)——遲滯狀態機 normal→caution(降注50%)→observe-only(唔開)→recovery(48h 證明);實盤關閉餵 pnl、executeTrade 檢查、持久化。
+- **CalibrationWatchdog**(d336f76, OpenAI upgrade ①): 模型信心校準——只對 **OVER-confidence**(avgOLR−WR>+15pp)降注(過度加注風險);UNDER-confidence 只記錄。**真實診斷: OLR 系統性低估勝率 20-26pp**(GOLD −26/SILVER −23.7/bnb −20.2)。
+- **Q-RL 決策隔離**(6c19914): `QRL_MASTER_ENABLED` master switch(false=完全隔離: gate/lean prompt/探索/學習回饋 5 消費點全 no-op)——「停用 gate 唔等於隔離」收復。
+- **攻擊輪 x2**(b47bc94/bdc2b6d): 12 漏洞全修——核心: `o.sz='banana'/'1e999'`→openOrderNotional NaN→**全部新倉永久 block DoS**;canOpenWithReserve garbage→NaN;consumePnl 污染;buildShadowTrainingFeatures string/array→數字 key 污染 OLR;verdict-engine garbage metric/sample→**誤判 PASS**(最毒: 主神信錯 Verdict)。全部寫入前 sanitize。
+
+### 研究自動化(OpenAI upgrade ②③)
+- **Verdict Engine**(3bf00bd): 標準化實驗輸出→pre-registered 閾值自動判 PASS/FAIL/INSUFFICIENT(提升比例/樣本/尾部劣化/ρ)——主神只審 Verdict。
+- **Pending 自動調度**(3bf00bd): startup 檢查 shadow-events.jsonl 樣本量+日數→到期自動提醒(`⏰ [pending-validation] DUE`)——P2 到期唔使記得。
+
+### 負結果(阻止咗誤導性 production 改動——「分辨力先係 alpha」)
+- **Challenger B NetEV(分層版)❌**: IS 正層 OOS 變負(層 mean 無跨期穩定性)→ 靜態分層唔可以決策。
+- **sizing/校準信心/分級 ❌**: 固定 10% margin(fee 31pp 侵蝕)、校準 OLR(ρ=0.051 無分辨度→盲升 margin 蝕 0.12x)、conviction 分級(信心無預測力)——**5 輪一致: 靜態調整冇用,分辨力先係 alpha**。
+- **20 筆 ledger pilot**: base mult 對 pwin 幾乎無關(0.23-0.39 對 pwin 0.15-0.67)→「校準 OLR 解鎖過度壓縮」機制性否定(pwin 唔主導 base 鏈)。
+
+### 已證明冇 alpha → 自動停用核對
+Q-RL expectancy gate(OFF)/ OLR hard gate(OFF)/ four-window(HARD BLOCK)——**全部已停用**;今日 5 個 FAIL 對象(從未實裝)零漏入 production;6 soft gates 為「候選」(樣本 10-36 < 269 標準)→ GOT 收集中,2-4 週 deadweight 自動裁決。
+
 ## v2.0.873-P9-live-loss-review（2026-09-08——主神貼實盤 4 筆大蝕「???」全檢討）
 
 **四筆蝕單（全部 09-07 深夜→09-08, real HL 實盤）**:
