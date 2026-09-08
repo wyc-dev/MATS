@@ -597,6 +597,10 @@ class MATSSystem {
   private tailWatchdog: TailWatchdog = new TailWatchdog();
   /** Upgrade A(OpenAI confidence-monitoring): 模型信心校準監控——over-confidence 降注。 */
   private calibrationWatchdog: CalibrationWatchdog = new CalibrationWatchdog();
+  /** 強升勢 block-SELL observe 計數(未實裝,記錄用) */
+  private _strongUpObservedBlock = 0;
+  /** 決策冇帶 momentum 嘅次數(診斷 live 覆蓋率) */
+  private _strongUpMissingMomentum = 0;
   /** v2.0.862: last cycle we fed ui_snapshots (throttle — once per cycle). */
   private lastUiSnapshotCycle = -1;
   /** v2.0.863: cached K-line summary + data-quality score for the conviction gate
@@ -6984,14 +6988,18 @@ ${recentExamples}
       return { success: false, error: 'correlation-budget-blocked (portfolio effective exposure over budget)' };
     }
 
-    // 強升勢方向防護(賽後檢討 09-08): 逆強升勢做空=接刀(SILVER −11.7% 類)。
-    // OOS 強升勢 BUY +1.81% / block-SELL 金額級 +$1.04(pre-registered, env 可回滾)。
+    // 強升勢方向防護(賽後檢討 09-08)——OBSERVE-ONLY(主神 2026-09-08: 未批准實裝前唔可以真 block):
+    // 只記錄「本應 block」嘅次數/細節,唔會阻礙任何 trade——待主神另行批准先啟用真 block(env STRONG_UP_BLOCK_SELL=true)。
     try {
-      const momLong = (decision as any)?.entryMarketFeatures?.momentumLong;
+      // 正確字段: decision.marketFeatures.momentumLong(4h 動量為主)——唔係 entryMarketFeatures
+      const momLong = (decision as any)?.marketFeatures?.momentumLong ?? (entryMarketFeatures as any)?.momentumLong;
       const momL: number | undefined = Number.isFinite(momLong) ? Number(momLong) : undefined;
-      if (shouldBlockStrongUpSell(momL, decision.action)) {
-        log.warn(`🛡️ [strong-up-guard] BLOCK ${decision.action} ${decision.symbol} —— 強升勢(momentumLong=${(momL! * 100).toFixed(2)}% ≥ ${(strongTrendConfig.strongUpPct * 100).toFixed(1)}%)逆勢做空=接刀` );
-        return { success: false, error: `strong-up-guard-blocked (強升勢逆勢 SELL, momentumLong=${(momL!*100).toFixed(2)}%)` };
+      if (momL === undefined) {
+        // 字段缺失 → 記錄一次(診斷: 睇 live 有幾多 decision 冇帶動量)
+        this._strongUpMissingMomentum++;
+      } else if (shouldBlockStrongUpSell(momL, decision.action)) {
+        this._strongUpObservedBlock++;
+        log.warn(`👀 [strong-up-guard:OBSERVE] ${decision.action} ${decision.symbol} 強升勢(momentumLong(4h)${(momL*100).toFixed(2)}%≥${(strongTrendConfig.strongUpPct*100).toFixed(1)}%)逆勢做空——observe 累計 ${this._strongUpObservedBlock} 次(未 block,待批准)`);
       }
     } catch { /* non-fatal */ }
 
