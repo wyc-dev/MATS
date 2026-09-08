@@ -1194,7 +1194,7 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...(pos.entryStats ?? {}) });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
         this.capRecentResults(200);
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
@@ -1263,7 +1263,7 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...(pos.entryStats ?? {}) });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
         this.capRecentResults(200);
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
@@ -1505,16 +1505,18 @@ export class ShadowTradeEngine {
   private snapshotEntryFeatures(f: Record<string, number> | undefined): Record<string, number | undefined> {
     if (!f || typeof f !== 'object') return {};
     const out: Record<string, number> = {};
-    const pick = (k: string, outKey: string) => {
-      if (Number.isFinite(f[k])) out[outKey] = f[k] as number; // omit undefined — no pollution
+    const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+    const pick = (k: string, outKey: string, lo: number, hi: number) => {
+      if (!Number.isFinite(f[k])) return; // omit undefined/NaN — no pollution
+      out[outKey] = clamp(f[k] as number, lo, hi); // bound — 1e308 唔准入
     };
-    pick('sentiment', 'sentimentAtEntry');
-    pick('sentimentConviction', 'sentimentConvictionAtEntry');
-    pick('fundingRate', 'fundingRateAtEntry');
-    pick('volatility', 'volatilityAtEntry');
-    pick('srDistanceBps', 'srDistanceBpsAtEntry');
-    pick('obImbalance', 'obImbalanceAtEntry');
-    pick('volumeRatio', 'volumeRatioAtEntry');
+    pick('sentiment', 'sentimentAtEntry', -1, 1);
+    pick('sentimentConviction', 'sentimentConvictionAtEntry', 0, 1);
+    pick('fundingRate', 'fundingRateAtEntry', -0.1, 0.1);
+    pick('volatility', 'volatilityAtEntry', 0, 1);
+    pick('srDistanceBps', 'srDistanceBpsAtEntry', 0, 10_000);
+    pick('obImbalance', 'obImbalanceAtEntry', -1, 1);
+    pick('volumeRatio', 'volumeRatioAtEntry', 0, 100);
     return out;
   }
 
@@ -1526,10 +1528,41 @@ export class ShadowTradeEngine {
    */
   private snapshotSelfStats(sym: string, side: 'buy' | 'sell'): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } {
     const cell = this.statsBySymbolSide.get(`${normalizeSymbol(sym)}|${side}`);
-    if (!cell) return {};
+    // ATTACK-round: state-injection guard — NaN/negative/infinite cell must NOT
+    // produce a poisoned record (NaN WR / negative n / 1e308 EV).
+    if (!cell || !Number.isFinite(cell.wins) || !Number.isFinite(cell.losses) || cell.wins < 0 || cell.losses < 0) return {};
     const n = cell.wins + cell.losses;
-    if (n < 5) return {};
-    return { entryShadowWRAtOpen: cell.wins / n, entryShadowNAtOpen: Math.round(n), entryShadowEVAtOpen: cell.totalPnlPct };
+    // n 本身都要 finite: 1e308+1e308 = Infinity(Number.MAX_VALUE 爆)——cap 1e9(統計不可能超)
+    if (!Number.isFinite(n) || n < 5 || n > 1e9) return {};
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } = {
+      entryShadowWRAtOpen: cell.wins / n,
+      entryShadowNAtOpen: Math.round(n),
+    };
+    if (Number.isFinite(cell.totalPnlPct)) {
+      out.entryShadowEVAtOpen = Math.min(Math.max(cell.totalPnlPct, -100), 100); // clamp — 1e308 唔准入
+    }
+    return out;
+  }
+
+  /**
+   * resolve 側 sanitize（ATTACK-round C）: 持久化污染嘅 pos.entryStats（string/array/
+   * 'banana'/1e308）唔可以直接 spread 入 recentResults（string spread 會產生數字 key 污染）。
+   * 白名單抽 3 個 field + finite 檢查 + clamp。治本: 寫入前 sanitize。
+   */
+  private safeEntryStats(s: unknown): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return {};
+    const e = s as { entryShadowWRAtOpen?: unknown; entryShadowNAtOpen?: unknown; entryShadowEVAtOpen?: unknown };
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } = {};
+    if (Number.isFinite(e.entryShadowWRAtOpen) && (e.entryShadowWRAtOpen as number) >= 0 && (e.entryShadowWRAtOpen as number) <= 1) {
+      out.entryShadowWRAtOpen = e.entryShadowWRAtOpen as number;
+    }
+    if (Number.isFinite(e.entryShadowNAtOpen) && (e.entryShadowNAtOpen as number) > 0 && (e.entryShadowNAtOpen as number) < 1e9) {
+      out.entryShadowNAtOpen = Math.round(e.entryShadowNAtOpen as number);
+    }
+    if (Number.isFinite(e.entryShadowEVAtOpen)) {
+      out.entryShadowEVAtOpen = Math.min(Math.max(e.entryShadowEVAtOpen as number, -100), 100);
+    }
+    return out;
   }
 
 
