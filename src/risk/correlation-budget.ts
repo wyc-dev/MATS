@@ -86,11 +86,12 @@ export class CorrelationBudget {
       const priceSeries = new Map<string, number[]>();
 
       for (const symbol of symbols) {
-        const cleanSymbol = symbol.replace(/^.*:/, ''); // strip DEX prefix (xyz:BTC → BTC)
+        // P1(audit #4): 唔好剝 DEX prefix——HL 認 xyz:SILVER,剝咗變 SILVER → null
+        // (拉唔到 candle → correlation 資料空洞 → matrix 失效)。lookup 先剝(對 default)。
         try {
           const res = await hlFetch({
             type: 'candleSnapshot',
-            req: { coin: cleanSymbol.toUpperCase(), interval: '1d', startTime, endTime },
+            req: { coin: symbol, interval: '1d', startTime, endTime },
           });
           if (!res.ok) continue;
           const candles = await res.json() as Array<{ t: number; c: string }>;
@@ -101,7 +102,9 @@ export class CorrelationBudget {
             .map(c => parseFloat(c.c))
             .filter(p => p > 0);
           if (prices.length >= 10) {
-            priceSeries.set(cleanSymbol, prices);
+            // matrix key 用剝前綴大寫(同 DEFAULT_CORRELATIONS 一致)——lookup 方便;
+            // fetch 已經用完整 coin 名(HL 認)。
+            priceSeries.set(symbol.replace(/^.*:/, '').toUpperCase(), prices);
           }
         } catch {
           continue; // Skip symbol on error

@@ -583,6 +583,8 @@ class MATSSystem {
   private exitPriceLearner!: ExitPriceLearner;
   /** v2.0.862: total lock-profit closes fired by the exit-price gate. */
   private exitPriceLockCount = 0;
+  /** P1(audit #4): correlation budget 硬風控狀態——exceeded 時 block 新開倉(組合層)。 */
+  private _correlationBudgetExceeded = false;
   /** v2.0.862: last cycle we fed ui_snapshots (throttle — once per cycle). */
   private lastUiSnapshotCycle = -1;
   /** v2.0.863: cached K-line summary + data-quality score for the conviction gate
@@ -6932,7 +6934,13 @@ ${recentExamples}
     entryShadowWinRate?: number,
   ): Promise<{ success: boolean; error?: string; paperReports?: any[] }> {
     const isRealMode = this.tradingManager.getTradeMode() === 'real';
-    
+
+    // P1(audit #4): correlation budget 硬風控——組合層已超標 → 一律唔准開新倉。
+    // (唔係 warn: 原子化 block;close/reduce 唔受影響)
+    if (this._correlationBudgetExceeded) {
+      return { success: false, error: 'correlation-budget-blocked (portfolio effective exposure over budget)' };
+    }
+
     // v2.0.822: Analysis mode — do NOT place orders. The consensus has already
     // been expanded into a per-asset matrix and written to Supabase; the user's
     // client reads the matrix and decides execution. Return success so the
@@ -14860,16 +14868,19 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       try {
         const openPositions = this.portfolio.getOpenSymbols();
         if (openPositions.length > 0) {
+          // P1(audit #4): ①唔再排除 hyperliquid-real(實盤倉先係真實風險,必須計入 budget);
+          // ②notional = price × qty(portfolio quantity 已係槓桿後資產數——price×qty 已經
+          // 係 leveraged notional,再 ×leverage = 10 倍高估)。
           const positions = openPositions.map(sym => {
             const pos = this.portfolio.getPosition(sym);
-            // Skip exchange-imported positions — they don't count against paper budget
-            if (pos && pos.agentId === 'hyperliquid-real') return null;
+            if (!pos) return null;
+            const notional = (pos.currentPrice ?? 0) * (pos.quantity ?? 0);
             return {
               symbol: sym,
-              notional: pos ? pos.currentPrice * pos.quantity * pos.leverage : 0,
-              direction: pos?.side === 'buy' ? 1 : -1,
+              notional,
+              direction: pos.side === 'buy' ? 1 : -1,
             };
-          }).filter((p): p is { symbol: string; notional: number; direction: number } => p !== null && p.notional > 0);
+          }).filter((px): px is { symbol: string; notional: number; direction: number } => px !== null && Number.isFinite(px.notional) && px.notional > 0);
 
           if (positions.length > 0) {
             // Update correlation matrix asynchronously (cached, daily refresh)
@@ -14885,8 +14896,10 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             ).catch(() => {});
 
             const report = this.correlationBudget.generateReport(positions, this.portfolio.getPortfolio().totalEquity);
+            // P1(audit #4): 硬風控——exceeded 存組合層狀態,executeTrade 開倉前 block
+            this._correlationBudgetExceeded = report.exceeded;
             if (report.exceeded) {
-              log.warn(`🛑 Correlation budget exceeded! Effective: $${report.effectiveExposure.toFixed(0)} vs $${report.budgetLimit.toFixed(0)} budget`);
+              log.warn(`🛑 Correlation budget exceeded! Effective: $${report.effectiveExposure.toFixed(0)} vs $${report.budgetLimit.toFixed(0)} budget — NEW OPENS BLOCKED`);
               log.warn(`   ${report.recommendation}`);
             } else if (positions.length >= 2) {
               log.info(`Correlation budget: $${report.effectiveExposure.toFixed(0)} eff / $${report.budgetLimit.toFixed(0)} limit (${(report.effectiveExposure / report.budgetLimit * 100).toFixed(0)}%)`);
