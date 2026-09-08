@@ -298,6 +298,7 @@ const exitPriceLockConfig = {
  *  (system-decision closes now discounted regardless of profitability). */
 import { computeLearningWeight } from './evolution/learning-weight.ts';
 import { EventArchive } from './research/event-archive.ts';
+import { TailWatchdog } from './risk/tail-watchdog.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -588,6 +589,8 @@ class MATSSystem {
   private _correlationBudgetExceeded = false;
   /** P1(audit #2): shadow 研究事件長期歸檔(append-only, id 冪等)——recentResults 4h 窗以外嘅可累積研究資料庫。 */
   private shadowResearchArchive: EventArchive | null = null;
+  /** audit C production 版: per-symbol 尾部監控(real resolved pnl)。 */
+  private tailWatchdog: TailWatchdog = new TailWatchdog();
   /** v2.0.862: last cycle we fed ui_snapshots (throttle — once per cycle). */
   private lastUiSnapshotCycle = -1;
   /** v2.0.863: cached K-line summary + data-quality score for the conviction gate
@@ -1520,6 +1523,11 @@ class MATSSystem {
           const data = fs.readFileSync(shadowPath, 'utf-8');
           this.shadowEngine.load(data);
         }
+        // audit C: per-symbol tail watchdog 狀態還原(重啟唔 reset symbol 風險狀態)
+        try {
+          const twPath = path.join(process.cwd(), 'data/evolution/tail-watchdog.json');
+          if (fs.existsSync(twPath)) this.tailWatchdog.load(fs.readFileSync(twPath, 'utf-8'));
+        } catch { /* non-fatal */ }
         // v2.0.870-EMR: shadow backfill 移到 startup——重啟即有消化數據
         // （之前喺 cycle start 依賴 tradingMarkets 非空 + olrBackfillDone——可能從未執行）
         try {
@@ -3194,6 +3202,14 @@ ${currentPrompt || '(empty — this is the first input)'}`;
                 if (closeRegime) this.portfolio.setCloseRegime(sym, closeRegime);
                 // Close the local mirror with the actual HL fill price + realized PnL
                 const closedTrade = this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
+                // audit C: real close 餵 tail watchdog(pnlPct = closedPnl / margin)
+                try {
+                  if (closedTrade && Number.isFinite(closedTrade.pnlPct)) this.tailWatchdog.consumePnl(sym, closedTrade.pnlPct);
+                  else if (closedTrade && Number.isFinite(closedTrade.pnl) && Number.isFinite(closedTrade.entryPrice) && Number.isFinite(closedTrade.quantity) && (closedTrade.entryPrice * closedTrade.quantity) > 0 && Number.isFinite(closedTrade.leverage)) {
+                    const margin = closedTrade.entryPrice * closedTrade.quantity / Math.max(1, closedTrade.leverage);
+                    if (margin > 0) this.tailWatchdog.consumePnl(sym, closedTrade.pnl / margin);
+                  }
+                } catch { /* non-fatal */ }
                 // v2.0.869-P3(主神 trade 缺失調查):onFills close 路徑——
                 // 之前冇 call recordTrade——trade 唔會寫入 Supabase——UI 冇顯示!
                 // 而家:close 後——call recordTrade(用 close 嘅 trade 資料)
@@ -6945,6 +6961,18 @@ ${recentExamples}
       return { success: false, error: 'correlation-budget-blocked (portfolio effective exposure over budget)' };
     }
 
+    // audit C: per-symbol tail watchdog——observe-only/recovery-check 唔開新倉;caution 降注 50%
+    try {
+      const twStatus = this.tailWatchdog.getStatus(normalizeSymbol(decision.symbol ?? ''));
+      if (!twStatus.tradeable) {
+        return { success: false, error: `tail-watchdog-${twStatus.state} (${decision.symbol} tail-risk locked)` };
+      }
+      if (twStatus.sizeMultiplier < 1 && decision.positionSizePct != null) {
+        decision.positionSizePct = Math.max(0.001, decision.positionSizePct * twStatus.sizeMultiplier);
+        log.info(`🛡️ [tail-watchdog] ${decision.symbol} caution → size ×${twStatus.sizeMultiplier}(降注防尾部)`);
+      }
+    } catch { /* non-fatal */ }
+
     // v2.0.822: Analysis mode — do NOT place orders. The consensus has already
     // been expanded into a per-asset matrix and written to Supabase; the user's
     // client reads the matrix and decides execution. Return success so the
@@ -7537,6 +7565,8 @@ ${recentExamples}
         return false;
       }
       const trade = this.portfolio.closePosition(sym, closePrice, closeReason);
+      // audit C: paper close 都餵 tail watchdog(real 由 L3196 餵)
+      try { if (trade && Number.isFinite(trade.pnlPct)) this.tailWatchdog.consumePnl(sym, trade.pnlPct); } catch { /* non-fatal */ }
       // v2.0.870-P80: bStocks 交易機制已全面隱藏——移除 maybeSwapBStock 呼叫
       return !!trade;
     }
@@ -16624,6 +16654,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       fs.writeFileSync(olrTmp, this.olrEngine.save(), 'utf-8');
       fs.renameSync(olrTmp, olrFinal);
       // Save shadow trade state
+      // audit C: per-symbol tail watchdog 持久化(重啟保持風險狀態)
+      try {
+        const twPath = path.join(dir, 'tail-watchdog.json');
+        fs.writeFileSync(twPath + '.tmp', this.tailWatchdog.save(), 'utf-8');
+        fs.renameSync(twPath + '.tmp', twPath);
+      } catch (err) { log.warn(`[tail-watchdog-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`); }
       const shadowTmp = path.join(dir, 'shadow-state.json.tmp');
       const shadowFinal = path.join(dir, 'shadow-state.json');
       fs.writeFileSync(shadowTmp, this.shadowEngine.save(), 'utf-8');
