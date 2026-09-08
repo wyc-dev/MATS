@@ -180,17 +180,16 @@ export function bootstrapPValue(
   const centered = returns.map(r => r - observed);
   // expected block size: ~√n (Politis rule of thumb)
   const expectedBlockSize = Math.max(1, Math.floor(Math.sqrt(returns.length)));
-  let countUpper = 0;
+  let countExtreme = 0;
   for (let i = 0; i < iterations; i++) {
     // P0-③(audit #3): 真正 stationary bootstrap(Politis & Romano 1994)——block 長度隨機
     // 幾何分佈(期望 ≈ √n),唔係固定 block length(舊 code 註解宣稱 stationary 實際唔係)。
     const sample = stationaryBootstrapSample(centered, expectedBlockSize);
-    if (meanOf(sample) >= observed) countUpper++;
+    // 標準雙尾: P(|bootstrap mean| ≥ |observed|)——observed=0 → p=1(無法拒絕 H0);
+    // 正/負收益鏡像對稱(舊單尾: 正 p=0 / 負 p=1)。
+    if (Math.abs(meanOf(sample)) >= Math.abs(observed)) countExtreme++;
   }
-  // P0-③(audit #3): 雙尾——舊 code 只計右尾(正收益 p=0 / 鏡像負收益 p=1,單尾誤差)。
-  // 雙尾 p = 2·min(右尾, 左尾),clamp [0,1]——正/負收益鏡像對稱。
-  const pUpper = countUpper / iterations;
-  return Math.max(0, Math.min(1, 2 * Math.min(pUpper, 1 - pUpper)));
+  return Math.max(0, Math.min(1, countExtreme / iterations));
 }
 
 /** Deflated Sharpe Ratio: adjusts the observed Sharpe for multiple testing.
