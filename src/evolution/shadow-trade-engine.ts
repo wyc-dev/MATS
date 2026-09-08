@@ -38,6 +38,8 @@ export interface ShadowPosition {
   openTimestamp: number;
   /** Feature snapshot at entry time */
   features: Record<string, number>;
+    /** P9-shadow-entry-snapshot: dedicated entry rationale (self WR/EV) — never in features dict (OLR input stable). */
+    entryStats?: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number };
   /** Current status — 'open' until SL/TP hit */
   status: 'open' | 'win' | 'loss';
   /** Cycle when resolved (SL/TP hit) */
@@ -305,7 +307,9 @@ export class ShadowTradeEngine {
    *          and short WR，兩邊都 <50% → 震蕩市 → mean-reversion（唔係
    *          trend-following）。呢個係「雙向確認」嘅 regime signal。
    *  ═══════════════════════════════════════════════════════════════════ */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; resolvedAt: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number }> = [];
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; resolvedAt: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number;
+    /** v2.0.873-P9-shadow-entry-snapshot: entry-time rationale snapshot (off-chain validation only — no decision reads these). */
+    sentimentAtEntry?: number; sentimentConvictionAtEntry?: number; fundingRateAtEntry?: number; volatilityAtEntry?: number; srDistanceBpsAtEntry?: number; obImbalanceAtEntry?: number; volumeRatioAtEntry?: number; /** self-referential rationale at open */ entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number; }> = [];
 
   /**
    * v2.0.870-EMR: 持久化 per-symbol×side 累計統計——唔依賴 recentResults 緩衝區
@@ -557,6 +561,7 @@ export class ShadowTradeEngine {
       this.positions.push({
         id: longId,
         symbol: sym,
+        entryStats: this.snapshotSelfStats(sym, 'buy'),
         side: 'buy',
         entryPrice,
         stopLossPrice: longSL,
@@ -584,6 +589,7 @@ export class ShadowTradeEngine {
       this.positions.push({
         id: shortId,
         symbol: sym,
+        entryStats: this.snapshotSelfStats(sym, 'sell'),
         side: 'sell',
         entryPrice,
         stopLossPrice: shortSL,
@@ -682,6 +688,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
+        entryStats: this.snapshotSelfStats(sym, side),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -784,6 +791,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
+        entryStats: this.snapshotSelfStats(sym, side),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -861,6 +869,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
+        entryStats: this.snapshotSelfStats(sym, side),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -987,6 +996,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
+        entryStats: this.snapshotSelfStats(sym, side),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -1184,7 +1194,7 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...(pos.entryStats ?? {}) });
         this.capRecentResults(200);
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
@@ -1253,7 +1263,7 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features) });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...(pos.entryStats ?? {}) });
         this.capRecentResults(200);
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
@@ -1484,6 +1494,44 @@ export class ShadowTradeEngine {
       recentResults: recent.filter((r): r is NonNullable<typeof r> => !!r && typeof r === 'object').map(r => ({ symbol: r.symbol, side: r.side, outcome: r.outcome, holdCycles: r.holdCycles })),
     };
   }
+
+  /**
+   * P9-shadow-entry-snapshot: snapshot the entry-time rationale keys from the
+   * (immutable) entry features dict into the resolved record. WHITELIST-only,
+   * read-only on `f` — the features dict is NEVER mutated here, so OLR input
+   * dimensions and every downstream consumer are untouched. Any key absent at
+   * entry is simply omitted (no undefined pollution).
+   */
+  private snapshotEntryFeatures(f: Record<string, number> | undefined): Record<string, number | undefined> {
+    if (!f || typeof f !== 'object') return {};
+    const out: Record<string, number> = {};
+    const pick = (k: string, outKey: string) => {
+      if (Number.isFinite(f[k])) out[outKey] = f[k] as number; // omit undefined — no pollution
+    };
+    pick('sentiment', 'sentimentAtEntry');
+    pick('sentimentConviction', 'sentimentConvictionAtEntry');
+    pick('fundingRate', 'fundingRateAtEntry');
+    pick('volatility', 'volatilityAtEntry');
+    pick('srDistanceBps', 'srDistanceBpsAtEntry');
+    pick('obImbalance', 'obImbalanceAtEntry');
+    pick('volumeRatio', 'volumeRatioAtEntry');
+    return out;
+  }
+
+  /**
+   * P9-shadow-entry-snapshot: snapshot the CURRENT per-symbol×side shadow WR /
+   * EV at open time (self-referential rationale). Stored on the position as a
+   * dedicated field — NEVER injected into the features dict (OLR input) — so no
+   * decision consumer is affected. Skip if sample < 5 (too thin to be meaningful).
+   */
+  private snapshotSelfStats(sym: string, side: 'buy' | 'sell'): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } {
+    const cell = this.statsBySymbolSide.get(`${normalizeSymbol(sym)}|${side}`);
+    if (!cell) return {};
+    const n = cell.wins + cell.losses;
+    if (n < 5) return {};
+    return { entryShadowWRAtOpen: cell.wins / n, entryShadowNAtOpen: Math.round(n), entryShadowEVAtOpen: cell.totalPnlPct };
+  }
+
 
   /** P29-S1: 由 entry features 提取入場時量標籤(持久化到 recentResults)。
    *  冇量維度(歷史/舊版)→ 'unknown'(唔准假扮 normal,否則污染正常桶)。 */
