@@ -303,6 +303,7 @@ import { canOpenWithReserve } from './risk/correlation-budget.ts';
 import { shouldBlockStrongUpSell, shouldDiscountAntiTrend, momentumBiasOf, strongTrendConfig } from './risk/strong-trend-guard.ts';
 import { CalibrationWatchdog } from './risk/calibration-watchdog.ts';
 import { checkPendingValidations, defaultPendingRules } from './research/pending-scheduler.ts';
+import { evaluateShadowCandidate, shadowCandidateConfig } from './research/shadow-candidate.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -1557,6 +1558,22 @@ class MATSSystem {
           } else {
             log.info(`⏰ [pending-validation] 無到期驗證（持續累積中）`);
           }
+          // P5(主神 2026-09-08): Shadow 樣本門檻 gate——shadow 樣本夠+有分辨特徵 → 候選就緒。
+          // (real 唔卡硬門檻——只等 shadow 過關先升觀察)
+          try {
+            const evFile = path.join(process.cwd(), 'data/evolution/shadow-events.jsonl');
+            if (fs.existsSync(evFile)) {
+              const ev: Array<Record<string, unknown>> = [];
+              for (const line of fs.readFileSync(evFile, 'utf8').split('\n')) {
+                if (!line.trim()) continue;
+                try { const r = JSON.parse(line); if (r && typeof r.id === 'string') ev.push(r); } catch { /* skip */ }
+              }
+              const cand = evaluateShadowCandidate(ev, ['sentimentAtEntry','sentimentConvictionAtEntry','fundingRateAtEntry','volatilityAtEntry','srDistanceBpsAtEntry','obImbalanceAtEntry','volumeRatioAtEntry','entryShadowWRAtOpen','entryShadowPnlSumAtOpen'], { startedAt: Date.now() - 5 * 86_400_000 });
+              if (cand.verdict === 'PASS') log.warn(`🚀 [shadow-candidate] ${cand.reason}`);
+              else if (cand.verdict === 'FAIL') log.info(`📝 [shadow-candidate] ${cand.reason}`);
+              else log.info(`⏳ [shadow-candidate] ${cand.reason}`);
+            }
+          } catch { /* non-fatal */ }
         } catch { /* non-fatal */ }
         // v2.0.870-EMR: shadow backfill 移到 startup——重啟即有消化數據
         // （之前喺 cycle start 依賴 tradingMarkets 非空 + olrBackfillDone——可能從未執行）
