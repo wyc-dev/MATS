@@ -152,10 +152,14 @@ export class TailWatchdog {
   /** 每筆 REAL resolved pnl 餵入(production: real close 處 call) */
   consumePnl(symbol: string, pnlPct: number, ts = Date.now()): TailWatchStatus {
     // ATTACK-round: NaN/Infinity/string pnl 唔可以入 history(污染 windowAvg/tailCount)
-    if (!Number.isFinite(pnlPct) || !Number.isFinite(ts)) return statusOf(symbol, this.createOrGet(symbol)); // skip 污染
-    if (!tailWatchdogConfig.enabled) return statusOf(symbol, this.createOrGet(symbol));
+    if (!Number.isFinite(pnlPct)) return statusOf(symbol, this.createOrGet(symbol)); // skip 污染
     const w = this.createOrGet(symbol);
-    const next = advanceWatch(w, pnlPct, ts);
+    // ATTACK-round(時鐘跳變 DoS): ts 向前大跳(時鐘異常/注入)→ 之後正常 ts − cleanSinceEpoch
+    // 變負 → 回復判斷(ts − epoch >= recoveryMinMs)永遠唔達標 → symbol 永久觀察。monotonic clamp:
+    // ts 唔可以倒退(取 max(lastStateEpoch+1, ts)),防「後續正常時間被誤判為過去」。
+    const safeTs = Number.isFinite(ts) ? Math.max(ts, w.lastStateEpoch + 1, 1) : Math.max(w.lastStateEpoch + 1, Date.now());
+    if (!tailWatchdogConfig.enabled) return statusOf(symbol, w);
+    const next = advanceWatch(w, pnlPct, safeTs);
     this.watches.set(symbol, next);
     return statusOf(symbol, next);
   }
