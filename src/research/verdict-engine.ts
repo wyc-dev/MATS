@@ -55,6 +55,18 @@ export function evaluateExperiment(input: ExperimentInput): VerdictResult {
   if (!hasThreshold) {
     return { id, verdict: 'INSUFFICIENT', reason: '冇任何 pre-registered 閾值——唔可以判' };
   }
+  // ATTACK-round 4: 閾值本身可以被 garbage(improveRatio=NaN/0/Infinity、minSample=NaN、
+  // correlation=負)→ 比較全 skip → 誤判 PASS。所有數值閾值要 finite + 合理域。
+  const numOk = (v: number | undefined, lo: number, hi?: number): boolean =>
+    typeof v === 'number' && Number.isFinite(v) && v > lo && (hi === undefined || v <= hi);
+  const thresholdsOk =
+    (t.improveRatio == null || numOk(t.improveRatio, 0)) &&
+    (t.minSample == null || numOk(t.minSample, 0)) &&
+    (t.minCorrelation == null || numOk(t.minCorrelation, -1, 1)) &&
+    (t.tailDeteriorateRatio == null || numOk(t.tailDeteriorateRatio, 0));
+  if (!thresholdsOk) {
+    return { id, verdict: 'INSUFFICIENT', reason: 'pre-registered 閾值不可信(garbage)——唔可以判' };
+  }
 
   // 1) 樣本門檻(唔夠 → INSUFFICIENT,唔好判 PASS/FAIL——避免小樣本誤判)
   if (t.minSample != null && candidate.sample < t.minSample) {
