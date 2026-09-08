@@ -22,6 +22,38 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-postmortem-hardening（2026-09-08：九月八號賽後檢討 → 7 條永久原則 → P3-P6 落地）
+
+> 主神「九月八號蝕太多」賽後檢討 →「大升 trend 照樣出 SELL」時間框錯配診斷 → 7 條永久原則（AGENTS.md）→ P3-P6 production 落地。全量 4446 pass + 13 pre-existing。
+
+### 診斷（賽後檢討核心）
+- 09-08 蝕單（SNDK/SKHX/SILVER/BNB）+ 事後重播: 系統用 15m 短線訊號（微跌）執行做空,冇 4h 大框屏障——「4h 升勢中嘅 15m 回調」做空 = 接刀。**「momentumLong」其實係 4h 動量（pick(m4h,m1h)）**,唔係 1h——anti-trend 防禦尺度 = 4h。
+- 追高（BUY SNDK 15:40）: 系統 watchdog 冷啟動冇歷史（SNDK −18.2% 修復前 close 未入監控）→ 反手倉冇被鎖。
+- 負結果: 「升勢加權重（hold→BUY）」OOS −0.06%（系統 hold 有選擇性資訊——唔可以取消）;「極強動量(ml≥2%)追高」實證唔係高危（6 筆 avg +2.30% 最賺）——唔加 guard;「block」會誤殺 SNDK +5.2%（強跌勢 BUY）——soft 降注先係正解。
+
+### P3: TailWatchdog 歷史回填（88d6bd8→59a404c）
+startup 用 realTrades 歷史 replay seed（seededUntil checkpoint idempotent）——大蝕史（SNDK −18.2%）入監控 → 該 symbol 自動 caution/observe → 追高/反手倉被鎖（09-08 BUY SNDK −4.4% 唔會再發生）。
+
+### P4: 對稱 anti-trend 降注（59a404c）
+4h 強升勢（≥0.4%）時 SELL → size×0.5（防「大升 trend 照樣出 SELL」接刀）;4h 強跌勢（≤−0.4%）時 BUY ×0.5（防撈飛刀）。驗證: 12 筆 OOS 淨 +$0.80/全 +$0.64;誤傷 $0.20（soft 唔 block）。env ANTI_TREND_DISCOUNT 回滾。字段修正: decision.marketFeatures.momentumLong（唔係 entryMarketFeatures——observe 曾讀錯從未 live 觸發）。
+
+### P5: Shadow Candidate Gate（405f27e/f759518/e373808/4af9ccf——自適應 + 統計品質 + 攻擊加固）
+樣本門檻 apply Shadow 層（real 唔卡——主神「好難開單」修正）:
+- **自適應 ρ 門檻**: permutation shuffle null 99th percentile（splitmix32, 1000 iter）——樣本細→門檻高（唔誤 PASS）、大樣本→門檻低（更準）
+- **自適應 edge 門檻**: shuffle edge null 99th → max(0.3% floor, null99)
+- 兩段 ρ 穩定（前 60/後 40 同號 ≥0.10）· tail 不劣化（高特徵桶 worst ≥ 全體×1.5）· coverage ≥3 symbols
+- explore（99.5th + ≥2 特徵, 防 data-snooping）/ confirm（99th, 主神指定特徵）
+- **攻擊輪 5 漏洞**: iterations=1e9 → 10 億次 loop DoS（cap 2000）· featureSpec null → crash（→INSUFFICIENT）· 極端 pnl ±1e308 → edge null 爆（clamp ±1.0）· iterations 0/負 · pctile garbage
+- startup 自動評估 shadow-events.jsonl → PASS=候選就緒（🚀 醒目）/FAIL/INSUFFICIENT
+
+### P6: 飯碗保護（確認 + 測試鎖死）
+P4 降注對象（ml≤−0.4% & buy）實測 7 筆 ms 全 ≥0,同 mean-reversion 撈底（ms<0, 167 筆 +$21.00 系統最大飯碗）零重疊——+$21 完全無損,測試鎖死。
+
+### 攻擊輪 6（4af9ccf 後續）: shadow-candidate 周邊 5 向量零命中（symbol 注入/resolvedAt 垃圾/clamp 邊界/deterministic/1e5 效能）——驗證基建堅固。
+
+### 7 條永久原則（AGENTS.md, 已核實最終版）
+時間框錯配(4h) / 分辨力先係 alpha / 盲點要 prove 唔好 assume / Soft 優先 Block 最後 / 樣本門檻=Shadow 層 / 唔准誤傷飯碗 / 計劃→驗證→批→落地。
+
 ## v2.0.873-P9-audit-full-close（2026-09-08：audit 6 實證問題全收復 + OpenAI Upgrade ①②③ + 2 輪攻擊）
 
 > 背景: 外部 audit 報告 6 個實證問題(Shadow 報酬口徑/研究庫/backtest 可信度/Correlation Budget/冷啟動鎖利/Q-RL 隔離)+ 4 個盈利方向。本輪全數收復 + OpenAI「Research Acceleration」映射落地。**全量 4389 pass + 13 pre-existing,零 regression,tsc clean。**

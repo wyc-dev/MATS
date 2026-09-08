@@ -26,6 +26,20 @@
 
 ---
 
+## v2.0.873-P9-postmortem-hardening（2026-09-08）：九月八號賽後檢討 → P3-P6 落地 + 7 條永久原則
+
+**診斷**: 09-08 蝕單 = 「時間框錯配」——15m 短線訊號（微跌）執行做空,冇 4h 大框屏障（momentumLong 其實係 4h 動量——pick(m4h,m1h)）;追高 BUY SNDK = watchdog 冷啟動無歷史。
+
+**落地**:
+- `src/risk/tail-watchdog.ts`: P3 歷史回填（seedFromTrades, seededUntil idempotent）——大蝕史入監控 → 反手倉被鎖
+- `src/risk/strong-trend-guard.ts`: P4 對稱 anti-trend 降注（shouldDiscountAntiTrend: 4h 強升勢 SELL / 強跌勢 BUY ×0.5, soft）——讀 decision.marketFeatures.momentumLong
+- `src/research/shadow-candidate.ts`: P5 Shadow Candidate Gate（自適應）——permutation ρ/edge 門檻（splitmix32, 1000 iter, 99/99.5th）、兩段 ρ 穩定、tail、coverage ≥3、explore≥2 特徵、minEvents 統計力下限 50、pnl clamp ±1.0、iterations cap、featureSpec guard
+- P6: 飯碗保護確認（mean-reversion ms<0 BUY 與 P4 零重疊,測試鎖死）
+
+**流程**: shadow-events.jsonl → startup 自動評估 → PASS=候選就緒（等主神批先實盤 observe）→ real OOS 確認;real 唔卡硬門檻。
+
+**7 條永久原則**: 已寫入 AGENTS.md（時間框 4h / 分辨力 alpha / 盲點 prove / Soft 優先 / 樣本門檻=Shadow / 飯碗保護 / 計劃-驗證-批-落地）。
+
 ## v2.0.873-P9-audit-full-close（2026-09-08）：audit 6 實證問題收復 + 風險硬化三層 + 研究自動化 + OpenAI Upgrade ①②③
 
 **P0 止血**: OLR 入場預測器剔除 future data（mfe/mae/mfeToPnlRatio, 純函數 buildShadowTrainingFeatures substring 防守）· shadow 結算按首觸及 cycle 先後（decideShadowOutcome）· 研究庫四件套（save 全量/lastDrainedIndex 持久化/prune 游標同步/EventArchive append-only 冪等檔）· backtest-validation 可信度（雙尾 stationary bootstrap、peak=0 回報空間跌幅、WF-overfit 禁 edge）· 冷啟動鎖利 stale 假正根治（curPrice 無效→唔鎖）。
