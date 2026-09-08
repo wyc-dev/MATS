@@ -1164,21 +1164,9 @@ export class ShadowTradeEngine {
         //
         // We use the staleLearningWeight (0.3) to reduce the gradient
         // contribution, so stale labels don't dominate natural SL/TP outcomes.
-        const trainingFeaturesStale: Record<string, number> = {};
-        const allKeys = new Set([...Object.keys(pos.features), ...Object.keys(currentFeatures ?? {})]);
-        for (const key of allKeys) {
-          const entryVal = pos.features[key] ?? 0;
-          const resolutionVal = currentFeatures?.[key] ?? entryVal;
-          trainingFeaturesStale[key] = 0.3 * entryVal + 0.7 * resolutionVal;
-        }
-        trainingFeaturesStale['mfePct'] = pos.mfePct ?? 0;
-        trainingFeaturesStale['maePct'] = pos.maePct ?? 0;
-        const stalePnlPct = pos.side === 'buy'
-          ? (price - pos.entryPrice) / pos.entryPrice
-          : (pos.entryPrice - price) / pos.entryPrice;
-        trainingFeaturesStale['mfeToPnlRatio'] = (pos.mfePct ?? 0) > 0
-          ? ((pos.mfePct ?? 0) - stalePnlPct) / (pos.mfePct ?? 0)
-          : 0;
+        // P0-① (audit #1): 用純函數構建——mfe/mae/mfeToPnlRatio(future-only)一律剔除。
+        // 結算質素唔入「入場預測器」;保留喺 recentResults snapshot 畀事後歸因。
+        const trainingFeaturesStale = this.buildShadowTrainingFeatures(pos.features, currentFeatures);
 
         try {
           // v2.0.834: Aligned shadows use 'shadow' source; blind use 'shadow_blind'.
@@ -1223,33 +1211,20 @@ export class ShadowTradeEngine {
         // about the initial conditions. This prevents the OLR from learning
         // spurious correlations from stale features while still preserving
         // information about the full trade lifecycle.
-        const trainingFeatures: Record<string, number> = {};
-        const entryWeight = 0.3;
-        const resolutionWeight = 0.7;
-        const allKeys = new Set([...Object.keys(pos.features), ...Object.keys(currentFeatures ?? {})]);
-        for (const key of allKeys) {
-          const entryVal = pos.features[key] ?? 0;
-          const resolutionVal = currentFeatures?.[key] ?? entryVal;
-          trainingFeatures[key] = entryWeight * entryVal + resolutionWeight * resolutionVal;
-        }
-        // v2.0.720: Add MFE/MAE features to training features so OLR can learn
-        // from shadow trade exit quality. These are only known at resolution
-        // time (not entry), so they bypass the entry/resolution blend.
-        trainingFeatures['mfePct'] = pos.mfePct ?? 0;
-        trainingFeatures['maePct'] = pos.maePct ?? 0;
+        // P0-① (audit #1): 純函數構建(剔除 future-only keys)。resolution blend 保留
+        // (設計意圖: recency bias) 但 mfe/mae/mfeToPnlRatio 唔可以入「入場預測器」。
+        const trainingFeatures = this.buildShadowTrainingFeatures(pos.features, currentFeatures);
         const shadowPnlPct = pos.side === 'buy'
           ? (exitPrice - pos.entryPrice) / pos.entryPrice
           : (pos.entryPrice - exitPrice) / pos.entryPrice;
-        trainingFeatures['mfeToPnlRatio'] = (pos.mfePct ?? 0) > 0
-          ? ((pos.mfePct ?? 0) - shadowPnlPct) / (pos.mfePct ?? 0)
-          : 0;
         // v2.0.202: Log the feature composition for debugging — helps verify
         // that resolution-time features are actually being used and not just
         // falling back to stale entry features.
         if (currentFeatures) {
           const resolutionKeys = Object.keys(currentFeatures);
-          const overlapKeys = allKeys.size > 0 ? Array.from(allKeys).filter(k => currentFeatures[k] !== undefined && pos.features[k] !== undefined).length : 0;
-          log.debug(`[shadow] OLR training features: ${allKeys.size} total keys, ${resolutionKeys.length} from resolution, ${overlapKeys} overlapping — resolution weight=${resolutionWeight}`);
+          const entryKeys = Object.keys(pos.features ?? {});
+          const overlapKeys = entryKeys.filter(k => currentFeatures[k] !== undefined).length;
+          log.debug(`[shadow] OLR training features: ${entryKeys.length} entry keys, ${resolutionKeys.length} resolution keys, ${overlapKeys} overlapping — resolution weight=0.7`);
         }
 
         try {
@@ -1502,6 +1477,36 @@ export class ShadowTradeEngine {
    * dimensions and every downstream consumer are untouched. Any key absent at
    * entry is simply omitted (no undefined pollution).
    */
+  /**
+   * P0-① (audit #1, 2026-09-08): OLR 入場預測器訓練特徵構建——防守式剔除「future-only」keys。
+   *
+   * 問題（實錘）: 舊 code 喺 training features 加咗 mfePct/maePct/mfeToPnlRatio——
+   * 呢啲係「結算先知」（resolution-time）——OLR 被訓練去學「如果 MFE 大 → win」,
+   * 但 query（開倉預測）時呢啲 key 永遠缺席 → 訓練/推理特徵口徑錯位 + future leakage。
+   *
+   * 修復: 統一純函數,任何 mfe/mae 相關 key 一律唔准流入 OLR 訓練;
+   * query 有咩維度,training 就淨係用咩維度（一致口徑）。
+   * 結算質素（mfe/mae）保留喺 recentResults snapshot 畀「持倉管理/事後歸因」用,
+   * 唔入「入場預測器」。
+   */
+  private buildShadowTrainingFeatures(
+    entryFeatures: Record<string, number>,
+    resolutionFeatures: Record<string, number> | null | undefined,
+    opts: { entryWeight?: number; resolutionWeight?: number } = {},
+  ): Record<string, number> {
+    const ew = opts.entryWeight ?? 0.3;
+    const rw = opts.resolutionWeight ?? 0.7;
+    const out: Record<string, number> = {};
+    const keys = new Set([...(entryFeatures ? Object.keys(entryFeatures) : []), ...(resolutionFeatures ? Object.keys(resolutionFeatures) : [])]);
+    for (const key of keys) {
+      if (/(mfe|mae)/i.test(key) || key.toLowerCase().includes('mfetopnlratio')) continue; // future-only → 永久剔除(substring 防守: 特徵字典冇含 mfe/mae 嘅正常 key)
+      const entryVal = entryFeatures ? (entryFeatures[key] ?? 0) : 0;
+      const resolutionVal = resolutionFeatures ? (resolutionFeatures[key] ?? entryVal) : entryVal;
+      out[key] = ew * entryVal + rw * resolutionVal;
+    }
+    return out;
+  }
+
   private snapshotEntryFeatures(f: Record<string, number> | undefined): Record<string, number | undefined> {
     if (!f || typeof f !== 'object') return {};
     const out: Record<string, number> = {};
