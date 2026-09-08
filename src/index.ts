@@ -297,6 +297,7 @@ const exitPriceLockConfig = {
  *  See learning-weight.ts for the full decision table + v2.0.211 fix notes
  *  (system-decision closes now discounted regardless of profitability). */
 import { computeLearningWeight } from './evolution/learning-weight.ts';
+import { EventArchive } from './research/event-archive.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -585,6 +586,8 @@ class MATSSystem {
   private exitPriceLockCount = 0;
   /** P1(audit #4): correlation budget 硬風控狀態——exceeded 時 block 新開倉(組合層)。 */
   private _correlationBudgetExceeded = false;
+  /** P1(audit #2): shadow 研究事件長期歸檔(append-only, id 冪等)——recentResults 4h 窗以外嘅可累積研究資料庫。 */
+  private shadowResearchArchive: EventArchive | null = null;
   /** v2.0.862: last cycle we fed ui_snapshots (throttle — once per cycle). */
   private lastUiSnapshotCycle = -1;
   /** v2.0.863: cached K-line summary + data-quality score for the conviction gate
@@ -1483,6 +1486,7 @@ class MATSSystem {
       log.info('Step 3.10/8: Initializing OLR + Shadow Trade Engine...');
       this.olrEngine = new OLREngine();
       this.shadowEngine = new ShadowTradeEngine(this.olrEngine);
+      this.shadowResearchArchive = new EventArchive(path.join(process.env['MATS_DATA_DIR'] ?? 'data/evolution', 'shadow-events.jsonl'));
       // v2.0.219: Initialize advanced learning systems
       this.replayBuffer = new ReplayBuffer(this.olrEngine);
       this.bayesianOLR = new BayesianOLR(this.olrEngine);
@@ -16624,6 +16628,27 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
       const shadowFinal = path.join(dir, 'shadow-state.json');
       fs.writeFileSync(shadowTmp, this.shadowEngine.save(), 'utf-8');
       fs.renameSync(shadowTmp, shadowFinal);
+      // P1(audit #2): shadow 研究事件長期歸檔(append-only jsonl, id 冪等)。
+      // 只收白名單字段(防持久化污染);recentResults cap 200/4h 窗以外都留住。
+      try {
+        if (this.shadowResearchArchive) {
+          const recent = JSON.parse(this.shadowEngine.save()).recentResults ?? [];
+          const mapped: Array<{ id: string; symbol: string; side: string; outcome: string; pnlPct: number; resolvedAt: number; exitReason?: string; shadowType?: string; sentimentAtEntry?: number; sentimentConvictionAtEntry?: number; fundingRateAtEntry?: number; volatilityAtEntry?: number; srDistanceBpsAtEntry?: number; obImbalanceAtEntry?: number; volumeRatioAtEntry?: number; entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number }> = [];
+          for (const r of recent) {
+            if (!r || typeof r.id !== 'string') continue;
+            const rec: any = { id: `shadow-${r.id}`, symbol: r.symbol, side: r.side, outcome: r.outcome, pnlPct: Number.isFinite(r.pnlPct) ? r.pnlPct : 0, resolvedAt: Number.isFinite(r.resolvedAt) ? r.resolvedAt : Date.now() };
+            const pickN = (k: string) => (Number.isFinite(r[k]) ? r[k] : undefined);
+            rec.exitReason = typeof r.exitReason === 'string' ? r.exitReason : undefined;
+            rec.shadowType = typeof r.shadowType === 'string' ? r.shadowType : undefined;
+            for (const k of ['sentimentAtEntry','sentimentConvictionAtEntry','fundingRateAtEntry','volatilityAtEntry','srDistanceBpsAtEntry','obImbalanceAtEntry','volumeRatioAtEntry','entryShadowWRAtOpen','entryShadowNAtOpen','entryShadowPnlSumAtOpen']) { const v = pickN(k); if (v !== undefined) rec[k] = v; }
+            mapped.push(rec);
+          }
+          const n = this.shadowResearchArchive.append(mapped as any);
+          if (n > 0) log.info(`[research] archived ${n} shadow events (total ${this.shadowResearchArchive.count()})`);
+        }
+      } catch (err) {
+        log.warn(`[research-archive] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`);
+      }
       // v2.0.219: Save advanced learning system states
       const saveAdv = (name: string, data: string) => {
         const p = path.join(dir, name);
