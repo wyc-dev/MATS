@@ -22,6 +22,25 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-live-loss-review（2026-09-08——主神貼實盤 4 筆大蝕「???」全檢討）
+
+**四筆蝕單（全部 09-07 深夜→09-08, real HL 實盤）**:
+
+| 單 | side/symbol | pnl | open→close | entry→exit | closeReason | 特徵 |
+|:--|:--|:--|:--|:--|:--|:--|
+| 1 | SELL SNDK | **−18.2%** (lev10) | 09-07 23:07 → 09-08 00:08 (61m) | 1777.3 → 1809.6 (+1.82%) | sl_tp | MAE −8.4% 先贏 → 反轉爆升;shadowWR=0;OLR 0.495;「Sandisk Has Peaked」news |
+| 2 | SELL SKHX | **−8.0%** (lev5) | 09-07 23:03 → 09-08 00:12 (69m) | 1326.3 → 1347.5 (+1.60%) | sl_tp | MAE 0.0%(從未贏)→ gap 掃走;shadowWR=0;OLR 0.535 |
+| 3 | SELL SILVER | **−11.7%** (lev10) | 09-07 16:40 → 09-08 04:16 | 66.286 → 67.06 (+1.17%) | **exit_price_lock** | ⚠️ **鎖利機制蝕 11.7% 離場——語義 anomaly（exit_price_lock 應該鎖利,唔應該喺大蝕離場;SL 路徑標記或鎖利計錯,待查）** |
+| 4 | BUY SILVER | **−0.2%** | 09-08 04:43 → 04:46 (3m) | 67.003 → 67.018 | exit_price_lock | 反手試單,3 分鐘即平,細蝕 |
+
+**市場動量調查（HL 1h candle, 09-07 22:00 → 09-08 04:00 UTC 累計）**:
+- xyz:SKHX **+4.88%**（單小時 +3.36%@00:00、+1.59%@03:00）、xyz:SNDK +1.42%、xyz:SILVER +1.19%（趨勢性陰升,14:00 起）——但 **BTC −0.33% / BNB +0.49% 冇爆** → **唔係 macro-wide pump,係 xyz: 單票事件（SNDK/SKHX news 出盡反彈）+ 白銀趨勢**
+- 系統開倉時刻 = 爆升起點——「news bearish + 已跌 + TRENDING_BEAR → 做空」喺短線係接刀（利空出盡反彈）
+
+**背景對照**: 同一時段 **SELL DRAM +15.1% / +7.4%（09-08 05:05→06:05、07:43→08:07）**——SELL 唔係全蝕,係「pump 緊嘅 symbol（SNDK/SKHX/SILVER）全數中伏」= symbol 特定事件風險,唔係方向機制壞。
+
+**裁決**: 四筆皆乾淨樣本（entry-snapshot 齊全）、機制正常（gate/learning/記錄管道 OK）——**唔係 code bug**;係「news 時序陷阱 + 白銀趨勢 + shadowWR=0 盲點（零支持照開倉）」;exit_price_lock 語義 anomaly 另行追查。全部成為 **P2（entry-snapshot 特徵預測力）驗證材料**。
+
 ## v2.0.873-P9-shadow-entry-snapshot（主神 2026-09-08——「entry 理據加入 shadow 驗證」計劃落地）
 
 **記錄層（零決策邏輯改動）**: shadow 開倉時 snapshot entry 理據入 resolved record:

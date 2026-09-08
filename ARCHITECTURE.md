@@ -26,6 +26,19 @@
 
 ---
 
+## v2.0.873-P9-live-loss-review（2026-09-08）：實盤四筆大蝕全檢討（主神貼單「???」）
+
+**四筆蝕單（real HL,全 09-07 深夜→09-08）**: SELL SNDK −18.2%（sl_tp,1h 內 price +1.82%,MAE −8.4% 先贏後反轉,shadowWR=0,「Sandisk Has Peaked」news bearish 做空）· SELL SKHX −8.0%（sl_tp,MAE 0.0% 純 gap 掃走,shadowWR=0）· SELL SILVER −11.7%（**closeReason=exit_price_lock 於大蝕離場——語義 anomaly 待查**）· BUY SILVER −0.2%（3m 反手試單）。
+
+**市場動量調查（HL 1h candle, 09-07 22:00→09-08 04:00 UTC）**:
+- xyz:SKHX +4.88%（單小時 +3.36%/00:00）、xyz:SNDK +1.42%、xyz:SILVER +1.19%（趨勢陰升）; **BTC −0.33% / BNB +0.49% 冇爆** → **symbol 特定事件 + 白銀趨勢,唔係宏觀 pump**
+- 系統開倉時刻 = 爆升起點;「news bearish + 已跌 → 做空」短線接刀（利空出盡反彈）;對照 SELL DRAM +15.1%/+7.4% = SELL 唔係全蝕,係「pump 中 symbol 全數中伏」
+
+**裁決**: 機制正常（gate/learning/記錄管道 OK）、四筆皆乾淨 entry-snapshot 樣本 → 唔係 code bug;係 news 時序陷阱 + shadowWR=0 盲點（零支持照開）+ exit_price_lock 標記 anomaly（SL 路徑或鎖利計錯,待查）。全部成為 **P2（entry-snapshot 特徵預測力）驗證材料**。
+
+### 記錄層配套（P9-shadow-entry-snapshot,同日落地）
+shadow 開倉 snapshot「entry 理據」（環境特徵白名單 `snapshotEntryFeatures` + 開倉時自我 WR/EV `snapshotSelfStats`,樣本≥5）——**dedicated fields**（Position.entryStats / recentResults.*AtEntry）,features dict 唔郁（OLR 輸入維度穩定）,6 開倉點全接駁,resolve 入 recentResults 持久化。目的: shadow 每 cycle 開倉 → 幾日內累積「entry 理據 + 結果」配對,離線驗證「邊個特徵預測獲利」（sizing FAIL 後嘅出路）。+7 測試,4280 pass + 13 pre-existing,tsc clean。
+
 ## v2.0.873-P9-core-fixes（2026-09-05）：首輪四個核心問題全修（audit 離線反例全重現）
 
 **Audit 核查**: convLedger 結案 ✓; 四個核心問題——**全部驗證屬實並全修**（831 §29）:
