@@ -26,6 +26,20 @@
 
 ---
 
+## v2.0.873-P9-audit-full-close（2026-09-08）：audit 6 實證問題收復 + 風險硬化三層 + 研究自動化 + OpenAI Upgrade ①②③
+
+**P0 止血**: OLR 入場預測器剔除 future data（mfe/mae/mfeToPnlRatio, 純函數 buildShadowTrainingFeatures substring 防守）· shadow 結算按首觸及 cycle 先後（decideShadowOutcome）· 研究庫四件套（save 全量/lastDrainedIndex 持久化/prune 游標同步/EventArchive append-only 冪等檔）· backtest-validation 可信度（雙尾 stationary bootstrap、peak=0 回報空間跌幅、WF-overfit 禁 edge）· 冷啟動鎖利 stale 假正根治（curPrice 無效→唔鎖）。
+
+**風險硬化三層（Production）**:
+- `src/risk/correlation-budget.ts`: #4 硬閘（notional 修正 xyz: 完整名 實盤計入）+ 原子預留（canOpenWithReserve: 已持倉 effective + 待成交訂單 + 跳空 buffer ≤ budget）· `computeGapBufferPct`(gap p95 floor 0.3%)
+- `src/risk/tail-watchdog.ts`: per-symbol 尾部事件監控（時間窗+筆數窗, 單筆嚴重尾直接 caution）——狀態機 normal→caution(×0.5)→observe-only→recovery(48h)——實盤 close 餵 pnl, executeTrade 檢查
+- `src/risk/calibration-watchdog.ts`: 模型信心校準——OVER-confidence(bias>+15pp)降注×0.5;UNDER-confidence 只記錄（真實: OLR 系統性低估 20-26pp）
+- `QRL_MASTER_ENABLED`: Q-RL 完全隔離開關（gate/lean/探索/學習 5 消費點 guard）
+
+**研究自動化（OpenAI upgrade）**: `src/research/verdict-engine.ts`（pre-registered 自動判 verdict——garbage 輸入 INSUFFICIENT 唔准扮 PASS）+ `src/research/pending-scheduler.ts`（startup 自動檢查 P2 樣本到期→提醒）+ `src/research/event-archive.ts`（長期研究事件檔）。
+
+**負結果（分辨力先係 alpha）**: Challenger B NetEV 分層 / OLR 校準（base∝pwin 唔成立, 20 筆 ledger 實錘）/ sizing 放大 / conviction 分級 / 校準信心——5 輪 FAIL 阻止誤導性生產改動;已證明冇 alpha 組件全部停用;6 soft gates 為候選（GOT 收集中, 2-4 週 deadweight 自動裁決）。
+
 ## v2.0.873-P9-live-loss-review（2026-09-08）：實盤四筆大蝕全檢討（主神貼單「???」）
 
 **四筆蝕單（real HL,全 09-07 深夜→09-08）**: SELL SNDK −18.2%（sl_tp,1h 內 price +1.82%,MAE −8.4% 先贏後反轉,shadowWR=0,「Sandisk Has Peaked」news bearish 做空）· SELL SKHX −8.0%（sl_tp,MAE 0.0% 純 gap 掃走,shadowWR=0）· SELL SILVER −11.7%（**closeReason=exit_price_lock 於大蝕離場——語義 anomaly 待查**）· BUY SILVER −0.2%（3m 反手試單）。
