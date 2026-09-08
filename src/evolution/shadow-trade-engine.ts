@@ -39,7 +39,7 @@ export interface ShadowPosition {
   /** Feature snapshot at entry time */
   features: Record<string, number>;
     /** P9-shadow-entry-snapshot: dedicated entry rationale (self WR/EV) — never in features dict (OLR input stable). */
-    entryStats?: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number };
+    entryStats?: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number };
   /** Current status — 'open' until SL/TP hit */
   status: 'open' | 'win' | 'loss';
   /** Cycle when resolved (SL/TP hit) */
@@ -309,7 +309,7 @@ export class ShadowTradeEngine {
    *  ═══════════════════════════════════════════════════════════════════ */
   private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; resolvedAt: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number;
     /** v2.0.873-P9-shadow-entry-snapshot: entry-time rationale snapshot (off-chain validation only — no decision reads these). */
-    sentimentAtEntry?: number; sentimentConvictionAtEntry?: number; fundingRateAtEntry?: number; volatilityAtEntry?: number; srDistanceBpsAtEntry?: number; obImbalanceAtEntry?: number; volumeRatioAtEntry?: number; /** self-referential rationale at open */ entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number; }> = [];
+    sentimentAtEntry?: number; sentimentConvictionAtEntry?: number; fundingRateAtEntry?: number; volatilityAtEntry?: number; srDistanceBpsAtEntry?: number; obImbalanceAtEntry?: number; volumeRatioAtEntry?: number; /** self-referential rationale at open */ entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; /** decayed cumulative margin-sum(唔係 per-trade EV)——研究用 n+sum 自行折算 */ entryShadowPnlSumAtOpen?: number; }> = [];
 
   /**
    * v2.0.870-EMR: 持久化 per-symbol×side 累計統計——唔依賴 recentResults 緩衝區
@@ -1526,7 +1526,7 @@ export class ShadowTradeEngine {
    * dedicated field — NEVER injected into the features dict (OLR input) — so no
    * decision consumer is affected. Skip if sample < 5 (too thin to be meaningful).
    */
-  private snapshotSelfStats(sym: string, side: 'buy' | 'sell'): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } {
+  private snapshotSelfStats(sym: string, side: 'buy' | 'sell'): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } {
     const cell = this.statsBySymbolSide.get(`${normalizeSymbol(sym)}|${side}`);
     // ATTACK-round: state-injection guard — NaN/negative/infinite cell must NOT
     // produce a poisoned record (NaN WR / negative n / 1e308 EV).
@@ -1534,12 +1534,13 @@ export class ShadowTradeEngine {
     const n = cell.wins + cell.losses;
     // n 本身都要 finite: 1e308+1e308 = Infinity(Number.MAX_VALUE 爆)——cap 1e9(統計不可能超)
     if (!Number.isFinite(n) || n < 5 || n > 1e9) return {};
-    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } = {
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } = {
       entryShadowWRAtOpen: cell.wins / n,
       entryShadowNAtOpen: Math.round(n),
     };
     if (Number.isFinite(cell.totalPnlPct)) {
-      out.entryShadowEVAtOpen = Math.min(Math.max(cell.totalPnlPct, -100), 100); // clamp — 1e308 唔准入
+      // 衰減後累計 margin sum(decayed)——唔係 per-trade EV;研究請用 n+sum 折算
+      out.entryShadowPnlSumAtOpen = Math.min(Math.max(cell.totalPnlPct, -100), 100); // clamp
     }
     return out;
   }
@@ -1549,18 +1550,18 @@ export class ShadowTradeEngine {
    * 'banana'/1e308）唔可以直接 spread 入 recentResults（string spread 會產生數字 key 污染）。
    * 白名單抽 3 個 field + finite 檢查 + clamp。治本: 寫入前 sanitize。
    */
-  private safeEntryStats(s: unknown): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } {
+  private safeEntryStats(s: unknown): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } {
     if (!s || typeof s !== 'object' || Array.isArray(s)) return {};
-    const e = s as { entryShadowWRAtOpen?: unknown; entryShadowNAtOpen?: unknown; entryShadowEVAtOpen?: unknown };
-    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowEVAtOpen?: number } = {};
+    const e = s as { entryShadowWRAtOpen?: unknown; entryShadowNAtOpen?: unknown; entryShadowPnlSumAtOpen?: unknown };
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } = {};
     if (Number.isFinite(e.entryShadowWRAtOpen) && (e.entryShadowWRAtOpen as number) >= 0 && (e.entryShadowWRAtOpen as number) <= 1) {
       out.entryShadowWRAtOpen = e.entryShadowWRAtOpen as number;
     }
     if (Number.isFinite(e.entryShadowNAtOpen) && (e.entryShadowNAtOpen as number) > 0 && (e.entryShadowNAtOpen as number) < 1e9) {
       out.entryShadowNAtOpen = Math.round(e.entryShadowNAtOpen as number);
     }
-    if (Number.isFinite(e.entryShadowEVAtOpen)) {
-      out.entryShadowEVAtOpen = Math.min(Math.max(e.entryShadowEVAtOpen as number, -100), 100);
+    if (Number.isFinite(e.entryShadowPnlSumAtOpen)) {
+      out.entryShadowPnlSumAtOpen = Math.min(Math.max(e.entryShadowPnlSumAtOpen as number, -100), 100);
     }
     return out;
   }
