@@ -299,6 +299,7 @@ const exitPriceLockConfig = {
 import { computeLearningWeight } from './evolution/learning-weight.ts';
 import { EventArchive } from './research/event-archive.ts';
 import { TailWatchdog } from './risk/tail-watchdog.ts';
+import { canOpenWithReserve } from './risk/correlation-budget.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -6960,6 +6961,35 @@ ${recentExamples}
     if (this._correlationBudgetExceeded) {
       return { success: false, error: 'correlation-budget-blocked (portfolio effective exposure over budget)' };
     }
+
+    // #4(2026-09-08) atomic reserve: 已持倉 effective + 待成交訂單 + 跳空 buffer ≤ budget 先准開
+    // (audit#4 追補: 唔可以淨計已成交持倉——resting 限價單成交會變倉位;跳空可穿 SL)
+    try {
+      const eq_ = this.portfolio.getPortfolio().totalEquity ?? 0;
+      const effNow = this.correlationBudget.generateReport(
+        this.portfolio.getOpenSymbols().map((sym) => {
+          const pos = this.portfolio.getPosition(sym);
+          if (!pos) return null;
+          return { symbol: sym, notional: (pos.currentPrice ?? 0) * (pos.quantity ?? 0), direction: pos.side === 'buy' ? 1 : -1 };
+        }).filter((p): p is { symbol: string; notional: number; direction: number } => p !== null) as any,
+        eq_,
+      ).effectiveExposure ?? 0;
+      let openOrderNotional = 0;
+      try {
+        const engine = this.tradingManager.getEngineForExchange('hyperliquid');
+        const orders = engine ? await engine.getOpenOrders() : [];
+        const markPx = this.marketState?.getState(normalizeSymbol(decision.symbol ?? ''))?.price ?? decision.entryPrice ?? 0;
+        openOrderNotional = (orders ?? []).reduce((sum: number, o: any) => sum + Math.max(0, Math.abs(Number(o?.sz ?? 0)) * (Number(o?.limitPx) > 0 ? Number(o.limitPx) : markPx)), 0);
+      } catch { /* orders fetch fail → 保守 0(唔 block) */ }
+      const newNotional = Math.max(0, (decision.positionSizePct ?? 0) * eq_);
+      // gap buffer: 通用保守 0.3% of 已持倉 notional(per-symbol 精確 gap 待 P2 歷史 cache 升級)
+      const gapReserve = effNow * 0.003;
+      const budgetLimit = eq_ * 1.5;
+      const reserve = canOpenWithReserve(effNow, openOrderNotional, gapReserve, budgetLimit, newNotional);
+      if (!reserve.allowed) {
+        return { success: false, error: `atomic-reserve-blocked (avail $${reserve.available.toFixed(0)} < need $${reserve.needed.toFixed(0)}; eff=${effNow.toFixed(0)} orders=${openOrderNotional.toFixed(0)} gap=${gapReserve.toFixed(0)})` };
+      }
+    } catch { /* non-fatal: reserve check 唔可以 crash 開倉 */ }
 
     // audit C: per-symbol tail watchdog——observe-only/recovery-check 唔開新倉;caution 降注 50%
     try {

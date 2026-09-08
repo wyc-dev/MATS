@@ -29,6 +29,38 @@ const DEFAULT_CORR_FOR_UNKNOWN = 0.50; // Default correlation for unknown pairs
  *  leveraged gross effective exposure — consistent with the paper engine's
  *  20%-of-balance margin cap at typical 5-10x leverage. */
 const MAX_EFFECTIVE_EXPOSURE = 1.50; // 150% of equity (correlation-adjusted)
+
+/** #4(2026-09-08): 跳空 buffer——歷史 daily close 之間嘅 gap(p95 percentile)。
+ *  保守 floor 0.3%(跳空穿 SL 嘅最低預留);樣本 <8 → default。純函數(可測)。 */
+export function computeGapBufferPct(closes: number[], pctile = 0.95): number {
+  if (!Array.isArray(closes) || closes.length < 10) return 0.003;
+  const gaps: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const prev = closes[i - 1];
+    if (prev === undefined || !Number.isFinite(prev) || prev <= 0) continue;
+    const g = Math.abs((closes[i] ?? 0) - prev) / prev;
+    if (Number.isFinite(g)) gaps.push(g);
+  }
+  if (gaps.length < 8) return 0.003;
+  gaps.sort((a, b) => a - b);
+  const idx = Math.min(gaps.length - 1, Math.floor(gaps.length * pctile));
+  return Math.max(0.003, gaps[idx] ?? 0.003);
+}
+
+/** #4(2026-09-08): 原子化風險預留——新倉要同時通過「已持倉有效曝險 + 待成交訂單
+ *  潛在曝險 + 跳空 buffer」後嘅剩餘預算先准開。
+ *  available = budget − effectiveNow − openOrderNotional − gapReserve
+ *  allowed   = available ≥ newNotional(原子化: 落單前確認齊位) */
+export function canOpenWithReserve(
+  effectiveNow: number,
+  openOrderNotional: number,
+  gapReserve: number,
+  budgetLimit: number,
+  newNotional: number,
+): { allowed: boolean; available: number; needed: number } {
+  const available = Math.max(0, budgetLimit - effectiveNow - openOrderNotional - gapReserve);
+  return { allowed: available >= newNotional, available, needed: newNotional };
+}
 const CACHE_TTL_MS = 86_400_000; // 24h
 
 // ─── Types ───
