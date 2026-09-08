@@ -3890,7 +3890,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     action: 'buy' | 'sell',
   ): number {
     try {
-      if (!qrlDirectionConfig.gateEnabled || !this.qrlTable) return 1.0;
+      if (!qrlDirectionConfig.masterEnabled || !qrlDirectionConfig.gateEnabled || !this.qrlTable) return 1.0;
       const features = this.lastCycleShadowContexts.get(normalizeSymbol(symbol))?.features;
       if (!features || Object.keys(features).length === 0) return 1.0;
       const cell = this.qrlTable.getCellExpectancy(features, action);
@@ -8015,8 +8015,7 @@ ${recentExamples}
           // ≈ 0.00008. The flag now survives restarts via q-rl-table.json.
           if (!this.qrlTable?.isBackfillDone()) {
             try {
-              this.qrlTable?.update(features, side, pnlPct);
-              qrlFed++;
+              if (qrlDirectionConfig.masterEnabled) { this.qrlTable?.update(features, side, pnlPct); qrlFed++; }
             } catch { /* non-critical */ }
           }
           // v2.0.865-fix: EV Filter backfill——用歷史 pnlPct(已含費)即刻有樣本
@@ -8488,7 +8487,7 @@ ${recentExamples}
       // 'NO directional claim' instead of extrapolating stale data.
       // Median is skew-robust (outlier rewards cannot masquerade as signal).
       try {
-        if (qrlDirectionConfig.leanEnabled && this.qrlTable) {
+        if (qrlDirectionConfig.masterEnabled && qrlDirectionConfig.leanEnabled && this.qrlTable) {
           const qrlLean = this.qrlTable.getDirectionLean(features, qrlDirectionConfig.minSamples);
           const fmtCell = (c: QRLExpectancy): string =>
             `Q=${(c.q * 100).toFixed(2)}% n=${c.visits}`
@@ -9386,7 +9385,7 @@ ${recentExamples}
           //      (regime-starved buckets make NO directional claim)
           //   3. no qrl shadow already open for this symbol+side+cycle
           try {
-            if (qrlDirectionConfig.leanEnabled && this.qrlTable) {
+            if (qrlDirectionConfig.masterEnabled && qrlDirectionConfig.leanEnabled && this.qrlTable) {
               const qrlCtx = this.lastCycleShadowContexts.get(mktNorm);
               const qrlFeatures = qrlCtx?.features && Object.keys(qrlCtx.features).length > 0
                 ? qrlCtx.features
@@ -10927,7 +10926,7 @@ ${recentExamples}
             // Compute Smart SL/TP using config defaults + S/R if available
             // v2.0.835: Q-RL ε-greedy action selection — may override LLM lean
             // to explore actions the LLM wouldn't choose. Cold-start (Q=0) → follow LLM.
-            const rlAction = this.qrlTable.selectAction(leanSide, features);
+            const rlAction = qrlDirectionConfig.masterEnabled ? this.qrlTable.selectAction(leanSide, features) : leanSide;
 
             const slPct = config.risk.stopLossPct;
             const tpPct = config.risk.takeProfitPct;
@@ -17325,7 +17324,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           })() : undefined,
           // v2.0.861: Q-RL Direction Signal — per-trading-symbol expectancy lean.
           qrlDirection: (() => {
-            if (!this.qrlTable || !qrlDirectionConfig.leanEnabled) return undefined;
+            if (!this.qrlTable || !qrlDirectionConfig.masterEnabled || !qrlDirectionConfig.leanEnabled) return undefined;
             try {
               const out: Array<Record<string, unknown>> = [];
               const syms = new Set<string>([

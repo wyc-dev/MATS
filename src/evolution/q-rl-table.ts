@@ -927,7 +927,18 @@ export function parseNumEnv(v: string | undefined, def: number): number {
   return Number.isFinite(n) ? n : def;
 }
 
+/** ═══ P1(audit #6): Q-RL 決策影響清單 + 完全隔離開關 ═══
+ * Q-RL 喺系統嘅全部消費點(停用 gate 唔等於隔離——lean/探索/學習仍然活躍):
+ *   1. gate      (index.ts:3893)  conviction multiplier    → gateEnabled(默認 OFF)
+ *   2. lean      (index.ts:8491, 9389, 17328) prompt/context 注入 → leanEnabled(默認 ON,已證偽僅背景)
+ *   3. 探索      (index.ts:10930) QRL ε-greedy selectAction 覆寫 LLM lean → masterEnabled
+ *   4. 學習回饋  (index.ts:8016 backfill, 9220-9223 live reward) → masterEnabled
+ *   5. 持久化    (q-rl-table.json save/load) 與開關無關(凍結保留,唔刪數據)
+ * QRL_MASTER_ENABLED=false → 全部消費點 no-op(完全隔離,gate/lean/探索/學習一次過停)。
+ */
 export const qrlDirectionConfig = {
+  /** P1(audit #6): master switch——false = Q-RL 完全隔離(所有消費點 no-op) */
+  masterEnabled: parseBoolEnv(process.env['QRL_MASTER_ENABLED'], true),
   /** 1.1: inject Q-RL expectancy block into Meta-Agent context */
   leanEnabled: parseBoolEnv(process.env['QRL_DIRECTION_LEAN_ENABLED'], true),
   /** 1.2: apply Q-RL expectancy conviction multiplier in the gate */
