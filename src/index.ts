@@ -300,6 +300,7 @@ import { computeLearningWeight } from './evolution/learning-weight.ts';
 import { EventArchive } from './research/event-archive.ts';
 import { TailWatchdog } from './risk/tail-watchdog.ts';
 import { canOpenWithReserve } from './risk/correlation-budget.ts';
+import { CalibrationWatchdog } from './risk/calibration-watchdog.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -592,6 +593,8 @@ class MATSSystem {
   private shadowResearchArchive: EventArchive | null = null;
   /** audit C production 版: per-symbol 尾部監控(real resolved pnl)。 */
   private tailWatchdog: TailWatchdog = new TailWatchdog();
+  /** Upgrade A(OpenAI confidence-monitoring): 模型信心校準監控——over-confidence 降注。 */
+  private calibrationWatchdog: CalibrationWatchdog = new CalibrationWatchdog();
   /** v2.0.862: last cycle we fed ui_snapshots (throttle — once per cycle). */
   private lastUiSnapshotCycle = -1;
   /** v2.0.863: cached K-line summary + data-quality score for the conviction gate
@@ -1528,6 +1531,11 @@ class MATSSystem {
         try {
           const twPath = path.join(process.cwd(), 'data/evolution/tail-watchdog.json');
           if (fs.existsSync(twPath)) this.tailWatchdog.load(fs.readFileSync(twPath, 'utf-8'));
+        } catch { /* non-fatal */ }
+        // Upgrade A: calibration watchdog 狀態還原
+        try {
+          const cwPath = path.join(process.cwd(), 'data/evolution/calibration-watchdog.json');
+          if (fs.existsSync(cwPath)) this.calibrationWatchdog.load(fs.readFileSync(cwPath, 'utf-8'));
         } catch { /* non-fatal */ }
         // v2.0.870-EMR: shadow backfill 移到 startup——重啟即有消化數據
         // （之前喺 cycle start 依賴 tradingMarkets 非空 + olrBackfillDone——可能從未執行）
@@ -7009,6 +7017,14 @@ ${recentExamples}
         decision.positionSizePct = Math.max(0.001, decision.positionSizePct * twStatus.sizeMultiplier);
         log.info(`🛡️ [tail-watchdog] ${decision.symbol} caution → size ×${twStatus.sizeMultiplier}(降注防尾部)`);
       }
+      // Upgrade A: calibration over-confidence 降注(同 TailWatchdog 並行——一個睇尾部一個睇校準)
+      try {
+        const calStatus = this.calibrationWatchdog.getStatus(normalizeSymbol(decision.symbol ?? ''));
+        if (calStatus.sizeMultiplier < 1 && decision.positionSizePct != null) {
+          decision.positionSizePct = Math.max(0.001, decision.positionSizePct * calStatus.sizeMultiplier);
+          log.info(`🎯 [calibration-watchdog] ${decision.symbol} over-confident(bias ${calStatus.biasPct.toFixed(1)}pp)→ size ×${calStatus.sizeMultiplier}(信心過高降注)`);
+        }
+      } catch { /* non-fatal */ }
     } catch { /* non-fatal */ }
 
     // v2.0.822: Analysis mode — do NOT place orders. The consensus has already
@@ -7604,7 +7620,14 @@ ${recentExamples}
       }
       const trade = this.portfolio.closePosition(sym, closePrice, closeReason);
       // audit C: paper close 都餵 tail watchdog(real 由 L3196 餵)
-      try { if (trade && Number.isFinite(trade.pnlPct)) this.tailWatchdog.consumePnl(sym, trade.pnlPct); } catch { /* non-fatal */ }
+      try {
+        if (trade && Number.isFinite(trade.pnlPct)) {
+          this.tailWatchdog.consumePnl(sym, trade.pnlPct);
+          // Upgrade A: calibration——用開倉時 OLR / pos entryOlrPWin(如果 pos 仲喺度就攞唔到,用 trade 有嘅)
+          const pWin = Number.isFinite(trade.entryOlrPWin) ? trade.entryOlrPWin : undefined;
+          if (pWin !== undefined) this.calibrationWatchdog.consume(sym, pWin, trade.pnlPct);
+        }
+      } catch { /* non-fatal */ }
       // v2.0.870-P80: bStocks 交易機制已全面隱藏——移除 maybeSwapBStock 呼叫
       return !!trade;
     }
@@ -16698,6 +16721,12 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         fs.writeFileSync(twPath + '.tmp', this.tailWatchdog.save(), 'utf-8');
         fs.renameSync(twPath + '.tmp', twPath);
       } catch (err) { log.warn(`[tail-watchdog-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`); }
+      // Upgrade A: calibration watchdog 持久化
+      try {
+        const cwPath = path.join(dir, 'calibration-watchdog.json');
+        fs.writeFileSync(cwPath + '.tmp', this.calibrationWatchdog.save(), 'utf-8');
+        fs.renameSync(cwPath + '.tmp', cwPath);
+      } catch (err) { log.warn(`[calibration-watchdog-save] failed (non-critical): ${err instanceof Error ? err.message : String(err)}`); }
       const shadowTmp = path.join(dir, 'shadow-state.json.tmp');
       const shadowFinal = path.join(dir, 'shadow-state.json');
       fs.writeFileSync(shadowTmp, this.shadowEngine.save(), 'utf-8');
