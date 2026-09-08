@@ -27,10 +27,16 @@ export const shadowCandidateConfig = {
   minAgeDays: Number(process.env['SHADOW_CAND_MIN_AGE_DAYS']) >= 0 ? Number(process.env['SHADOW_CAND_MIN_AGE_DAYS']) : 10,
   /** ρ 門檻 floor(自適應): permutation 99th percentile(>此值)為動態門檻;但唔可以低過此 floor(ρ<0.05 無實質意義) */
   minRhoFloor: Number(process.env['SHADOW_CAND_MIN_RHO']) >= 0 ? Number(process.env['SHADOW_CAND_MIN_RHO']) : 0.05,
-  /** permutation 迭代數(shuffle null distribution) */
-  permIterations: Math.max(100, Math.min(2000, Number(process.env['SHADOW_CAND_PERM_ITERS']) || 300)),
-  /** permutation null 嘅 percentile 門檻 */
+  /** permutation 迭代數(2026-09-08 A-D 改善: 300→1000——99th 需要 ~10 點喺 top 1%,300 次太少) */
+  permIterations: Math.max(500, Math.min(5000, Number(process.env['SHADOW_CAND_PERM_ITERS']) || 1000)),
+  /** confirm/單一特徵 permutation null percentile(α≈0.01) */
   permPctile: 0.99,
+  /** explore(多特徵掃描)permutation percentile(2026-09-08 D: 99.5th→family-wise α≈0.045)——防 data-snooping */
+  permPctileExplore: 0.995,
+  /** edge 自適應 floor(2026-09-08 C): edge_crit 唔可以低過此值(至少 cover 成本) */
+  minEdgeFloorPct: Number(process.env['SHADOW_CAND_MIN_EDGE_FLOOR']) >= 0 ? Number(process.env['SHADOW_CAND_MIN_EDGE_FLOOR']) : 0.3,
+  /** 舊 edge 門檻保留做「floor 之上嘅可選保守」(edge_crit = max(floor, null99, 呢個?))——用 max(floor, null99)即可,舊值唔再固定強制 */
+  minEdgePct_l2: Number(process.env['SHADOW_CAND_MIN_EDGE']) >= 0 ? Number(process.env['SHADOW_CAND_MIN_EDGE']) : 0.5,
   /** 平均 margin edge 門檻(%): 候選特徵對應嘅平均 pnl ≥ 此值 */
   minEdgePct: Number(process.env['SHADOW_CAND_MIN_EDGE']) >= 0 ? Number(process.env['SHADOW_CAND_MIN_EDGE']) : 0.5,
   /** 兩段穩定性(2026-09-08 改善): 前 60 / 後 40 段 ρ 要同號且都 ≥ 此值——防單段偶然 */
@@ -83,12 +89,26 @@ export function shadowFeatureRho(events: ShadowEventLike[], featureKey: string):
   return { rho: rankRho(pairs.map((p) => p[0]), pairs.map((p) => p[1])), n };
 }
 
-/** 自適應 ρ 門檻(2026-09-08 主神「動態/自適應」): shuffle pnl 嘅 null |ρ| 分佈 → 99th percentile。
+/** 高質素可重現 PRNG(splitmix32——2026-09-08 A 改善: LCG 低 bit 週期短,shuffle 唔夠隨機) */
+export function splitmix32(seed: number): () => number {
+  let s = (seed >>> 0) || 1;
+  return () => {
+    s = (s + 0x9e3779b9) >>> 0;
+    let z = s;
+    z = Math.imul(z ^ (z >>> 16), 0x21f0aaad);
+    z = Math.imul(z ^ (z >>> 15), 0x735a2d97);
+    z = z ^ (z >>> 15);
+    return (z >>> 0) / 4294967296;
+  };
+}
+
+/** 自適應 ρ 門檻(2026-09-08 主神「動態/自適應」+ A-D 改善): shuffle pnl 嘅 null |ρ| 分佈 → percentile(splitmix32, 1000 iter)。
  *  樣本細 → null 分佈闊 → 門檻高(唔會誤 PASS);樣本大 → 門檻低(更準)。
  *  返回 ρ_crit = max(floor, permNull)。 */
-export function permutationRhoThreshold(events: ShadowEventLike[], featureKey: string, iterations?: number): { rhoCrit: number; nullP99: number } {
+export function permutationRhoThreshold(events: ShadowEventLike[], featureKey: string, iterations?: number, pctile?: number): { rhoCrit: number; nullP99: number } {
   const cfg = shadowCandidateConfig;
   const its = iterations ?? cfg.permIterations;
+  const pct = pctile ?? cfg.permPctile;
   const pairs: Array<[number, number]> = [];
   for (const e of events) {
     const f = finiteOr(e[featureKey]);
@@ -98,21 +118,54 @@ export function permutationRhoThreshold(events: ShadowEventLike[], featureKey: s
   }
   if (pairs.length < 20) return { rhoCrit: cfg.minRhoFloor, nullP99: 0 };
   const pnls = pairs.map((x) => x[1]);
-  const nullRhos: number[] = [];
+  const feats = pairs.map((x) => x[0]);
   const n = pnls.length;
-  // 用固定 seed(可重現)shuffle——Fisher-Yates
-  let seed = 20260908;
-  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const nullRhos: number[] = [];
+  const rnd = splitmix32(20260908); // splitmix32(可重現高質素)——A 改善
+  const shuffled = pnls.slice();
   for (let it = 0; it < its; it++) {
-    // Fisher-Yates shuffle pnl
-    for (let i = n - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const tmp = pnls[i]!; pnls[i] = pnls[j]!; pnls[j] = tmp; }
-    nullRhos.push(Math.abs(rankRho(pairs.map((x) => x[0]), pnls.slice())));
-    // (shuffled pnls 已 in-place;用 rankRho(feats, pnls))
+    // Fisher-Yates shuffle pnl(in-place)
+    for (let i = n - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const tmp = shuffled[i]!; shuffled[i] = shuffled[j]!; shuffled[j] = tmp; }
+    nullRhos.push(Math.abs(rankRho(feats, shuffled)));
   }
   nullRhos.sort((a, b) => a - b);
-  const idx = Math.min(nullRhos.length - 1, Math.floor(nullRhos.length * cfg.permPctile));
+  const idx = Math.min(nullRhos.length - 1, Math.floor(nullRhos.length * pct));
   const nullP99 = nullRhos[idx] ?? 0;
   return { rhoCrit: Math.max(cfg.minRhoFloor, nullP99), nullP99 };
+}
+
+/** 自適應 edge 門檻(2026-09-08 C 改善): shuffle pnl 嘅 null edge 分佈(normalize) → percentile ——
+ *  edge_crit = max(minEdgeFloorPct, null99)——大樣本真 edge 高 → 門檻低;random → 門檻高(唔誤 PASS) */
+export function permutationEdgeThreshold(events: ShadowEventLike[], featureKey: string, iterations?: number): { edgeCritPct: number; nullP99: number } {
+  const cfg = shadowCandidateConfig;
+  const its = iterations ?? cfg.permIterations;
+  const pairs: Array<[number, number]> = [];
+  for (const e of events) {
+    const f = finiteOr(e[featureKey]);
+    const p = finiteOr(e.pnlPct);
+    if (f === undefined || p === undefined) continue;
+    pairs.push([f, p]);
+  }
+  if (pairs.length < 20) return { edgeCritPct: cfg.minEdgeFloorPct, nullP99: 0 };
+  const n = pairs.length;
+  const half = Math.floor(n / 2);
+  const feats = pairs.map((x) => x[0]);
+  const pnls = pairs.map((x) => x[1]);
+  const nullEdges: number[] = [];
+  const rnd = splitmix32(20260908 + 7);
+  const shuffled = pnls.slice();
+  for (let it = 0; it < its; it++) {
+    for (let i = n - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const tmp = shuffled[i]!; shuffled[i] = shuffled[j]!; shuffled[j] = tmp; }
+    // edge = 高半分 avg − 低半分 avg(用原 feats 排序次序)
+    const paired = feats.map((f, i) => ({ f, p: shuffled[i]! })).sort((a, b) => a.f - b.f);
+    const hi = paired.slice(half).reduce((s, x) => s + x.p, 0) / (n - half);
+    const lo = paired.slice(0, half).reduce((s, x) => s + x.p, 0) / half;
+    nullEdges.push((hi - lo) * 100);
+  }
+  nullEdges.sort((a, b) => a - b);
+  const idx = Math.min(nullEdges.length - 1, Math.floor(nullEdges.length * cfg.permPctile));
+  const null99 = nullEdges[idx] ?? 0;
+  return { edgeCritPct: Math.max(cfg.minEdgeFloorPct, null99), nullP99: null99 };
 }
 
 /** 兩段穩定性(2026-09-08 改善): 前 60/後 40 段 ρ——同號且都 ≥ threshold 先算 stable */
@@ -198,18 +251,21 @@ export function evaluateShadowCandidate(
   const isExplore = Array.isArray(featureSpec);
   const keys = isExplore ? (featureSpec as string[]) : [(featureSpec as { feature: string }).feature];
 
-  // 每個候選特徵: 自適應 ρ_crit(permutation)+ 兩段穩定 + edge + tail + coverage 全過 → 合格
+  // 每個候選特徵: 自適應 ρ_crit + 自適應 edge_crit(permutation, A-D 改善)+ 兩段 + tail + coverage
   const passed: Array<{ k: string; rho: number; edge: number }> = [];
   let rhoCrit = cfg.minRhoFloor;
   for (const k of keys) {
-    const perm = permutationRhoThreshold(events, k);
+    const pct = isExplore ? cfg.permPctileExplore : cfg.permPctile; // D: explore 用 99.5th
+    const perm = permutationRhoThreshold(events, k, undefined, pct);
     rhoCrit = Math.max(rhoCrit, perm.rhoCrit);
+    const edgePerm = permutationEdgeThreshold(events, k);
+    const edgeCrit = edgePerm.edgeCritPct;
     const seg = twoSegmentRho(events, k);
     const rho = shadowFeatureRho(events, k).rho;
     const { edgePct } = shadowFeatureEdge(events, k);
     const tail = featureTailCheck(events, k);
     const cov = featureCoverageSymbols(events, k);
-    if (seg.stable && Math.abs(rho) >= rhoCrit && edgePct >= cfg.minEdgePct && tail.ok && cov >= cfg.minCoverageSymbols) {
+    if (seg.stable && Math.abs(rho) >= rhoCrit && edgePct >= edgeCrit && tail.ok && cov >= cfg.minCoverageSymbols) {
       passed.push({ k, rho, edge: edgePct });
     }
   }
@@ -220,5 +276,5 @@ export function evaluateShadowCandidate(
     if (!best) return { verdict: 'FAIL', reason: '不合格(邊界)', n };
     return { verdict: 'PASS', reason: `候選就緒: "${best.k}" ρ=${best.rho.toFixed(3)} edge=${best.edge.toFixed(2)}% (${isExplore ? `explore ${passed.length} 特徵過關` : 'confirm 指定特徵'}——兩段穩定+tail+coverage 全過)`, bestFeature: best.k, bestRho: best.rho, bestEdgePct: best.edge, n, stable: true, coverageSymbols: featureCoverageSymbols(events, best.k) };
   }
-  return { verdict: 'FAIL', reason: `Shadow ${n} 筆無特徵過全部門檻(自適應 ρCrit=${rhoCrit.toFixed(3)}/兩段 ρ≥${cfg.minTwoSegmentRho}/edge≥${cfg.minEdgePct}%/tail/coverage≥${cfg.minCoverageSymbols})——記錄,唔做`, n };
+  return { verdict: 'FAIL', reason: `Shadow ${n} 筆無特徵過全部門檻(自適應 ρCrit=${rhoCrit.toFixed(3)}/兩段≥${cfg.minTwoSegmentRho}/edge 自適應/tail/coverage≥${cfg.minCoverageSymbols})——記錄,唔做`, n };
 }
