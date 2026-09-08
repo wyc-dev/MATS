@@ -1708,6 +1708,16 @@ class MATSSystem {
       // should not appear in paper trade list).
       this.portfolio.setOnExchangeClosedLearning((trade) => {
         this.onPositionClosedLearning(trade);
+        // TailWatchdog/Calibration 統一 real-close 出口(2026-09-08): 所有 exchange close
+        // 必經此 callback——之前分散喺 L3196 等,多入口漏咗 closeTrade-real/SL-TP reconcile
+        // 路徑(SNDK −18.2% 歷史冇入 watchdog → 反手 BUY 冇被鎖)。
+        try {
+          if (trade && typeof trade === 'object' && Number.isFinite(trade.pnlPct) && typeof trade.symbol === 'string') {
+            this.tailWatchdog.consumePnl(trade.symbol, trade.pnlPct);
+            const pWin: number | undefined = Number.isFinite(trade.entryOlrPWin) ? (trade.entryOlrPWin as number) : undefined;
+            if (pWin !== undefined) this.calibrationWatchdog.consume(trade.symbol, pWin, trade.pnlPct);
+          }
+        } catch { /* non-fatal */ }
       });
       // v2.0.33: Wire UI callback for exchange position closes — immediately
       // refresh cachedHLFills + pushToAPI() so the UI updates instantly
@@ -3221,14 +3231,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
                 if (closeRegime) this.portfolio.setCloseRegime(sym, closeRegime);
                 // Close the local mirror with the actual HL fill price + realized PnL
                 const closedTrade = this.portfolio.closeExchangePosition(sym, fill.price, fill.closedPnl);
-                // audit C: real close 餵 tail watchdog(pnlPct = closedPnl / margin)
-                try {
-                  if (closedTrade && Number.isFinite(closedTrade.pnlPct)) this.tailWatchdog.consumePnl(sym, closedTrade.pnlPct);
-                  else if (closedTrade && Number.isFinite(closedTrade.pnl) && Number.isFinite(closedTrade.entryPrice) && Number.isFinite(closedTrade.quantity) && (closedTrade.entryPrice * closedTrade.quantity) > 0 && Number.isFinite(closedTrade.leverage)) {
-                    const margin = closedTrade.entryPrice * closedTrade.quantity / Math.max(1, closedTrade.leverage);
-                    if (margin > 0) this.tailWatchdog.consumePnl(sym, closedTrade.pnl / margin);
-                  }
-                } catch { /* non-fatal */ }
+                // (watchdog/calibration consume 已統一喺 onExchangeClosedLearning callback——避免 double)
                 // v2.0.869-P3(主神 trade 缺失調查):onFills close 路徑——
                 // 之前冇 call recordTrade——trade 唔會寫入 Supabase——UI 冇顯示!
                 // 而家:close 後——call recordTrade(用 close 嘅 trade 資料)
@@ -7629,11 +7632,10 @@ ${recentExamples}
         return false;
       }
       const trade = this.portfolio.closePosition(sym, closePrice, closeReason);
-      // audit C: paper close 都餵 tail watchdog(real 由 L3196 餵)
+      // audit C: paper close 餵 watchdog(paper 唔經 exchange callback;real 統一喺 callback)
       try {
         if (trade && Number.isFinite(trade.pnlPct)) {
           this.tailWatchdog.consumePnl(sym, trade.pnlPct);
-          // Upgrade A: calibration——用開倉時 OLR / pos entryOlrPWin(如果 pos 仲喺度就攞唔到,用 trade 有嘅)
           const pWin = Number.isFinite(trade.entryOlrPWin) ? trade.entryOlrPWin : undefined;
           if (pWin !== undefined) this.calibrationWatchdog.consume(sym, pWin, trade.pnlPct);
         }
