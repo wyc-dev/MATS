@@ -51,6 +51,12 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **sizing/校準信心/分級 ❌**: 固定 10% margin(fee 31pp 侵蝕)、校準 OLR(ρ=0.051 無分辨度→盲升 margin 蝕 0.12x)、conviction 分級(信心無預測力)——**5 輪一致: 靜態調整冇用,分辨力先係 alpha**。
 - **20 筆 ledger pilot**: base mult 對 pwin 幾乎無關(0.23-0.39 對 pwin 0.15-0.67)→「校準 OLR 解鎖過度壓縮」機制性否定(pwin 唔主導 base 鏈)。
 
+### 追補(同日, 88d6bd8/ebc7910/383ccf6)
+- **real-close 統一管道(88d6bd8)**: 主神兩筆實盤(BUY SNDK −5.3% 追高 + SELL BNB −5.3% 高信心錯)暴露——real close 多入口(closeTrade-real/SL-TP reconcile),之前只喺 paper path+L3196 consume → SNDK −18.2% 歷史冇入 TailWatchdog → 反手追高 BUY SNDK 冇被鎖。**修復**: 統一喺 `onExchangeClosedLearning` callback(所有 exchange close 必經)consume tail+calibration,刪 L3196 分散點防 double——**任何 symbol 大蝕歷史自動入 watchdog → 後續反手倉自動降注/鎖**(直接防「追高接刀」類虧損)。
+- **攻擊輪 3(ebc7910)**: ts 時鐘跳變回復永久 lock DoS——consumePnl ts 向前大跳 → 後續正常 ts−epoch 負 → symbol 永久 observe。修復: monotonic clamp(ts=max(ts,lastStateEpoch+1))。
+- **攻擊輪 4(383ccf6)**: verdict-engine pre-registered 閾值本身可以被 garbage 注入(improveRatio=NaN/0/Infinity、minSample=NaN、minCorrelation=負)→ 比較全 skip → **誤判 PASS(主神信錯 verdict → 實裝冇 alpha 嘢)**。修復: 全部數值閾值 finite+合理域 guard,無效 → INSUFFICIENT。
+- 全量 **4405 pass + 13 pre-existing**, tsc clean。
+
 ### 已證明冇 alpha → 自動停用核對
 Q-RL expectancy gate(OFF)/ OLR hard gate(OFF)/ four-window(HARD BLOCK)——**全部已停用**;今日 5 個 FAIL 對象(從未實裝)零漏入 production;6 soft gates 為「候選」(樣本 10-36 < 269 標準)→ GOT 收集中,2-4 週 deadweight 自動裁決。
 

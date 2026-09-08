@@ -38,6 +38,11 @@
 
 **研究自動化（OpenAI upgrade）**: `src/research/verdict-engine.ts`（pre-registered 自動判 verdict——garbage 輸入 INSUFFICIENT 唔准扮 PASS）+ `src/research/pending-scheduler.ts`（startup 自動檢查 P2 樣本到期→提醒）+ `src/research/event-archive.ts`（長期研究事件檔）。
 
+### 追補(同日): real-close 統一管道 + 攻擊輪 3/4
+- `onExchangeClosedLearning` callback = **所有 real close 統一出口**(closeTrade-real/SL-TP/reconcile 全經)→ 統一 consume TailWatchdog + CalibrationWatchdog——**大蝕單自動入 watchdog → 反手倉自動降注/鎖**(BUY SNDK −5.3% 追高事故 → 修復後唔會再發生)。分散 consume(L3196)刪除防 double。
+- TailWatchdog consumePnl ts monotonic clamp(時鐘跳變唔會癱瘓 symbol 回復)。
+- VerdictEngine pre-registered 閾值 finite+域 guard(garbage 閾值 → INSUFFICIENT,唔准誤判 PASS)。
+
 **負結果（分辨力先係 alpha）**: Challenger B NetEV 分層 / OLR 校準（base∝pwin 唔成立, 20 筆 ledger 實錘）/ sizing 放大 / conviction 分級 / 校準信心——5 輪 FAIL 阻止誤導性生產改動;已證明冇 alpha 組件全部停用;6 soft gates 為候選（GOT 收集中, 2-4 週 deadweight 自動裁決）。
 
 ## v2.0.873-P9-live-loss-review（2026-09-08）：實盤四筆大蝕全檢討（主神貼單「???」）
