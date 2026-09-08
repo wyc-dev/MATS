@@ -139,7 +139,9 @@ export function maxDrawdownPct(cumulativeReturns: number[]): number {
   let maxDD = 0;
   for (const v of cumulativeReturns) {
     if (v > peak) peak = v;
-    const dd = peak !== 0 ? (peak - v) / Math.abs(peak) : 0;
+    // P0-③(audit #3): peak===0(0 起始累積回報曲線)→ 除 |0| 無意義,舊 code 全部報 0
+    // (測謊機失明)——改用「回報空間」絕對跌幅 peak-v(pp);peak≠0 → 相對 |peak| 百分比。
+    const dd = peak !== 0 ? (peak - v) / Math.abs(peak) : Math.max(0, peak - v);
     if (Number.isFinite(dd) && dd > maxDD) maxDD = Math.max(0, dd);
   }
   return maxDD * 100; // as %
@@ -177,13 +179,18 @@ export function bootstrapPValue(
   // ~0.0 (highly significant). Same bug as Q-RL bootstrapPValue.
   const centered = returns.map(r => r - observed);
   // expected block size: ~√n (Politis rule of thumb)
-  const blockSize = Math.max(1, Math.floor(Math.sqrt(returns.length)));
-  let count = 0;
+  const expectedBlockSize = Math.max(1, Math.floor(Math.sqrt(returns.length)));
+  let countUpper = 0;
   for (let i = 0; i < iterations; i++) {
-    const sample = blockBootstrapSample(centered, blockSize);
-    if (meanOf(sample) >= observed) count++;
+    // P0-③(audit #3): 真正 stationary bootstrap(Politis & Romano 1994)——block 長度隨機
+    // 幾何分佈(期望 ≈ √n),唔係固定 block length(舊 code 註解宣稱 stationary 實際唔係)。
+    const sample = stationaryBootstrapSample(centered, expectedBlockSize);
+    if (meanOf(sample) >= observed) countUpper++;
   }
-  return count / iterations;
+  // P0-③(audit #3): 雙尾——舊 code 只計右尾(正收益 p=0 / 鏡像負收益 p=1,單尾誤差)。
+  // 雙尾 p = 2·min(右尾, 左尾),clamp [0,1]——正/負收益鏡像對稱。
+  const pUpper = countUpper / iterations;
+  return Math.max(0, Math.min(1, 2 * Math.min(pUpper, 1 - pUpper)));
 }
 
 /** Deflated Sharpe Ratio: adjusts the observed Sharpe for multiple testing.
@@ -299,6 +306,11 @@ export function buildValidationReport(
   else if (overallP < edgeConfig.btestAlpha && overallDSR > 0.5 && overallSharpe > 0.5 && overallIR > 0) overallVerdict = 'edge';
   else overallVerdict = 'no-edge';
 
+  // P0-③(audit #3): walk-forward overfit 係樣板外失真嘅紅旗——overall 唔准喺
+  // OOS 段明顯過拟合(IS Sharpe / OOS Sharpe > 2)時宣稱 edge。
+  const wfCheck = walkForwardValidation(trades);
+  if (overallVerdict === 'edge' && wfCheck.verdict === 'overfit') overallVerdict = 'no-edge';
+
   return {
     breakdown,
     overall: {
@@ -306,7 +318,7 @@ export function buildValidationReport(
       bootstrapP: overallP, dsr: overallDSR, infoRatio: overallIR,
       verdict: overallVerdict,
     },
-    walkForward: walkForwardValidation(trades),
+    walkForward: wfCheck,
     generatedAt: Date.now(),
   };
 }
@@ -328,14 +340,20 @@ function cumulative(returns: number[]): number[] {
   for (const r of returns) { acc += safeNum(r, 0); out.push(acc); }
   return out;
 }
-function blockBootstrapSample(returns: number[], blockSize: number): number[] {
+/** P0-③(audit #3): stationary bootstrap(Politis & Romano 1994)——block 長度 L ~ Geometric(p),
+ *  p = 1/expectedBlockSize(期望 block 長度 ≈ expectedBlockSize),起點均勻隨機,循環 wrap。
+ *  與固定 block bootstrap 嘅分別: 隨機 block 長度保留局部依賴但消除「固定長度假設」。 */
+function stationaryBootstrapSample(returns: number[], expectedBlockSize: number): number[] {
   const n = returns.length;
+  if (n === 0) return [];
   const out: number[] = [];
+  const p = 1 / Math.max(1, expectedBlockSize);
   while (out.length < n) {
     const start = Math.floor(Math.random() * n);
-    for (let j = 0; j < blockSize && out.length < n; j++) {
-      const v = returns[(start + j) % n];
-      out.push(v ?? 0);
+    let len = 1;
+    while (len < n && Math.random() > p) len++; // geometric block length
+    for (let j = 0; j < len && out.length < n; j++) {
+      out.push(returns[(start + j) % n] ?? 0);
     }
   }
   return out;
