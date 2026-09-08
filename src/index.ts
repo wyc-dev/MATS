@@ -3942,7 +3942,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // 0.5% 喺 10x 下 = margin 5% 先觸發,令浮盈 1-3% 蝕單全部漏走）——樣本疏 symbol 都有鎖利機會。
         if (!profile) {
           const liveMfeP = this.computeLiveMfePricePct(sym, isSellSide(pos.side) ? 'sell' : 'buy', pos.averageEntryPrice, pos.openedAt ?? 0);
-          if (shouldColdStartLock(liveMfeP, pos.unrealizedPnl, pos.leverage)) {
+          // P1-lock-fix（stale-price 假正, SILVER −11.7% 事故）: pos.unrealizedPnl 靠 HL API
+          // 每 cycle 更新(≤5min 滯後)——price 已回吐到蝕位時 stale 正值會令冷啟動鎖喺蝕位觸發。
+          // 用 curPrice 實時重算;price 無效 → freshPnl=null → shouldColdStartLock=false（唔鎖,等下 cycle）。
+          const curP = this.marketState?.getState(normalizeSymbol(sym))?.price ?? pos.currentPrice ?? 0;
+          const freshPnl =
+            Number.isFinite(curP) && curP > 0 && Number.isFinite(pos.averageEntryPrice) && pos.averageEntryPrice > 0 && Number.isFinite(pos.quantity)
+              ? computeFreshUnrealizedPnl(isSellSide(pos.side) ? 'sell' : 'buy', pos.averageEntryPrice, curP, pos.quantity, 0)
+              : null;
+          if (shouldColdStartLock(liveMfeP, freshPnl, pos.leverage)) {
             await this.closeTrade(sym, `[PAEL-FALLBACK LOCK] ${sym}: cold-start profile, live MFE ${liveMfeP!.toFixed(2)}%(price) × ${safeLeverage(pos.leverage)}x ≥ 0.5% margin → 鎖利`, 'exit_price_lock');
             log.info(`🔒 [pael-fallback] CLOSED ${sym} @ live MFE ${liveMfeP!.toFixed(2)}% (no profile)`);
           }
@@ -4010,6 +4018,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         // 價格已回吐到蝕位時 stale 正值令 gate 喺蝕位照 close（giveback）。
         // 用 marketState price（WS/REST 最即時）重算，唔用 stale unrealizedPnl。
         const curPrice = this.marketState?.getState(normalizeSymbol(sym))?.price ?? pos.currentPrice ?? 0;
+        // P1-lock-fix（stale-price 假正 SILVER −11.7% 事故）: computeFreshUnrealizedPnl 喺
+        // price 無效時 fallback 到 stale pos.unrealizedPnl——stale 正數會令 gate 喺真蝕位
+        // 假鎖。price 無效(stale/0/undefined)→ 唔可以用 fallback 判斷,直接唔鎖等下 cycle。
+        if (!Number.isFinite(curPrice) || curPrice <= 0) continue;
         const pnlNow = computeFreshUnrealizedPnl(
           isSellSide(pos.side) ? 'sell' : 'buy',
           pos.averageEntryPrice,
