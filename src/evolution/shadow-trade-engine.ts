@@ -1104,7 +1104,10 @@ export class ShadowTradeEngine {
       let lo = tickLo;
       // 時鐘容差 5s——future 時間戳係污染,唔准用蠟燭
       if (candlePath && candlePath.length > 0 && Number.isFinite(pos.openTimestamp) && pos.openTimestamp > 0 && pos.openTimestamp <= Date.now() + 5_000) {
-        const windowStart = pos.openTimestamp - 300_000; // 一支 5m 容差(straddle)
+        // audit #1(2026-09-08, 覆核): 「完全喺開倉前」嘅 candle 唔可以納入(會假結算);
+        // 但「跨站支」(t = open−300s~open,涵蓋開倉時刻)必須納入(極值可能喺開倉後)——
+        // p29-shadow-candle-path 鎖定呢個行為。原 −300s 容差係啱嘅(排除更早支)。
+        const windowStart = pos.openTimestamp - 300_000; // 一支 5m 容差(straddle)——涵蓋開倉時刻嘅支
         for (const c of candlePath) {
           if (!c || c.t < windowStart) continue;
           if (!Number.isFinite(c.h) || !Number.isFinite(c.l)) continue;      // NaN 支
@@ -1917,7 +1920,10 @@ export class ShadowTradeEngine {
     const before = this.positions.length;
     this.positions = this.positions.filter(p => keep.has(p.symbol));
     // Also prune recent results for delisted symbols (keeps the scoreboard clean)
+    // audit #2: filter 前先計「已消費游標前被刪幾條」→ 游標同步減——唔可以錯位 skip 有效樣本
+    const removedBeforeDrain = this.recentResults.slice(0, this.lastDrainedIndex).filter(r => !keep.has(r.symbol)).length;
     this.recentResults = this.recentResults.filter(r => keep.has(r.symbol));
+    this.lastDrainedIndex = Math.max(0, this.lastDrainedIndex - removedBeforeDrain);
     const pruned = before - this.positions.length;
     if (pruned > 0) log.info(`[shadow-trade] Pruned ${pruned} stale positions for delisted symbols (${this.positions.length} remaining)`);
     return pruned;
