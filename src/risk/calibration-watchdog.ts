@@ -131,7 +131,7 @@ export class CalibrationWatchdog {
       const data = JSON.parse(json);
       for (const [sym, v] of Object.entries(data as Record<string, any>)) {
         if (typeof sym !== 'string' || !v || typeof v !== 'object') continue;
-        const h = Array.isArray(v.h) ? v.h.filter((x: any) => Array.isArray(x) && Number.isFinite(x[0]) && (x[1] === 1 || x[1] === 0)).slice(-calibrationConfig.window) as Array<[number, number]> : [];
+        const h = Array.isArray(v.h) ? v.h.filter((x: any) => Array.isArray(x) && x.length === 2 && Number.isFinite(x[0]) && (x[1] === 1 || x[1] === 0)).slice(-calibrationConfig.window) as Array<[number, number]> : [];
         this.histories.set(sym, h);
         if (v.f === true) this.flagged.add(sym);
       }

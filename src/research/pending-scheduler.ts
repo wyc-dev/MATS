@@ -43,9 +43,12 @@ export function countEvents(filePath: string): number {
 }
 
 /** 檢查邊啲 pending 驗證到期;到期 → 傳返去(唔自動跑——跑要主神/agent 揀,但提醒自動) */
-export function checkPendingValidations(rules: PendingValidationRule[]): DueValidation[] {
+export function checkPendingValidations(rules: PendingValidationRule[] | null | undefined): DueValidation[] {
+  if (!Array.isArray(rules) || rules.length === 0) return []; // ATTACK-round: null/garbage → 空
   const due: DueValidation[] = [];
   for (const r of rules) {
+    if (!r || typeof r !== 'object') continue;
+    if (typeof r.id !== 'string' || typeof r.dataFile !== 'string') continue;
     const events = countEvents(r.dataFile);
     const now = Date.now();
     const mtime = existsSync(r.dataFile) ? (() => { try { return readFileSync(r.dataFile, 'utf8').length >= 0 ? (r.startedAt ?? now) : now; } catch { return now; } })() : now;

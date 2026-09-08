@@ -43,6 +43,19 @@ export function evaluateExperiment(input: ExperimentInput): VerdictResult {
   const { id, baseline, candidate, thresholds } = input;
   const t = thresholds;
 
+  // ATTACK-round(紅先 5/11): garbage 輸入唔可以扮 PASS——metric NaN/Infinity、
+  // sample NaN、baseline=0、冇任何閾值,全部 INSUFFICIENT(「唔可以判」唔係「PASS」)。
+  const finite = (v: number | undefined): boolean => typeof v === 'number' && Number.isFinite(v);
+  const validMetric = finite(baseline.metric) && finite(candidate.metric) && Math.abs(baseline.metric) > 1e-12;
+  const validSample = finite(candidate.sample) && candidate.sample >= 0;
+  if (!validMetric || !validSample) {
+    return { id, verdict: 'INSUFFICIENT', reason: '輸入不可信(garbage metric/sample/baseline=0)——唔可以判 verdict' };
+  }
+  const hasThreshold = Object.keys(thresholds ?? {}).length > 0;
+  if (!hasThreshold) {
+    return { id, verdict: 'INSUFFICIENT', reason: '冇任何 pre-registered 閾值——唔可以判' };
+  }
+
   // 1) 樣本門檻(唔夠 → INSUFFICIENT,唔好判 PASS/FAIL——避免小樣本誤判)
   if (t.minSample != null && candidate.sample < t.minSample) {
     return { id, verdict: 'INSUFFICIENT', reason: `n=${candidate.sample} < minSample=${t.minSample}` };
@@ -50,23 +63,31 @@ export function evaluateExperiment(input: ExperimentInput): VerdictResult {
 
   // 2) 提升比例
   if (t.improveRatio != null) {
-    const denom = baseline.metric > 0 ? baseline.metric : Math.abs(baseline.metric) + 1e-9;
+    const denom = baseline.metric;
     const ratio = candidate.metric / denom;
     if (candidate.metric <= baseline.metric * t.improveRatio) {
       return { id, verdict: 'FAIL', reason: `candidate ${candidate.metric.toFixed(2)} ≤ baseline×${t.improveRatio} (${(baseline.metric * t.improveRatio).toFixed(2)})` };
     }
   }
 
-  // 3) 尾部條件(如果提供)
-  if (t.tailDeteriorateRatio != null && baseline.tail != null && candidate.tail != null) {
-    if (candidate.tail < baseline.tail * t.tailDeteriorateRatio) {
-      return { id, verdict: 'FAIL', reason: `tail ${candidate.tail.toFixed(2)} 劣於 baseline×${t.tailDeteriorateRatio} (${(baseline.tail * t.tailDeteriorateRatio).toFixed(2)})` };
+  // 3) 尾部條件(如果提供)——garbage tail 唔可以當「通過」
+  const bTail: number | undefined = baseline.tail;
+  const cTail: number | undefined = candidate.tail;
+  if (t.tailDeteriorateRatio != null && (bTail != null || cTail != null)) {
+    if (typeof bTail !== 'number' || !Number.isFinite(bTail) || typeof cTail !== 'number' || !Number.isFinite(cTail)) {
+      return { id, verdict: 'INSUFFICIENT', reason: 'tail 輸入不可信(garbage)——唔可以判' };
+    }
+    if (cTail < bTail * t.tailDeteriorateRatio) {
+      return { id, verdict: 'FAIL', reason: `tail ${cTail.toFixed(2)} 劣於 baseline×${t.tailDeteriorateRatio} (${(bTail * t.tailDeteriorateRatio).toFixed(2)})` };
     }
   }
 
   // 4) 相關性門檻(預測力實驗用)
-  if (t.minCorrelation != null && candidate.correlation != null && candidate.correlation < t.minCorrelation) {
-    return { id, verdict: 'FAIL', reason: `ρ=${candidate.correlation.toFixed(3)} < ${t.minCorrelation}` };
+  if (t.minCorrelation != null && candidate.correlation != null) {
+    if (!finite(candidate.correlation)) return { id, verdict: 'INSUFFICIENT', reason: 'ρ 輸入不可信(garbage)' };
+    if (candidate.correlation < t.minCorrelation) {
+      return { id, verdict: 'FAIL', reason: `ρ=${candidate.correlation.toFixed(3)} < ${t.minCorrelation}` };
+    }
   }
 
   return { id, verdict: 'PASS', reason: '所有 pre-registered 門檻通過' };
