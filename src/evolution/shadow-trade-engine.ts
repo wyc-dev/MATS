@@ -27,6 +27,29 @@ const log = createLogger({ phase: 'shadow-trade' });
 
 // ─── Types ───
 
+/**
+ * P0-①(audit #1, 2026-09-08): shadow 結算 outcome 判定——按首觸及 barrier 嘅 cycle 先後。
+ * 極值累積(highSinceOpen/lowSinceOpen)無先後資訊,「TP 先中、SL 後中」會被合併極值
+ * 錯判 loss。逐 cycle 首觸記錄 tpTouchCycle/slTouchCycle,呢度做單一 source of truth:
+ *   - TP cycle < SL cycle → win(TP 先中,早已離場)
+ *   - SL cycle <= TP cycle → loss(SL 先中 / 或同 cycle 無法辨識 → 保守 SL-first)
+ *   - 只有一邊 → 由嗰邊決定;兩邊都未 → null(未結算)
+ */
+export function decideShadowOutcome(
+  side: 'buy' | 'sell',
+  tpTouchCycle: number | undefined,
+  slTouchCycle: number | undefined,
+): { outcome: 'win' | 'loss'; exit: 'tp' | 'sl' } | null {
+  if (tpTouchCycle === undefined && slTouchCycle === undefined) return null;
+  if (tpTouchCycle !== undefined && slTouchCycle !== undefined) {
+    if (tpTouchCycle < slTouchCycle) return { outcome: 'win', exit: 'tp' };
+    return { outcome: 'loss', exit: 'sl' }; // SL 先 或 同 cycle(保守)
+  }
+  return tpTouchCycle !== undefined
+    ? { outcome: 'win', exit: 'tp' }
+    : { outcome: 'loss', exit: 'sl' };
+}
+
 export interface ShadowPosition {
   id: string;
   symbol: string;
@@ -57,6 +80,9 @@ export interface ShadowPosition {
   highSinceOpen: number;
   /** Lowest price observed since open */
   lowSinceOpen: number;
+  /** P0-①(audit #1): 首個觸及 TP/SL 嘅 cycle——先後順序判定(唔可以靠累積極值合併判 loss)。 */
+  tpTouchCycle?: number;
+  slTouchCycle?: number;
   /** v2.0.143: Maximum Favorable Excursion — best unrealized PnL (as fraction
    *  of entry price) reached during the shadow trade's lifetime.
    *  For LONG: (highSinceOpen - entryPrice) / entryPrice
@@ -1096,6 +1122,16 @@ export class ShadowTradeEngine {
       pos.highSinceOpen = Math.max(pos.highSinceOpen, hi);
       pos.lowSinceOpen = Math.min(pos.lowSinceOpen, lo);
 
+      // P0-①(audit #1): 首次觸及 barrier 嘅 cycle 追蹤——極值累積無先後,
+      // 必須喺每 cycle 首次越過時記低(之後 defined 唔會重記)。
+      if (pos.side === 'buy') {
+        if (pos.tpTouchCycle === undefined && pos.takeProfitPrice > 0 && pos.highSinceOpen >= pos.takeProfitPrice) pos.tpTouchCycle = cycle;
+        if (pos.slTouchCycle === undefined && pos.stopLossPrice > 0 && pos.lowSinceOpen <= pos.stopLossPrice) pos.slTouchCycle = cycle;
+      } else {
+        if (pos.tpTouchCycle === undefined && pos.takeProfitPrice > 0 && pos.lowSinceOpen <= pos.takeProfitPrice) pos.tpTouchCycle = cycle;
+        if (pos.slTouchCycle === undefined && pos.stopLossPrice > 0 && pos.highSinceOpen >= pos.stopLossPrice) pos.slTouchCycle = cycle;
+      }
+
       // v2.0.143: Update MAE/MFE from path extremes.
       // MFE = best unrealized PnL (how far the trade went in our favor).
       // MAE = worst unrealized PnL (how far the trade went against us).
@@ -1110,35 +1146,13 @@ export class ShadowTradeEngine {
       let outcome: 'win' | 'loss' | null = null;
       let exitPrice = 0;
 
-      if (pos.side === 'buy') {
-        // LONG: SL below, TP above. Use path extremes — a real trade
-        // would have been stopped/TP'd the moment the barrier was touched.
-        const slHit = pos.lowSinceOpen <= pos.stopLossPrice;
-        const tpHit = pos.highSinceOpen >= pos.takeProfitPrice;
-        if (slHit && tpHit) {
-          outcome = 'loss'; // both touched → conservative SL-first
-          exitPrice = pos.stopLossPrice;
-        } else if (slHit) {
-          outcome = 'loss';
-          exitPrice = pos.stopLossPrice;
-        } else if (tpHit) {
-          outcome = 'win';
-          exitPrice = pos.takeProfitPrice;
-        }
-      } else {
-        // SHORT: SL above, TP below.
-        const slHit = pos.highSinceOpen >= pos.stopLossPrice;
-        const tpHit = pos.lowSinceOpen <= pos.takeProfitPrice;
-        if (slHit && tpHit) {
-          outcome = 'loss';
-          exitPrice = pos.stopLossPrice;
-        } else if (slHit) {
-          outcome = 'loss';
-          exitPrice = pos.stopLossPrice;
-        } else if (tpHit) {
-          outcome = 'win';
-          exitPrice = pos.takeProfitPrice;
-        }
+      // P0-①(audit #1): 按「首觸及 cycle 先後」判定——唔可以用累積極值(合併極值
+      // 會將「TP 先中、SL 後中」嘅贏單錯標 loss)。同 cycle 內觸及兩邊 → 無法
+      // 辨識先後 → 保守 SL-first(同根 candle 限制,audit 認可)。
+      const touch = decideShadowOutcome(pos.side, pos.tpTouchCycle, pos.slTouchCycle);
+      if (touch) {
+        outcome = touch.outcome;
+        exitPrice = touch.exit === 'tp' ? pos.takeProfitPrice : pos.stopLossPrice;
       }
 
       // Force-resolve if held too long (stale shadow trade).
