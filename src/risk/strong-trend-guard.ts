@@ -17,6 +17,17 @@ export const strongTrendConfig = {
   strongUpPct: Number(process.env['STRONG_UP_PCT']) >= 0 ? Number(process.env['STRONG_UP_PCT']) / 100 : 0.004,
 } as const;
 
+/** P4(2026-09-08, 主神批): 對稱 anti-trend 降注判斷——強升勢(4h 動量≥+0.4%)時 SELL、
+ *  強跌勢(≤−0.4%)時 BUY → 降注 50%(soft,唔 block——誤殺正 trade 係唔可以)。
+ *  驗證(327 筆 OOS): 12 筆受影響,淨改善 +$0.80(OOS)/+$0.64(全)——慳 $1.00 / 誤傷 $0.20。
+ */
+export function shouldDiscountAntiTrend(momentumLong: number | undefined | null, side: string | undefined | null): boolean {
+  if (typeof momentumLong !== 'number' || !Number.isFinite(momentumLong)) return false; // 冇動量 → 唔降(保守)
+  if (side === 'sell' && momentumLong >= strongTrendConfig.strongUpPct) return true;    // 4h 強升勢做空 = 接刀
+  if (side === 'buy' && momentumLong <= -strongTrendConfig.strongUpPct) return true;   // 4h 強跌勢做多 = 撈飛刀
+  return false;
+}
+
 /** 純函數: 強升勢時 SELL 應該 block? */
 export function shouldBlockStrongUpSell(momentumLong: number | undefined | null, action: string | undefined | null): boolean {
   if (!strongTrendConfig.enabled) return false;

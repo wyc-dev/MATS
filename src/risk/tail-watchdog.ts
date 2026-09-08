@@ -142,6 +142,8 @@ export function statusOf(symbol: string, w: SymbolWatch): TailWatchStatus {
 
 export class TailWatchdog {
   private watches = new Map<string, SymbolWatch>();
+  /** P3(2026-09-08): 歷史回填 checkpoint——已 seed 嘅最後 closedAt(ms),重啟唔重複 replay */
+  private seededUntil = 0;
 
   createOrGet(symbol: string): SymbolWatch {
     let w = this.watches.get(symbol);
@@ -163,6 +165,28 @@ export class TailWatchdog {
     this.watches.set(symbol, next);
     return statusOf(symbol, next);
   }
+
+  /**
+   * P3(2026-09-08, 主神「修正完仲係咁」揭穿): 冷啟動歷史回填——用 realTrades 歷史 replay,
+   * 令「大蝕史」(SNDK −18.2% 等修復前 close)入監控 → 該 symbol 自動 caution/observe →
+   * 追高/反手倉唔會再無鎖開。(09-08 BUY SNDK −4.4% 正正因為 SNDK 歷史未入 watchdog)。
+   * IDEMPOTENT: 只 replay closedAt > seededUntil;seededUntil 持久化(save/load),重啟唔重複。
+   * @returns 實際 seed 咗幾多筆
+   */
+  seedFromTrades(trades: Array<{ closedAt?: number; pnlPct?: number; symbol?: string }>): number {
+    if (!Array.isArray(trades)) return 0;
+    const now = Date.now();
+    const pending = trades
+      .filter((t) => t && t.closedAt != null && Number.isFinite(t.closedAt) && t.closedAt > this.seededUntil && t.closedAt <= now + 5_000
+        && Number.isFinite(t.pnlPct) && typeof t.symbol === 'string')
+      .sort((a, b) => (a.closedAt as number) - (b.closedAt as number));
+    for (const t of pending) this.consumePnl(t.symbol as string, t.pnlPct as number, t.closedAt as number);
+    if (pending.length > 0) { const last = pending[pending.length - 1]; const c = last && last.closedAt; if (c !== undefined && c !== null) this.seededUntil = Math.max(this.seededUntil, c); }
+    return pending.length;
+  }
+
+  /** P3: 已 seed 嘅 checkpoint(診斷用) */
+  seededCheckpoint(): number { return this.seededUntil; }
 
   getStatus(symbol: string): TailWatchStatus {
     return statusOf(symbol, this.createOrGet(symbol));
@@ -191,13 +215,15 @@ export class TailWatchdog {
     for (const [sym, w] of this.watches) {
       obj[sym] = { history: w.history.slice(-tailWatchdogConfig.window), state: w.state, t: w.tailEventsSinceState, c: w.cleanSinceCaution, e: w.cleanSinceEpoch, s: w.lastStateEpoch };
     }
-    return JSON.stringify(obj);
+    return JSON.stringify({ seededUntil: this.seededUntil, watches: obj });
   }
 
   load(json: string): void {
     try {
       const data = JSON.parse(json);
-      for (const [sym, v] of Object.entries(data as Record<string, any>)) {
+      if (Number.isFinite(data?.seededUntil)) this.seededUntil = data.seededUntil;
+      const src = (data && data.watches && typeof data.watches === 'object') ? data.watches : data;
+      for (const [sym, v] of Object.entries(src as Record<string, any>)) {
         if (typeof sym !== 'string' || !v || typeof v !== 'object') continue;
         const state: TailState = ['normal', 'caution', 'observe-only', 'recovery-check'].includes(v.state) ? v.state : 'normal';
         const history = Array.isArray(v.history)

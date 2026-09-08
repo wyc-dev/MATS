@@ -300,7 +300,7 @@ import { computeLearningWeight } from './evolution/learning-weight.ts';
 import { EventArchive } from './research/event-archive.ts';
 import { TailWatchdog } from './risk/tail-watchdog.ts';
 import { canOpenWithReserve } from './risk/correlation-budget.ts';
-import { shouldBlockStrongUpSell, momentumBiasOf, strongTrendConfig } from './risk/strong-trend-guard.ts';
+import { shouldBlockStrongUpSell, shouldDiscountAntiTrend, momentumBiasOf, strongTrendConfig } from './risk/strong-trend-guard.ts';
 import { CalibrationWatchdog } from './risk/calibration-watchdog.ts';
 import { checkPendingValidations, defaultPendingRules } from './research/pending-scheduler.ts';
 
@@ -1537,6 +1537,12 @@ class MATSSystem {
         try {
           const twPath = path.join(process.cwd(), 'data/evolution/tail-watchdog.json');
           if (fs.existsSync(twPath)) this.tailWatchdog.load(fs.readFileSync(twPath, 'utf-8'));
+        } catch { /* non-fatal */ }
+        // P3(2026-09-08 主神批): watchdog 歷史回填——用 realTrades 歷史 replay(冷啟動 seed),
+        // 令「大蝕史」入監控(防 SNDK 類: 歷史 −18.2% 未入 → 追高 BUY 冇鎖)。idempotent(seededUntil)。
+        try {
+          const seeded = this.tailWatchdog.seedFromTrades(this.portfolio.getClosedRealTrades() as unknown as Array<{closedAt?:number;pnlPct?:number;symbol?:string}>);
+          if (seeded > 0) log.info(`🛡️ [tail-watchdog] 歷史回填 seed ${seeded} 筆 real close(大蝕史入監控)`);
         } catch { /* non-fatal */ }
         // Upgrade A: calibration watchdog 狀態還原
         try {
@@ -6988,18 +6994,19 @@ ${recentExamples}
       return { success: false, error: 'correlation-budget-blocked (portfolio effective exposure over budget)' };
     }
 
-    // 強升勢方向防護(賽後檢討 09-08)——OBSERVE-ONLY(主神 2026-09-08: 未批准實裝前唔可以真 block):
-    // 只記錄「本應 block」嘅次數/細節,唔會阻礙任何 trade——待主神另行批准先啟用真 block(env STRONG_UP_BLOCK_SELL=true)。
+    // P4(2026-09-08 主神批): 對稱 anti-trend 降注(soft,唔 block)——強升勢(4h mom≥0.4%)時 SELL、
+    // 強跌勢(4h mom≤−0.4%)時 BUY → 倉位 ×0.5(防「大升 trend 照樣出 SELL」接刀 + 撈飛刀)。
+    // 驗證(327 筆 OOS): 12 筆受影響淨 +$0.80/全 +$0.64;env ANTI_TREND_DISCOUNT 可回滾。
     try {
-      // 正確字段: decision.marketFeatures.momentumLong(4h 動量為主)——唔係 entryMarketFeatures
       const momLong = (decision as any)?.marketFeatures?.momentumLong ?? (entryMarketFeatures as any)?.momentumLong;
       const momL: number | undefined = Number.isFinite(momLong) ? Number(momLong) : undefined;
       if (momL === undefined) {
-        // 字段缺失 → 記錄一次(診斷: 睇 live 有幾多 decision 冇帶動量)
         this._strongUpMissingMomentum++;
-      } else if (shouldBlockStrongUpSell(momL, decision.action)) {
+      } else if (shouldDiscountAntiTrend(momL, decision.action)) {
         this._strongUpObservedBlock++;
-        log.warn(`👀 [strong-up-guard:OBSERVE] ${decision.action} ${decision.symbol} 強升勢(momentumLong(4h)${(momL*100).toFixed(2)}%≥${(strongTrendConfig.strongUpPct*100).toFixed(1)}%)逆勢做空——observe 累計 ${this._strongUpObservedBlock} 次(未 block,待批准)`);
+        const multiplier = 0.5;
+        if (decision.positionSizePct != null) decision.positionSizePct = Math.max(0.001, decision.positionSizePct * multiplier);
+        log.warn(`🛡️ [anti-trend:降注] ${decision.action} ${decision.symbol} 4h動量=${(momL*100).toFixed(2)}%(強${momL>0?'升勢':'跌勢'})→ size×${multiplier}(累計 ${this._strongUpObservedBlock} 次)`);
       }
     } catch { /* non-fatal */ }
 
