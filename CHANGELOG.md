@@ -22,6 +22,18 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-shadow-entry-snapshot（主神 2026-09-08——「entry 理據加入 shadow 驗證」計劃落地）
+
+**記錄層（零決策邏輯改動）**: shadow 開倉時 snapshot entry 理據入 resolved record:
+- `snapshotEntryFeatures(f)`: 環境+news 白名單（sentiment/sentimentConviction/fundingRate/volatility/srDistanceBps/obImbalance/volumeRatio）——唯讀 features dict,OLR 輸入維度穩定;missing/NaN key 唔入（無污染）
+- `snapshotSelfStats(sym/side)`: 開倉時自我 WR/EV（statsBySymbolSide,樣本 ≥5 先記）——shadow 自我參照理據
+- 兩者皆 **dedicated fields**（Position.entryStats / recentResults.*AtEntry）——consumers（getStats/getContext/OLR）全部白名單抽欄位,不變量驗證 ✓
+- 6 個開倉點（blind/aligned/statistical/seeded/qrl）全接駁
+
+**意義**: shadow 每 cycle 開倉——由今日起「entry 理據 + 結果」配對開始累積,幾日已可離線驗證「邊個特徵預測獲利」（對應 sizing 驗證 FAIL 後嘅出路）。
+
+**驗證**: 新測試 7（白名單/唯讀/樣本門檻/NaN）+ 全量 **4280 pass + 13 pre-existing（零 regression）**;tsc clean。
+
 ## v2.0.873-P9-core-fixes: 首輪四個核心問題全修（主神 2026-09-05——audit 第二輪核查離線反例全重現）
 
 **背景**: Audit 核查: convLedger（70cee12）結案 ✓; 但首輪四個核心問題全部仍在——本座逐個重現（離線反例）+ 全修。831 §29 完整記錄。
