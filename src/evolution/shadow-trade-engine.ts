@@ -1929,8 +1929,11 @@ export class ShadowTradeEngine {
   save(): string {
     return JSON.stringify({
       positions: this.positions.filter(p => p.status === 'open'),
-      recentResults: this.recentResults.slice(-50),
+      // P0-①(audit #2): 存全量(cap 200)唔再 slice(-50)——50 筆丟失 150 筆配對;lastDrainedIndex 一齊存
+      recentResults: this.recentResults.slice(-200),
       idCounter: this.idCounter,
+      // P0-①(audit #2): drain 游標持久化——重啟後唔可以由 0 重送(OLR 重複學習)
+      lastDrainedIndex: this.lastDrainedIndex,
       // v2.0.870-EMR: 持久化累計統計（唔依賴緩衝區）
       statsBySymbolSide: Object.fromEntries(this.statsBySymbolSide),
       // v2.0.870-EMR: backfillDone 持久化——重啟後唔重複 backfill（避免統計 double count）
@@ -1972,6 +1975,13 @@ export class ShadowTradeEngine {
       }
       if (data.idCounter) {
         this.idCounter = data.idCounter;
+      }
+      // P0-①(audit #2): drain 游標還原——已 drain 樣本唔可以重送(OLR 重複學習)。
+      // sanitize: 非 finite/負/超大 → 0(最保守: 可能重送,但唔可以錯位 skip);> len → 收縮到 len(全部已消費,零重送)。
+      if (Number.isFinite(data.lastDrainedIndex) && (data.lastDrainedIndex as number) >= 0 && (data.lastDrainedIndex as number) < 1e7) {
+        this.lastDrainedIndex = Math.min(Math.round(data.lastDrainedIndex as number), this.recentResults.length);
+      } else {
+        this.lastDrainedIndex = 0;
       }
       // v2.0.870-EMR: 載入持久化累計統計（防污染：只收合法 key/value）
       if (data.statsBySymbolSide && typeof data.statsBySymbolSide === 'object') {
