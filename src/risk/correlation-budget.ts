@@ -58,8 +58,12 @@ export function canOpenWithReserve(
   budgetLimit: number,
   newNotional: number,
 ): { allowed: boolean; available: number; needed: number } {
-  const available = Math.max(0, budgetLimit - effectiveNow - openOrderNotional - gapReserve);
-  return { allowed: available >= newNotional, available, needed: newNotional };
+  // ATTACK-round(2026-09-08): garbage(NaN/Infinity/負)→ 保守 0——唔可以令 available
+  // 變 NaN(會「永久 block」DoS)或負(放行)。
+  const f = (v: number, d: number) => (Number.isFinite(v) && v >= 0 ? v : d);
+  const safeNew = Number.isFinite(newNotional) && newNotional > 0 ? newNotional : 0;
+  const available = Math.max(0, f(budgetLimit, 0) - f(effectiveNow, 0) - f(openOrderNotional, 0) - f(gapReserve, 0));
+  return { allowed: available >= safeNew, available, needed: safeNew };
 }
 const CACHE_TTL_MS = 86_400_000; // 24h
 

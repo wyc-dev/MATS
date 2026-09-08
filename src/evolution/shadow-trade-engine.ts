@@ -1514,11 +1514,14 @@ export class ShadowTradeEngine {
     const ew = opts.entryWeight ?? 0.3;
     const rw = opts.resolutionWeight ?? 0.7;
     const out: Record<string, number> = {};
-    const keys = new Set([...(entryFeatures ? Object.keys(entryFeatures) : []), ...(resolutionFeatures ? Object.keys(resolutionFeatures) : [])]);
+    // ATTACK-round: string/array features → Object.keys(string)=indices → 數字 key 污染 OLR 維度。
+    // 必須係 plain dict(非 null/非 array/非 string)先攞 keys。
+    const isDict = (x: unknown): x is Record<string, number> => x !== null && typeof x === 'object' && !Array.isArray(x);
+    const keys = new Set([...(isDict(entryFeatures) ? Object.keys(entryFeatures) : []), ...(isDict(resolutionFeatures) ? Object.keys(resolutionFeatures) : [])]);
     for (const key of keys) {
       if (/(mfe|mae)/i.test(key) || key.toLowerCase().includes('mfetopnlratio')) continue; // future-only → 永久剔除(substring 防守: 特徵字典冇含 mfe/mae 嘅正常 key)
-      const entryVal = entryFeatures ? (entryFeatures[key] ?? 0) : 0;
-      const resolutionVal = resolutionFeatures ? (resolutionFeatures[key] ?? entryVal) : entryVal;
+      const entryVal = isDict(entryFeatures) ? (entryFeatures[key] ?? 0) : 0;
+      const resolutionVal = isDict(resolutionFeatures) ? (resolutionFeatures[key] ?? entryVal) : entryVal;
       out[key] = ew * entryVal + rw * resolutionVal;
     }
     return out;

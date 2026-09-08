@@ -6979,7 +6979,15 @@ ${recentExamples}
         const engine = this.tradingManager.getEngineForExchange('hyperliquid');
         const orders = engine ? await engine.getOpenOrders() : [];
         const markPx = this.marketState?.getState(normalizeSymbol(decision.symbol ?? ''))?.price ?? decision.entryPrice ?? 0;
-        openOrderNotional = (orders ?? []).reduce((sum: number, o: any) => sum + Math.max(0, Math.abs(Number(o?.sz ?? 0)) * (Number(o?.limitPx) > 0 ? Number(o.limitPx) : markPx)), 0);
+        openOrderNotional = (orders ?? []).reduce((sum: number, o: any) => {
+          // ATTACK-round: o.sz='banana'/1e999 → Number=NaN/Infinity → 污染 sum →
+          // 全部新倉永久 block DoS。每單 guard: 非 finite/負 → 0。
+          const qty = Number(o?.sz);
+          const lpx = Number(o?.limitPx);
+          const q = Number.isFinite(qty) && qty > 0 ? qty : 0;
+          const p = Number.isFinite(lpx) && lpx > 0 ? lpx : (Number.isFinite(markPx) && markPx > 0 ? markPx : 0);
+          return sum + q * p;
+        }, 0);
       } catch { /* orders fetch fail → 保守 0(唔 block) */ }
       const newNotional = Math.max(0, (decision.positionSizePct ?? 0) * eq_);
       // gap buffer: 通用保守 0.3% of 已持倉 notional(per-symbol 精確 gap 待 P2 歷史 cache 升級)

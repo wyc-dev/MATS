@@ -151,6 +151,8 @@ export class TailWatchdog {
 
   /** 每筆 REAL resolved pnl 餵入(production: real close 處 call) */
   consumePnl(symbol: string, pnlPct: number, ts = Date.now()): TailWatchStatus {
+    // ATTACK-round: NaN/Infinity/string pnl 唔可以入 history(污染 windowAvg/tailCount)
+    if (!Number.isFinite(pnlPct) || !Number.isFinite(ts)) return statusOf(symbol, this.createOrGet(symbol)); // skip 污染
     if (!tailWatchdogConfig.enabled) return statusOf(symbol, this.createOrGet(symbol));
     const w = this.createOrGet(symbol);
     const next = advanceWatch(w, pnlPct, ts);
