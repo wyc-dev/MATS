@@ -300,6 +300,7 @@ import { computeLearningWeight } from './evolution/learning-weight.ts';
 import { EventArchive } from './research/event-archive.ts';
 import { TailWatchdog } from './risk/tail-watchdog.ts';
 import { canOpenWithReserve } from './risk/correlation-budget.ts';
+import { shouldBlockStrongUpSell, momentumBiasOf, strongTrendConfig } from './risk/strong-trend-guard.ts';
 import { CalibrationWatchdog } from './risk/calibration-watchdog.ts';
 import { checkPendingValidations, defaultPendingRules } from './research/pending-scheduler.ts';
 
@@ -6982,6 +6983,17 @@ ${recentExamples}
     if (this._correlationBudgetExceeded) {
       return { success: false, error: 'correlation-budget-blocked (portfolio effective exposure over budget)' };
     }
+
+    // 強升勢方向防護(賽後檢討 09-08): 逆強升勢做空=接刀(SILVER −11.7% 類)。
+    // OOS 強升勢 BUY +1.81% / block-SELL 金額級 +$1.04(pre-registered, env 可回滾)。
+    try {
+      const momLong = (decision as any)?.entryMarketFeatures?.momentumLong;
+      const momL: number | undefined = Number.isFinite(momLong) ? Number(momLong) : undefined;
+      if (shouldBlockStrongUpSell(momL, decision.action)) {
+        log.warn(`🛡️ [strong-up-guard] BLOCK ${decision.action} ${decision.symbol} —— 強升勢(momentumLong=${(momL! * 100).toFixed(2)}% ≥ ${(strongTrendConfig.strongUpPct * 100).toFixed(1)}%)逆勢做空=接刀` );
+        return { success: false, error: `strong-up-guard-blocked (強升勢逆勢 SELL, momentumLong=${(momL!*100).toFixed(2)}%)` };
+      }
+    } catch { /* non-fatal */ }
 
     // #4(2026-09-08) atomic reserve: 已持倉 effective + 待成交訂單 + 跳空 buffer ≤ budget 先准開
     // (audit#4 追補: 唔可以淨計已成交持倉——resting 限價單成交會變倉位;跳空可穿 SL)
