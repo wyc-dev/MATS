@@ -301,6 +301,7 @@ import { EventArchive } from './research/event-archive.ts';
 import { TailWatchdog } from './risk/tail-watchdog.ts';
 import { canOpenWithReserve } from './risk/correlation-budget.ts';
 import { CalibrationWatchdog } from './risk/calibration-watchdog.ts';
+import { checkPendingValidations, defaultPendingRules } from './research/pending-scheduler.ts';
 
 class MATSSystem {
   private marketState!: MarketStateAggregator;
@@ -1536,6 +1537,15 @@ class MATSSystem {
         try {
           const cwPath = path.join(process.cwd(), 'data/evolution/calibration-watchdog.json');
           if (fs.existsSync(cwPath)) this.calibrationWatchdog.load(fs.readFileSync(cwPath, 'utf-8'));
+        } catch { /* non-fatal */ }
+        // Upgrade ③: Pending Validation 自動調度——到期自動提醒(唔使主神記得)
+        try {
+          const due = checkPendingValidations(defaultPendingRules(path.join(process.cwd(), 'data/evolution')));
+          if (due.length > 0) {
+            for (const d of due) log.info(`⏰ [pending-validation] ${d.id} DUE（events=${d.events}/${d.threshold}, age=${d.ageDays}d）——${d.purpose}`);
+          } else {
+            log.info(`⏰ [pending-validation] 無到期驗證（持續累積中）`);
+          }
         } catch { /* non-fatal */ }
         // v2.0.870-EMR: shadow backfill 移到 startup——重啟即有消化數據
         // （之前喺 cycle start 依賴 tradingMarkets 非空 + olrBackfillDone——可能從未執行）
