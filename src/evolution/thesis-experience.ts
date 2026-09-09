@@ -1098,6 +1098,10 @@ export class ThesisExperience {
     // to the delta check instead of emitting a false positive FAST_APPROVE.
     // v2.0.873-E1: pWinWins/pWinTotal 已改用時間窗內樣本（上方計算）。
     const verdictPWin = pWinWilsonLB;
+    // P9-SE-chase(2026-09-09): SELL 追空弱入場 soft penalty(computeChasePenalty——above-demand 2/2 全蝕實錘)
+    const chasePenalty = computeChasePenalty(input.side, input.thesis);
+    if (chasePenalty > 0) log.info('[EXP-874] SELL chase-entry penalty: ' + input.symbol + ' above-demand weak chase——pWin x' + (1 - chasePenalty).toFixed(2));
+    const effectivePWin = verdictPWin * (1 - chasePenalty);
     // v2.0.873-E2: gate 落實——唔准 silent pass。任何 match 結果都 log（含 0 match
     // 嘅 PASS_OPEN_DIRECTLY），令 EXP gate 有可觀測性（之前 log 零輸出 = gate 形同虛設）。
     log.info(
@@ -1120,15 +1124,15 @@ export class ThesisExperience {
     const MIN_SAMPLES_FOR_REJECT = 3;
     const canReject = pWinTotal >= MIN_SAMPLES_FOR_REJECT;
 
-    if (verdictPWin >= this.cfg.winProbThreshold) {
-      return { verdict: 'FAST_APPROVE', pWin: verdictPWin, reason: `history skews WIN (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
+    if (effectivePWin >= this.cfg.winProbThreshold) {
+      return { verdict: 'FAST_APPROVE', pWin: effectivePWin, reason: `history skews WIN (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches${chasePenalty > 0 ? `, chase penalty ${(chasePenalty * 100).toFixed(0)}%` : ''})` };
     }
-    if (verdictPWin >= this.cfg.lossProbThreshold) {
+    if (effectivePWin >= this.cfg.lossProbThreshold) {
       // Ambiguous band → 直出 — use Wilson LB instead of raw pWin to avoid
       // small-sample overconfidence in the ambiguous band. A raw pWin of 0.60
       // with 3/5 matches (Wilson LB ~0.23) should not be treated as ambiguous
       // — it should be treated as insufficient evidence (fall through to delta).
-      return { verdict: 'PASS_OPEN_DIRECTLY', pWin: verdictPWin, reason: `ambiguous (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches)` };
+      return { verdict: 'PASS_OPEN_DIRECTLY', pWin: effectivePWin, reason: `ambiguous (raw pWin=${rawPWin.toFixed(2)}, Wilson LB=${pWinWilsonLB.toFixed(2)}, ${pWinWins}W/${pWinTotal} same-dir matches${chasePenalty > 0 ? `, chase penalty ${(chasePenalty * 100).toFixed(0)}%` : ''})` };
     }
 
     // P(loss) > P(win) → delta check (§8.4)
@@ -1651,4 +1655,16 @@ export class ThesisExperience {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** P9-SE-chase(2026-09-09, SE 診斷正確 + pattern data 修正): SELL 追空弱入場 penalty 判斷。
+ *  實錘: thesis 含「SELL at X, y bps above demand」(賣喺支持位上方近距弱追空)→ 2/2 全蝕
+ *  (SNDK −4.4% 60bps / SKHX −3.8% 165bps, 0% WR)。SE 最初「below supply」pattern 0 match
+ *  (data 驗證修正)——「above demand」先係真正 signature。返回 soft penalty(0.2 = pWin×0.8,
+ *  ≤20%——符合五絕對規則: 唔 block)。garbage/garbage side → 0。 */
+export function computeChasePenalty(side: unknown, thesis: unknown): number {
+  if (side !== 'sell') return 0;
+  if (typeof thesis !== 'string' || thesis.length === 0) return 0;
+  // 「above demand」= 賣喺 support 上方——追空弱入場 signature(2/2 實錘)
+  return /above\s+(?:the\s+)?demand/i.test(thesis) ? 0.2 : 0;
 }
