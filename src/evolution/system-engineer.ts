@@ -348,13 +348,26 @@ export async function runSystemEngineer(
 
   // Phase 2: Build trade record summary
   const recent = records.slice(-20);
+  // P9-reflection-attack(2026-09-09): persisted garbage record(entryThesis null/side undefined/pnl string)
+  // 喺 formatting slice/toUpperCase/toFixed crash → 成個 audit 被外層 catch 吞(SE 每次都中斷)。
+  // 加固: per-record try/catch——單一 malformed record skip,唔 kill 成個 audit。
   const tradeSummary = recent.map((r, i) => {
-    const features = r.marketFeatures
-      ? `vol=${(r.marketFeatures['volatility'] ?? 0).toFixed(4)} ob=${(r.marketFeatures['obImbalance'] ?? 0).toFixed(2)} funding=${(r.marketFeatures['fundingRate'] ?? 0).toFixed(5)}`
-      : 'NO_MARKET_DATA';
-    const olr = r.olrPWinAtEntry !== undefined ? `OLR=${(r.olrPWinAtEntry * 100).toFixed(0)}%` : 'NO_OLR';
-    const shadow = r.shadowWinRateAtEntry !== undefined ? `shadow=${(r.shadowWinRateAtEntry * 100).toFixed(0)}%` : 'NO_SHADOW';
-    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'} regime=${r.regime} ${features} ${olr} ${shadow} | ${r.entryThesis.slice(0, 100)}`;
+    try {
+      const features = r.marketFeatures
+        ? `vol=${(r.marketFeatures['volatility'] ?? 0).toFixed(4)} ob=${(r.marketFeatures['obImbalance'] ?? 0).toFixed(2)} funding=${(r.marketFeatures['fundingRate'] ?? 0).toFixed(5)}`
+        : 'NO_MARKET_DATA';
+      const olr = r.olrPWinAtEntry !== undefined ? `OLR=${(r.olrPWinAtEntry * 100).toFixed(0)}%` : 'NO_OLR';
+      const shadow = r.shadowWinRateAtEntry !== undefined ? `shadow=${(r.shadowWinRateAtEntry * 100).toFixed(0)}%` : 'NO_SHADOW';
+      const thesis = typeof r.entryThesis === 'string' ? r.entryThesis.slice(0, 100) : '(no thesis)';
+      const side = String(r.side ?? '?').toUpperCase();
+      const sym = String(r.symbol ?? '?');
+      const pnl = Number.isFinite(r.pnl) ? `$${r.pnl.toFixed(2)}` : '$? ';
+      const pnlPct = Number.isFinite(r.pnlPct) ? (r.pnlPct * 100).toFixed(1) : '?';
+      const hold = Number.isFinite(r.holdMin) ? `${r.holdMin}min` : '?min';
+      return `#${i + 1} ${side} ${sym} ${r.outcome ?? '?'} pnl=${pnl} (${pnlPct}%) hold=${hold} exit=${r.exitType ?? '?'} regime=${r.regime ?? '?'} ${features} ${olr} ${shadow} | ${thesis}`;
+    } catch {
+      return `#${i + 1} [malformed record — skipped]`;
+    }
   }).join('\n');
 
   const dirSummary = buildDirectionSummary(records);
@@ -1350,11 +1363,17 @@ function readChangelogTail(versions: number): string {
 
 function buildDirectionSummary(records: ThesisExperienceRecord[]): string {
   const map = new Map<string, { buy: { w: number; l: number }; sell: { w: number; l: number } }>();
-  for (const r of records) {
-    let e = map.get(r.symbol);
-    if (!e) { e = { buy: { w: 0, l: 0 }, sell: { w: 0, l: 0 } }; map.set(r.symbol, e); }
-    if (r.side === 'buy') { if (r.outcome === 'WIN') e.buy.w++; else e.buy.l++; }
-    else { if (r.outcome === 'WIN') e.sell.w++; else e.sell.l++; }
+  for (const raw of records) {
+    // P9-reflection-attack: per-record guard——garbage record(symbol null/side 垃圾)skip
+    try {
+      const symbol = String(raw.symbol ?? '?');
+      const side = raw.side === 'buy' ? 'buy' : raw.side === 'sell' ? 'sell' : null;
+      if (!side) continue;
+      let e = map.get(symbol);
+      if (!e) { e = { buy: { w: 0, l: 0 }, sell: { w: 0, l: 0 } }; map.set(symbol, e); }
+      if (side === 'buy') { if (raw.outcome === 'WIN') e.buy.w++; else e.buy.l++; }
+      else { if (raw.outcome === 'WIN') e.sell.w++; else e.sell.l++; }
+    } catch { continue; }
   }
   const lines: string[] = [];
   for (const [sym, s] of map) {
@@ -1373,14 +1392,19 @@ function buildDirectionSummary(records: ThesisExperienceRecord[]): string {
 function buildTradePatternAnalysis(records: ThesisExperienceRecord[]): string {
   const recent30 = records.slice(-30);
   const map = new Map<string, { wins: number; losses: number; totalPnl: number; trades: number; avgHold: number }>();
-  for (const r of recent30) {
-    const key = `${r.side.toUpperCase()} ${r.symbol}`;
-    let e = map.get(key);
-    if (!e) { e = { wins: 0, losses: 0, totalPnl: 0, trades: 0, avgHold: 0 }; map.set(key, e); }
-    e.trades++;
-    e.totalPnl += r.pnl;
-    e.avgHold += r.holdMin;
-    if (r.outcome === 'WIN') e.wins++; else e.losses++;
+  for (const raw of recent30) {
+    // P9-reflection-attack: per-record guard——garbage record skip(唔 crash 成個 audit)
+    try {
+      const side = typeof raw.side === 'string' ? raw.side.toUpperCase() : '?';
+      const symbol = String(raw.symbol ?? '?');
+      const key = `${side} ${symbol}`;
+      let e = map.get(key);
+      if (!e) { e = { wins: 0, losses: 0, totalPnl: 0, trades: 0, avgHold: 0 }; map.set(key, e); }
+      e.trades++;
+      e.totalPnl += Number.isFinite(raw.pnl) ? raw.pnl : 0;
+      e.avgHold += Number.isFinite(raw.holdMin) ? raw.holdMin : 0;
+      if (raw.outcome === 'WIN') e.wins++; else e.losses++;
+    } catch { continue; }
   }
   const lines: string[] = [];
   const sorted = [...map.entries()].sort((a, b) => a[1].totalPnl - b[1].totalPnl);
