@@ -84,6 +84,21 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **落地**: `P9_SOFTGATE_DISABLE` env（預設 success-pattern,reversal-point,convexity,mae-pattern;逗號分隔;空 = 全部恢復）——4 個 gate 乘入前 skip（shape/convexity 拆開 ternary——唔會誤傷 shape）; mae-pattern/reversal-point 原有 env flag 保留疊加
 - **驗證**: 全量 **4474 pass + 13 pre-existing（零新增）**; tsc clean; SCL 樣本數小時後嚴格重驗停用成效（2-4 週確認）
 
+### 攻擊輪（P9-softgate-scl-attack——8 向量, 2 真漏洞修復）
+| # | 向量 | 結果 |
+|:--|:--|:--|
+| V1 | **snapshotSelfStats garbage sym/side（Symbol 入 normalizeSymbol / template literal crash）** | 🔴 **修**: sym string guard + side 白名單（同 openShadowTrades 一致）|
+| V2 | wilsonScore 極端（1e308/NaN/負 wins）→ verdict 唔誤判 | 🟢 全防（EV≤0 唔 boost;guard 唔出 verdict）|
+| V3 | stats cell 狀態注入（totalPnlPct=1e308/NaN/-Infinity）| 🟢 唔 crash（現有 guard 擋）|
+| V5 | **openShadowTrades garbage olrPwin → 收據唔完整（冇 cell 時 OLR pwin 唔記）** | 🔴 **修**: OLR pwin 係獨立統計 lean——cell 冇都照記（抽 `olrField()` helper,收據完整）|
+| V6 | safeEntryStats 持久化污染（verdict 'BLOCK'/true/array;OLR string/1.7/NaN）| 🟢 白名單全防（verdict 三值 / OLR clamp / garbage → 唔入）|
+| V7 | load 兼容（舊 shadow-state 冇新字段）| 🟢 唔 crash 唔出垃圾|
+| V8 | 併發 snapshotSelfStats × 100 | 🟢 一致無 race|
+
+**驗證**: 新攻擊測試 7 + 原 SCL 測試 6（13/13 全綠）; 全量 **4481 pass + 13 pre-existing（零新增）**; tsc clean。
+
+**量化提升候選（P11, 列 pending——唔即刻實裝）**: P2 重驗發現 shadow WR 8/8 symbol 負 ρ（開倉時 WR 高 → 結果差, mean-reversion）→ 候選「shadow WR 反指標」（WR 高 → 降注/反向）——但 shadow 樣本 qrl 佔 97%（ε-greedy 探索 noise）——需 SCL 樣本 + aligned/statistical shadow 嚴格驗證 + 831 先定案。
+
 ---
 
 ## v2.0.873-P9-postmortem-hardening（2026-09-08：九月八號賽後檢討 → 7 條永久原則 → P3-P6 落地）

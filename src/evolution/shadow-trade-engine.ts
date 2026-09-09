@@ -1576,10 +1576,22 @@ export class ShadowTradeEngine {
    * (per-gate 分辨力,2392 筆/日,數小時達標)唔使等 real 稀疏樣本。
    */
   private snapshotSelfStats(sym: string, side: 'buy' | 'sell', olrPwin?: number | null): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } {
+    // V1(attack-round, 2026-09-09): sym garbage(Symbol/null/空/數字)唔可以入 normalizeSymbol——
+    // String(Symbol) 會 TypeError crash。同 openShadowTrades 嘅 symbol guard 一致。
+    if (typeof sym !== 'string' || sym.trim().length === 0) return {};
+    // V1b(attack-round): side 都要白名單——Symbol/垃圾入 template literal `${side}` 會 TypeError。
+    if (side !== 'buy' && side !== 'sell') return {};
+    // V5(attack-round): OLR pwin 係獨立統計 lean 收據——唔應該被 self-stats cell 有冇而決定——
+    // cell 冇(自我 WR 未夠樣本)都照記 OLR(收據完整);抽 helper 避免同下方重複。
+    const olrField = (): { entryOlrPWinAtOpen?: number | null } => {
+      if (typeof olrPwin === 'number' && Number.isFinite(olrPwin)) return { entryOlrPWinAtOpen: Math.min(Math.max(olrPwin, 0), 1) };
+      if (olrPwin === null) return { entryOlrPWinAtOpen: null };
+      return {};
+    };
     const cell = this.statsBySymbolSide.get(`${normalizeSymbol(sym)}|${side}`);
     // ATTACK-round: state-injection guard — NaN/negative/infinite cell must NOT
     // produce a poisoned record (NaN WR / negative n / 1e308 EV).
-    if (!cell || !Number.isFinite(cell.wins) || !Number.isFinite(cell.losses) || cell.wins < 0 || cell.losses < 0) return {};
+    if (!cell || !Number.isFinite(cell.wins) || !Number.isFinite(cell.losses) || cell.wins < 0 || cell.losses < 0) return olrField();
     const n = cell.wins + cell.losses;
     // n 本身都要 finite: 1e308+1e308 = Infinity(Number.MAX_VALUE 爆)——cap 1e9(統計不可能超)
     if (!Number.isFinite(n) || n < 5 || n > 1e9) return {};
@@ -1605,11 +1617,7 @@ export class ShadowTradeEngine {
       }
     } catch { /* 唔影響收據——verdict 缺省 neutral */ }
     // SCL: OLR pwin 收據(clamp [0,1],garbage 唔入)——記錄用嚟 Shadow 層重驗 OLR 分辨力(零決策)。
-    if (typeof olrPwin === 'number' && Number.isFinite(olrPwin)) {
-      out.entryOlrPWinAtOpen = Math.min(Math.max(olrPwin, 0), 1);
-    } else if (olrPwin === null) {
-      out.entryOlrPWinAtOpen = null;
-    }
+    Object.assign(out, olrField());
     return out;
   }
 
