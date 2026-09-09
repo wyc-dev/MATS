@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-reflection-changelog
+> **作者**: YC Wong · **版本**: 2.0.873-P9-let-run-shadow
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **測試狀態（v2.0.873-P9-core-fixes）**: vitest 4273 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
@@ -26,7 +26,7 @@
 | P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 / cycle 粒度)——潛在 +86.8 margin% | 86 筆 exit_price_lock(17 誤標已修復) | candle 級重放 + entry-quality 閾值對照 |
 | P11 | **統計 lean 分辨力嚴格重驗(SCL 收據, 2026-09-09 新增)**: shadow WR 反指標(8/8 symbol 負 ρ) + OLR pwin 分辨力(real ρ=+0.02 已證偽)——用 SCL 收據(verdict/OLR/WR/EV, 2392 筆/日)數小時 n≥15 | 收據由 09-09 起累積(60/60 真值已驗證) | 樣本累積(數小時) → shadow-gate 方向 + lean 衝突偵測裁決(831) |
 | P14 | **clean entryShadowWinRate 樣本追蹤(shadow-gate 中立化確認, 2026-09-09 新增)**: Real clean(entry-snapshot)累積 31 筆——WR≥0.55 → −3.31%(n=5 太細)/「反向唔成立」(低 WR 側 shadow 35.3% 都差——極端信心懲罰,唔係方向反指標)——需 n≥15 確認 + shadow-gate 中立化(如批准)後 real 成效 | 31 筆 clean(n=5 高 WR 組) | 樣本累積(2-4 週) |
-| P12 | **BUY 贏單 let-run(A/B/C, 2026-09-09 新增)**: 大 giveback 2.4pp/筆——D(close-path 重放)樣本≥30 後裁決落地方式: A 動態閾值(分方向 dip=mfeP90) / B 保守版(MFE>2×per-symbol 中位) / C edge 條件(買 tip 訊號下 PAEL 閾值→mfeP90——最貼 EDGE-FIRST) | Close-Path Recorder 由 09-09 起收集(close 後 24h price path——sample 0) | 樣本≥30(2-4 週) → p9-let-run-replay → 831 裁決 |
+| P12 | **BUY 贏單 let-run(A/B/C, 2026-09-09)**: 大 giveback 2.4pp/筆——D(shadow close-path 幾小時樣本)重放後裁決: A 動態閾值(dip=mfeP90) / B 保守(MFE>2×中位) / C edge 條件(買 tip 下 mfeP90——最貼 EDGE-FIRST) | Close-Path Recorder(real + shadow resolve 收集)——shadow 幾小時累積 | shadow 樣本≥30 → p9-let-run-replay → 831 裁決 |
 
 ---
 

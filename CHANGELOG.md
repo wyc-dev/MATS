@@ -9327,3 +9327,23 @@ MAE -8.47% · MFE +2.20%
 
 ### 教訓(第二次 template literal backtick bug)
 - 1c32986 在 SYSTEM_PROMPT 插入 `### SE-reflection` 用 backtick → TS break → 410e825 hotfix——**prompt/文檔層插入一律唔可以用 backtick + 非 ASCII 符號喺 template literal**
+
+## v2.0.873-P9-let-run-shadow（2026-09-09, 主神 D「candle path 精確重放」+「擴充 recorder 收 shadow → 幾小時」）
+
+### ① Close-Path Recorder（D 基建——零決策純數據）
+- `src/evolution/close-path-recorder.ts`: real trade 統一 resolve 出口(onExchangeClosedLearning)記錄 close 後 24h price path(high/low/last)——append-only JSONL(data/archive/close-path-archive.jsonl)——每 cycle update/finalize——garbage 全防(typeof guard/id/side/price/ts clamp + mfe/pnl 非 finite skip)
+- `scripts/p9-let-run-replay.ts`: 樣本≥30 → 「lock 50%/80%/唔 lock(full path)→ 用真實 post-close high 回收 vs 實收」——零 look-ahead——分方向(dip/trend——momentumLongAtClose)——831 裁決
+
+### ② Shadow 加速（A/B/C 由 2-4 週 → 幾小時）
+- shadow-trade-engine: onShadowResolved callback(force_resolve/sl_tp 兩處 resolve 通知)+ notifyShadowResolved 加固(side 白名單/mfe·pnl 非 finite skip——同 recorder 一致)
+- index: shadowEngine init 後接線 → recorder(source:'shadow')
+- recorder: source shadow/real 分層 + replay 分層裁決 + partial path(唔等 24h)
+
+### ③ 攻擊輪加固(letrun-shadow-attack)
+- V1🔴 side 冇白名單('hold'→buy——post-close 方向錯)→ 白名單
+- V2🔴 mfe/pnl garbage → 0 照 emit 唔一致 → skip(同 recorder 一致)
+- 全量 **4516 pass + 13 pre-existing**; tsc clean
+
+### ④ 順修
+- 誤刪 setOnExchangeClosedUI(UI 更新)→ 補返(生產級審查救返)
+- P12 pending: A(動態閾值 dip=mfeP90)/B(保守 MFE>2×中位)/C(edge 條件買 tip 下 mfeP90)——shadow 幾小時樣本 → replay → 831 裁決
