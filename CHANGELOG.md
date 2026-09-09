@@ -9310,3 +9310,19 @@ MAE -8.47% · MFE +2.20%
 - V1🔴 evaluateDeadweightGates Proxy getter bomb throw → 純函數契約 → 全 try/catch + 巨型垃圾/超大 hits 防禦
 - V3🟢 **功能完整性完成**: `isGateDeadweight` + 3 個 close gate 執行點 skip(sentinel→照 consensus / reentry→唔 block / holdmin→唔 defer)——**gate 生命周期閉環(量度→評估→停用→唔執行)**
 - 全量 **4502 pass + 13 pre-existing**; tsc clean
+
+## v2.0.873-P9-reflection-changelog（2026-09-09, 主神「反思結論必須 update CHANGELOG——必須啊」）
+
+### ① SE 反思→結論/改動 強制寫入 CHANGELOG 條例
+- SystemEngineer.md 加「🌀 反思結論必須寫入 CHANGELOG(強制)」: 有改動→changelogEntry ✓ / **有新結論但冇改動**(診斷/候選/否決/觀察)→ 同樣必須寫入(`### SE-reflection: <結論>`)/ 冇結論→唔寫(防 spam)——**CHANGELOG = 系統思考日記**
+- system-engineer.ts SYSTEM_PROMPT 加 CHANGELOG COMMITMENT——每次反思後有新結論/改動 → MUST 提案 changelogEntry
+
+### ② changelog-entry-attack 加固(結論條例落點)
+- `sanitizeChangelogEntry` 新純函數(export 可測): 結構注入(---/## 偽造版本)剝除 + type guard + length cap 500 + 開頭 ### 統一 SE-reflection prefix
+- **冇 --- 分隔 → append 檔尾 fallback**(結論唔可以靜默丟失——「必須啊」)
+- **temp+rename atomic 寫**(併發安全——同其他學習組件一致)
+- `updateArchitecture` 同款加固
+- 全量 **4505 pass + 13 pre-existing**; tsc clean
+
+### 教訓(第二次 template literal backtick bug)
+- 1c32986 在 SYSTEM_PROMPT 插入 `### SE-reflection` 用 backtick → TS break → 410e825 hotfix——**prompt/文檔層插入一律唔可以用 backtick + 非 ASCII 符號喺 template literal**
