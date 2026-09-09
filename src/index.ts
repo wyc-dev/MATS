@@ -1780,13 +1780,14 @@ class MATSSystem {
         // 收集(零決策——主神 D:candle path 精確重放「let-run」alpha 驗證基建)。
         try {
           if (trade && typeof trade === 'object' && typeof trade.symbol === 'string' && Number.isFinite(trade.pnlPct)) {
-            const t = trade as { id?: string; side?: string; entryPrice?: number; exitPrice?: number; closedAt?: number; openedAt?: number; investment?: number; maxValueReached?: number; symbol?: string; pnlPct?: number };
+            const t = trade as { id?: string; side?: string; entryPrice?: number; exitPrice?: number; closedAt?: number; openedAt?: number; investment?: number; maxValueReached?: number; symbol?: string; pnlPct?: number; entryMarketFeatures?: { momentumLong?: number } };
             const inv = Number(t.investment) > 0 ? Number(t.investment) : 0;
             const mfePct = inv > 0 && Number.isFinite(t.maxValueReached) ? ((Number(t.maxValueReached) - inv) / inv) : 0;
             this.closePathRecorder.record({
               id: t.id ?? `${t.symbol}:${t.closedAt ?? Date.now()}`, symbol: t.symbol, side: t.side,
               entryPrice: t.entryPrice, closePrice: t.exitPrice, closedAt: t.closedAt ?? Date.now(),
               mfeAtClosePct: mfePct, pnlPctAtClose: Number(t.pnlPct),
+              momentumLongAtClose: t.entryMarketFeatures?.momentumLong,
             });
           }
         } catch { /* 非致命——recorder 失敗唔影響 close */ }

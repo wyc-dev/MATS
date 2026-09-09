@@ -23,6 +23,8 @@ export interface ClosedPathRecord {
   /** 開倉至 close 期間 MFE(margin %——由 maxValueReached 折算) */
   mfeAtClosePct: number;
   pnlPctAtClose: number;
+  /** 開倉時 4h 動量 lean(finite 先存——重放分方向: dip vs trend) */
+  momentumLongAtClose?: number;
   /** post-close 追蹤(空 = 未更新) */
   postClose: { high: number; low: number; last: number; ts: number } | null;
   finalizedAt?: number;
@@ -41,44 +43,53 @@ export class ClosePathRecorder {
   record(input: {
     id: unknown; symbol: unknown; side: unknown; entryPrice: unknown; closePrice: unknown;
     closedAt: unknown; mfeAtClosePct: unknown; pnlPctAtClose: unknown;
+    momentumLongAtClose?: unknown;
   }): void {
     try {
       const id = typeof input.id === 'string' ? input.id.slice(0, 64) : '';
       const symbol = typeof input.symbol === 'string' ? input.symbol.replace(/[\x00-\x1F]/g, '').slice(0, 24) : '';
       const side = input.side === 'buy' || input.side === 'sell' ? input.side : '';
       if (!id || !symbol || !side) return;
-      const entry = Number(input.entryPrice);
-      const close = Number(input.closePrice);
-      const ts = Number(input.closedAt);
+      // Number(Symbol) throws——全部用 typeof guard(唔可以用 Number() 包 garbage)
+      const entry = typeof input.entryPrice === 'number' ? input.entryPrice : NaN;
+      const close = typeof input.closePrice === 'number' ? input.closePrice : NaN;
+      const ts = typeof input.closedAt === 'number' ? input.closedAt : NaN;
+      const mfe = typeof input.mfeAtClosePct === 'number' ? input.mfeAtClosePct : NaN;
+      const pnl = typeof input.pnlPctAtClose === 'number' ? input.pnlPctAtClose : NaN;
       if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(close) || close <= 0) return;
       if (!Number.isFinite(ts) || ts <= 0 || ts > MAX_TS_MS) return;
       if (entry > MAX_PRICE || close > MAX_PRICE) return;
+      // mfe/pnl 唔 finite(garbage)→ skip——半吊子記錄冇價值(重放會歪曲)
+      if (!Number.isFinite(mfe) || !Number.isFinite(pnl)) return;
       this.pending.set(id, {
         id, symbol, side, entryPrice: entry, closePrice: close, closedAt: ts,
-        mfeAtClosePct: Number.isFinite(input.mfeAtClosePct) ? Math.min(Math.max(input.mfeAtClosePct as number, 0), 1000) : 0,
-        pnlPctAtClose: Number.isFinite(input.pnlPctAtClose) ? (input.pnlPctAtClose as number) : 0,
+        mfeAtClosePct: Math.min(Math.max(mfe, 0), 1000),
+        pnlPctAtClose: pnl,
+        momentumLongAtClose: typeof input.momentumLongAtClose === 'number' && Number.isFinite(input.momentumLongAtClose) ? Math.min(Math.max(input.momentumLongAtClose as number, -1), 1) : undefined,
         postClose: null,
       });
     } catch { /* skip */ }
   }
 
-  /** 每 cycle 更新 post-close 極值(price 無效/garbage → 唔更新——保守) */
+  /** 每 cycle 更新 post-close 極值(price 無效/garbage → 唔更新——保守;唔可以 throw) */
   update(symbol: unknown, price: unknown, now: number): void {
-    const sym = typeof symbol === 'string' ? symbol : '';
-    const p = Number(price);
-    if (!sym || !Number.isFinite(p) || p <= 0 || p > MAX_PRICE) return;
-    if (!Number.isFinite(now) || now <= 0) return;
-    for (const rec of this.pending.values()) {
-      if (rec.symbol !== sym) continue;
-      if (now - rec.closedAt < 0 || now - rec.closedAt > WINDOW_MS) continue;
-      const cur = rec.postClose;
-      rec.postClose = {
-        high: cur ? Math.max(cur.high, p) : p,
-        low: cur ? Math.min(cur.low, p) : p,
-        last: p,
-        ts: now,
-      };
-    }
+    try {
+      const sym = typeof symbol === 'string' ? symbol : '';
+      const p = typeof price === 'number' && Number.isFinite(price) ? price : NaN; // 唔可以用 Number(garbage)——Symbol throw
+      if (!sym || !Number.isFinite(p) || p <= 0 || p > MAX_PRICE) return;
+      if (typeof now !== 'number' || !Number.isFinite(now) || now <= 0) return;
+      for (const rec of this.pending.values()) {
+        if (rec.symbol !== sym) continue;
+        if (now - rec.closedAt < 0 || now - rec.closedAt > WINDOW_MS) continue;
+        const cur = rec.postClose;
+        rec.postClose = {
+          high: cur ? Math.max(cur.high, p) : p,
+          low: cur ? Math.min(cur.low, p) : p,
+          last: p,
+          ts: now,
+        };
+      }
+    } catch { /* 唔可以 throw——純記錄 */ }
   }
 
   /** 超過 24h → finalize + append JSONL(append-only)+ 移除 pending */
