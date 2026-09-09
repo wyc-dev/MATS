@@ -11,7 +11,7 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 | # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
 |:--|:---|:---|:---|:---|
 | P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決 + 減法落地(2026-09-09)** | §27 六誤傷候選真偽——attribution hit-miss 375 records 誤傷率 causal 78%/eq-ev 63%/reversal-point 60%/success-pattern+convexity 55%/mae-pattern 53%（出手組 avg 全 > 全場）→ **減法重播**(scripts/p9-softgate-ablation.ts): 停用 4 個樣本充足(n≥15)誤傷 gate（success-pattern/reversal-point/convexity/mae-pattern, env `P9_SOFTGATE_DISABLE` 回滾）;causal/eq-ev 樣本不足保留;有效對照 shape/trend-alignment/four-window 保留——停用期望 +40.4/29.5/23.3/22.2pp(中性檔) | 減法已落地(env 可即時回滾);**SCL 樣本(verdict/OLR 收據 2392 筆/日)數小時達標 → 嚴格重驗 + 2-4 週後確認停用成效** | SCL 樣本 + 主神複審 |
-| P2 | shadow WR ρ 重驗（attack-round6/7） | ρ 預測力——E1 fallback 假象 vs bnb symbol 效應 | 122 舊筆 live-fallback；clean entry-snapshot 累積中 | 2-4 週 |
+| P2 | **shadow WR ρ 重驗（2026-09-09 完成）**: ρ 預測力——E1 fallback 假象 vs symbol 效應 | **三層重驗一致——entryShadowWinRate 冇正預測力,真 snapshot 係反預測**: Real clean(entry-snapshot,n=29)ρ=−0.17 / Real fallback(n=99)ρ=**+0.14**(正 ρ=假象源,E1 確認) / **Shadow 2070 筆 ρ=−0.03,8/8 symbol 全負**(btc −0.05 ~ silver −0.40)——**唔係 bnb 效應,係系統性反預測**(WR 高→結果差,mean-reversion 結構)——shadow-gate「WR 高 boost」方向存疑,**SCL 收據數小時後可嚴格裁決** | 重驗完成——E1 假象確認 + symbol 效應排除——**P2 結案**;shadow-gate 方向留 SCL 嚴格重驗(2-4 週) | SCL 樣本 |
 | P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
 | P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
 | P5 | 6 soft gate 誤傷 counterfactual（mfe-expose-attack） | gate 系統性過度保守裁決 | 每 gate 10-19 樣本（269 單標準） | 2-4 週 |
