@@ -95,6 +95,7 @@ import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './a
 import { computeMom24PctFromCandles, mom24EnvThresholds, shouldBlockMom24, shouldBlockChaseTail } from './analysis/mom24-guard.ts';
 import { shouldDeferToBoundary } from './analysis/boundary-align.ts';
 import { computeSrDistancePct, shouldShrinkSrSize } from './analysis/sr-size-gate.ts';
+import { evaluateDeadweightGates, sanitizeGateName } from './analysis/gate-deadweight.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, regimeSwitchDirectionalBias, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
@@ -186,7 +187,11 @@ const dataQualityConfig = { enabled: parseBlockBool(process.env['DATA_QUALITY_BL
 const localSltpWatchConfig = { enabled: parseBlockBool(process.env['LOCAL_SLT_WATCH'], true) } as const;
 const chartConvictionConfig = { enabled: parseBlockBool(process.env['CHART_AWARE_CONVICTION'], true) } as const;
 const llmCalibrationConfig = { enabled: parseBlockBool(process.env['LLM_CONVICTION_CALIBRATION'], true) } as const;
-const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], true) } as const;
+// P9-verifier-retire(2026-09-09, 架構驗證第四次實錘): LLM Direction Verifier 已證偽——
+// windowStats 整體準確率 193/535 = 36%(1h-up 得 3% 反預測)——比 coin flip 差;
+// 而且 keptNoCurrentPrice 積壓 1,022,405 條 pending——verifyAllPending 每 cycle 掃 102 萬條(效能災難)。
+// 已證偽 + 誤導 + 效能三殺 → 預設停用(env LLM_DIRECTION_VERIFIER=true 可逆)。
+const llmDirectionConfig = { enabled: parseBlockBool(process.env['LLM_DIRECTION_VERIFIER'], false) } as const;
 const evFilterConfig = { enabled: parseBlockBool(process.env['EV_FILTER'], true) } as const;
 // v2.0.870-P6: OLR 硬閘——OLR P(win) < 30% → block（LLM 唔可以 override 統計信號）。
 // 40 單實證 trade 35(bnb -3.4%)thesis「OLR BUY P(win)=29% is against, but...」照入。
@@ -662,6 +667,8 @@ class MATSSystem {
   private componentAttribution!: ComponentAttributionStore;
   // v2.0.872-P9-attrib: 閘乘數歸因——每單 trade 嘅全部閘乘數（gate 名 × mult）
   private gateLedgerCache = new Map<string, Array<{ gate: string; mult: number }>>();
+  /** P9-got-deadweight(2026-09-09): 市場適應——GOT hit rate<45% & n≥30 嘅 gate 自動停用 set */
+  private _deadweightGates = new Set<string>();
   private lastConvLedger: Array<{ gate: string; mult: number }> | null = null;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
@@ -3473,7 +3480,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         this.hacpEngine.setSimilarTradeRetriever(this.similarTradeRetriever);
         this.hacpEngine.setSubtleDiffAnalyzer(this.subtleDiffAnalyzer);
         // P80: 成功類型統計 provider——注入 Meta-Agent & Skeptics context
-        this.hacpEngine.setSuccessPatternProvider(() => this.successPatternTracker.getStats());
+        // P9-verifier-retire(2026-09-09): success-pattern stats 全部 100% WR(backfill 假成功——
+        // data 壞)——feed agents = 誤導(agents 見到「100% 勝率 pattern」而實際 gate 誤傷 55% 無分辨力)。
+        // 移除 context feed(agents 唔再睇假數據)——tracker 記錄保留(唔影響決策)。
+        // this.hacpEngine.setSuccessPatternProvider(() => this.successPatternTracker.getStats());
         // v2.0.204: Wire Numeric Autoencoder + candidate-features provider into
         // HACP so Skeptics Phase 1.8b sees the vector-conditional win-rate block
         // (learned market-condition embedding) alongside the RIL similar-trades block.
@@ -14948,6 +14958,25 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // 「You can't tune what you can't attribute」——低 hit rate gate 進停用候選
         if (this.totalCycles % 100 === 0) {
           log.info(`[gate-outcome] per-gate: ${this.gateOutcomeTracker.summary()}`);
+          // P9-got-deadweight(2026-09-09, 市場適應): 每 100 cycle 評估 GOT——hit rate<45% & n≥30
+          // 嘅 gate → 自動 deadweight(LOUD + persist)——close context 注入 agents 知佢哋停用——
+          // env GOT_DEADWEIGHT=false 回滾。
+          if (process.env['GOT_DEADWEIGHT'] !== 'false') {
+            try {
+              const got = this.gateOutcomeTracker.getStats();
+              const dead = evaluateDeadweightGates(got as Record<string, { hits: number; misses: number }>);
+              if (dead.length) {
+                const changed = dead.some(g => !this._deadweightGates.has(sanitizeGateName(g)));
+                dead.forEach(g => this._deadweightGates.add(sanitizeGateName(g)));
+                if (changed) {
+                  log.warn(`⏳ [deadweight] 自動停用低 hit-rate gate: ${[...this._deadweightGates].join(', ')}（hit rate <45% + n≥30——市場適應）`);
+                  try {
+                    fs.writeFileSync('data/evolution/deadweight-gates.json', JSON.stringify([...this._deadweightGates], null, 2));
+                  } catch { /* persist 非致命 */ }
+                }
+              }
+            } catch { /* 非致命——評估失敗唔阻塞 */ }
+          }
         }
       } catch (err) {
         log.warn(`[gate-outcome] check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
