@@ -9582,6 +9582,8 @@ ${recentExamples}
                   mktSym, mktPrice, qrlLean.lean, qrlSlPrice, qrlTpPrice,
                   this.totalCycles, qrlFeatures,
                   { spread: qrlLean.spread, buyQ: qrlLean.buy.q, sellQ: qrlLean.sell.q },
+                  // SCL(2026-09-09): 開倉時 OLR P(win) 收據——qrl 佔 97% 樣本,漏咗會令 OLR 收據全缺
+                  this.olrShadowPwin(mktSym, qrlLean.lean, qrlFeatures),
                 );
                 log.info(`[shadow] QRL arm ${qrlLean.lean.toUpperCase()} ${mktSym} (spread=${(qrlLean.spread * 100).toFixed(2)}pp, buy n=${qrlLean.buy.visits}, sell n=${qrlLean.sell.visits}) — independent of LLM votes (Phase 1.5)`);
               }
