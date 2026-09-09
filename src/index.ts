@@ -298,9 +298,11 @@ const exitPriceLockConfig = {
  *    出手組 avg 全部 > 全場 +0.43% = 收緊咗本應賺嘅倉(大賺 cover 命中細蝕——停用反而釋放正期望);
  *    causal 78%(n=9)/eq-ev 63%(n=8) 樣本不足 → 保留收集; shape/trend-alignment/four-window 有效對照 → 保留。
  *  env 回滾: P9_SOFTGATE_DISABLE=''(全部恢復)或指定子集(逗號分隔)。
- *  P9-provenance-restrict(2026-09-09): += cal-trust(誤傷 55%,n=56 樣本最大之一)。 */
+ *  P9-provenance-restrict(2026-09-09): += cal-trust(誤傷 55%,n=56 樣本最大之一)。
+ *  P9-softgate-ablation-v2(2026-09-09, 主神 ⑤ 驗證矩陣後): += causal(78%,n=9)/chart-aware(75%,n=8)/eq-ev(63%,n=8)
+ *  ——唔包 macro(出手組 avg −0.27% = 壓得啱,保留)。 */
 const P9_SOFTGATE_DISABLE = new Set(
-  (process.env['P9_SOFTGATE_DISABLE'] ?? 'success-pattern,reversal-point,convexity,mae-pattern,cal-trust')
+  (process.env['P9_SOFTGATE_DISABLE'] ?? 'success-pattern,reversal-point,convexity,mae-pattern,cal-trust,causal,chart-aware,eq-ev')
     .split(',').map((s: string) => s.trim()).filter(Boolean),
 );
 
@@ -14323,7 +14325,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         try {
           if ((gateAction === 'buy' || gateAction === 'sell') && this.entryQuality) {
             const eqProf = this.entryQuality.getProfile(pwinSym, gateAction);
-            if (eqProf && eqProf.evMultiplier < 1.0) {
+            // P9-softgate-ablation-v2(2026-09-09, 主神 ⑤): eq-ev 誤傷 63%(n=8, 出手組 avg +1.87%)——停用
+            if (eqProf && eqProf.evMultiplier < 1.0 && !P9_SOFTGATE_DISABLE.has('eq-ev')) {
               effectiveConfidence *= eqProf.evMultiplier;
           convLedger.push({ gate: 'eq-ev', mult: eqProf.evMultiplier });
               log.info(`🟠 [entry-ev] ${gateAction.toUpperCase()} ${pwinSym}: 保守 EV ${eqProf.ev.toFixed(2)}% margin (n=${eqProf.n}, winLB ${(eqProf.wilsonLB * 100).toFixed(0)}%) → conviction ×${eqProf.evMultiplier}`);
@@ -14343,7 +14346,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               pwinSym, gateAction as 'buy' | 'sell', regime,
             )
           : 1.0;
-        if (causalMultiplier < 1.0) {
+        // P9-softgate-ablation-v2(2026-09-09, 主神 ⑤): gate:causal 誤傷 78%(n=9)——停用
+        if (causalMultiplier < 1.0 && !P9_SOFTGATE_DISABLE.has('causal')) {
           effectiveConfidence *= causalMultiplier;
           convLedger.push({ gate: 'causal', mult: causalMultiplier });
           log.info(`🟠 [causal-gate] ${gateAction.toUpperCase()} ${pwinSym}: negative causal uplift → conviction ×${causalMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
@@ -14380,7 +14384,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         const chartMultiplier = gateAction !== 'hold'
           ? this.computeChartConviction(gateAction as 'buy' | 'sell', finalDecision.rationale)
           : 1.0;
-        if (chartMultiplier < 1.0) {
+        // P9-softgate-ablation-v2(2026-09-09, 主神 ⑤): chart-aware 誤傷 75%(n=8, 出手組 avg +2.40%)——停用
+        if (chartMultiplier < 1.0 && !P9_SOFTGATE_DISABLE.has('chart-aware')) {
           effectiveConfidence *= chartMultiplier;
           convLedger.push({ gate: 'chart-aware', mult: chartMultiplier });
           log.info(`📊 [chart-aware] ${gateAction.toUpperCase()} ${pwinSym}: K-LINE 反向/數據異常 → conviction ×${chartMultiplier.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
