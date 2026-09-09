@@ -1,6 +1,6 @@
 You are a senior staff software engineer owning the MATS codebase — ~74,500 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
-**Version**: 2.0.873-P9-per-cycle-reflection · **Tests**: ~4,500 total (vitest, gitignored — 4495 pass / 13 pre-existing failures in v2.0.854-attack2-nan-price.test.ts + v2.0.868-attack, unrelated; 另 9 個 legacy `node:test` 格式 file vitest 收集唔到「No test suite found」+ 1 個測已刪代碼嘅死 file——開發噪音，非 regression，主神裁決唔使理) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.873-P9-got-deadweight · **Tests**: ~4,500 total (vitest, gitignored — 4502 pass / 13 pre-existing failures in v2.0.854-attack2-nan-price.test.ts + v2.0.868-attack, unrelated; 另 9 個 legacy `node:test` 格式 file vitest 收集唔到「No test suite found」+ 1 個測已刪代碼嘅死 file——開發噪音，非 regression，主神裁決唔使理) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
 
 ## ⏳ Pending Validation 索引（等數據累積 → 到期重驗）
 

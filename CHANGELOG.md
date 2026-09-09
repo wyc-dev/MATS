@@ -9293,3 +9293,20 @@ MAE -8.47% · MFE +2.20%
 
 ### 教訓(寫入思維)
 - 01dc3f0 曾喺 template literal 插入 triple-backtick → TS1127(commit 壞 code)→ 6576daf hotfix 改 `[REFLECTION BLOCK]` 標記——「改 code 都要 tsc prove」——同「診斷要 prove」同一律
+
+## v2.0.873-P9-got-deadweight + verifier-retire（2026-09-09, 主神「架構驗證第四次」→ 批准 fix + 攻擊輪）
+
+### ① P9-softgate-ablation-v2（停用 3 個細樣本誤傷 gate）
+- 驗證矩陣修正: macro 出手組 avg −0.27%=壓得啱→ **唔停**;causal 分開 gate:causal(78%,n=9, +2.06%)vs causal-uplift(另一組件)
+- 停用: gate:causal 78% / chart-aware 75%(n=8, +2.40%)/ eq-ev 63%(n=8, +1.87%)——誤傷>60% + 出手組 avg 遠高全場
+- P9_SOFTGATE_DISABLE 共 8 個(env 可回滾)
+
+### ② A/B/D 落地（架構驗證第四次）
+- **A 🔴 LLM Direction Verifier 預設停用**(LLM_DIRECTION_VERIFIER default false): windowStats 準確率 193/535=36%(1h-up 3% 反預測)+ **積壓 1,022,405 條 pending**(每 cycle 掃描效能災難)——已證偽+誤導+效能三殺
+- **B 🔴 success-pattern context feed 移除**: stats 全部 pattern WR 100%(backfill 假成功 data 壞)——agents 睇「100%勝率」= 誤導——tracker 記錄保留
+- **D 🟢 GOT 自動 deadweight**(`src/analysis/gate-deadweight.ts`): hit rate<45% + n≥30 → 自動停用(每 100 cycle 評估 + LOUD + persist deadweight-gates.json + env GOT_DEADWEIGHT 回滾)
+
+### ③ 攻擊輪加固（verifier-deadweight-attack）
+- V1🔴 evaluateDeadweightGates Proxy getter bomb throw → 純函數契約 → 全 try/catch + 巨型垃圾/超大 hits 防禦
+- V3🟢 **功能完整性完成**: `isGateDeadweight` + 3 個 close gate 執行點 skip(sentinel→照 consensus / reentry→唔 block / holdmin→唔 defer)——**gate 生命周期閉環(量度→評估→停用→唔執行)**
+- 全量 **4502 pass + 13 pre-existing**; tsc clean
