@@ -669,6 +669,11 @@ class MATSSystem {
   private gateLedgerCache = new Map<string, Array<{ gate: string; mult: number }>>();
   /** P9-got-deadweight(2026-09-09): 市場適應——GOT hit rate<45% & n≥30 嘅 gate 自動停用 set */
   private _deadweightGates = new Set<string>();
+
+  /** P9-got-deadweight: gate 自動停用 check——deadweight set 內 → 唔執行(gate 生命周期管理) */
+  private isGateDeadweight(name: string): boolean {
+    return this._deadweightGates.has(name);
+  }
   private lastConvLedger: Array<{ gate: string; mult: number }> | null = null;
   private sentimentEngine!: SentimentEngine;
   /** v2.0.105: Adaptive noise filter — sigmoid+EMA with per-cycle auto-tuning */
@@ -5672,7 +5677,7 @@ ${recentExamples}
       if (process.env['REENTRY_COOLDOWN_MIN'] !== '0') {
         const rcSym = normalizeSymbol(sym);
         const rc = this.lockReentryCooldowns.get(rcSym);
-        if (rc && shouldBlockReentry(rc, action, Date.now())) {
+        if (rc && !this.isGateDeadweight('reentry-cooldown') && shouldBlockReentry(rc, action, Date.now())) {
           return { confidence: 0, blocked: true, reason: `reentry-cooldown: ${rcSym} ${action} 鎖利後 1h 冷卻中（防「鎖完又追」）`, size: 0 };
         }
         if (rc && !shouldBlockReentry(rc, action, Date.now())) this.lockReentryCooldowns.delete(rcSym);
@@ -12923,7 +12928,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             const slHitNow = holdSlPrice > 0 && holdCurPrice > 0 &&
               ((isBuySide(pos!.side) && holdCurPrice <= holdSlPrice) ||
                (isSellSide(pos!.side) && holdCurPrice >= holdSlPrice));
-            if (pos && holdMinNow < P9_HOLD_MIN_MINUTES && !slHitNow && unrealizedNow > -0.03) {
+            if (pos && !this.isGateDeadweight('p9-holdmin-protection') && holdMinNow < P9_HOLD_MIN_MINUTES && !slHitNow && unrealizedNow > -0.03) {
               // v2.0.873-P9-got-observe: GOT 閉環（source site——close defer 命中 = 價格返嚟）
               try {
                 if (holdCurPrice > 0) {
@@ -16507,7 +16512,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             { interval: '5m', candles: c5m ?? [] },
           ],
         });
-        const decision = shouldHoldCloseFromSentinel(result, (pos.unrealizedPnlPct ?? 0) > 0);
+        const decision = this.isGateDeadweight('sentinel')
+          ? { hold: false, reason: 'P9-deadweight: sentinel gate 已自動停用(hit rate<45%)——照 consensus close' }
+          : shouldHoldCloseFromSentinel(result, (pos.unrealizedPnlPct ?? 0) > 0);
         // v2.0.870-FIX-E2(主神批准): 回傳 verdict + confidence——call site 判斷
         // 「sentinel CLOSE 高信心(≥0.7)→ skip Skeptics」——慳一次 LLM + 快離場
         const resultMeta = {
