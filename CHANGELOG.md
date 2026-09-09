@@ -20,6 +20,8 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 | P8 | time-window 候選 1/2/3 接駁（time-window）
 | P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
 | P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09 新增)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 閾值 / cycle 粒度 / PAEL threshold 高於細 MFE)──潛在 +86.8 margin%(等權) | 86 筆 exit_price_lock(17 誤標已修復由今日起乾淨累積) | candle 級重放 + entry-quality per-symbol 閾值對照 |
+| P11 | **統計 lean 分辨力嚴格重驗(SCL 收據, 2026-09-09 新增)**: shadow WR 反指標(8/8 symbol 負 ρ) + OLR pwin 分辨力(real ρ=+0.02 已證偽)——用 SCL 收據(verdict/OLR/WR/EV, 2392 筆/日)數小時 n≥15 | 收據由 09-09 起累積(60/60 真值已驗證) | 樣本累積(數小時) → shadow-gate 方向 + lean 衝突偵測裁決(831) |
+| P14 | **clean entryShadowWinRate 樣本追蹤(shadow-gate 中立化確認, 2026-09-09 新增)**: Real clean(entry-snapshot)累積 31 筆——WR≥0.55 → −3.31%(n=5 太細)/「反向唔成立」(低 WR 側 shadow 35.3% 都差——極端信心懲罰,唔係方向反指標)——需 n≥15 確認 + shadow-gate 中立化(如批准)後 real 成效 | 31 筆 clean(n=5 高 WR 組) | 樣本累積(2-4 週) |
 
 ---
 
