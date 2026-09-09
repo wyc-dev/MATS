@@ -139,7 +139,7 @@ import { CycleSummaryManager } from './evolution/cycle-summary.ts';
 import { AntiPatternTracker } from './evolution/anti-pattern-tracker.ts';
 import { TradePatternClassifier } from './evolution/trade-pattern-classifier.ts';
 import { PatternTagTracker } from './evolution/pattern-tag-tracker.ts';
-import { OLREngine, type OLRQueryResult, regimeToOrdinal, FEATURE_NAMES } from './evolution/olr-engine.ts';
+import { OLREngine, type OLRQueryResult, regimeToOrdinal, FEATURE_NAMES, pickOlrPwin } from './evolution/olr-engine.ts';
 import { NumericAutoencoder } from './evolution/numeric-autoencoder.ts';
 import { ENTRY_CONDITION_FEATURES, computeVectorConditionalWinRate, entryDecisionCondWROptions, safeNum } from './evolution/evolution-utils.ts';
 import { selectExplorationTargetPure, toHLSymbol } from './evolution/emr-select.ts';
@@ -5819,13 +5819,14 @@ ${recentExamples}
   }
 
   /** SCL(2026-09-09): shadow 開倉時 OLR P(win) 收據——統計 lean 光譜嘅 real 側。
-   *  query 失敗/垃圾/冇數據 → null(冇收據,唔阻塞 shadow 開倉)。clamp [0,1]。零決策。 */
+   *  query 失敗/垃圾/冇數據 → null(冇收據,唔阻塞 shadow 開倉)。
+   *  🔴 語義修正(pickOlrPwin): empty query(nSamples=0)返回 pWin=0.5 係「缺席佔位」
+   *  唔係預測——必須有真實樣本先記收據,否則 null(誠實缺席——同 P2 fallback 假象教訓)。 */
   private olrShadowPwin(sym: string, side: 'buy' | 'sell', features: Record<string, number>): number | null {
     try {
       const f = features && typeof features === 'object' ? features : {};
       const q = this.olrEngine?.query?.(normalizeSymbol(sym), f, side, this.totalCycles);
-      const p = q?.pWin;
-      return typeof p === 'number' && Number.isFinite(p) ? Math.min(Math.max(p, 0), 1) : null;
+      return pickOlrPwin(q);
     } catch { return null; }
   }
 

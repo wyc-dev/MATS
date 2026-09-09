@@ -71,10 +71,12 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 ### Phase 1 落地: SCL（Shadow Conviction Receipt）——統計 lean 光譜收據基建
 主神「先補基建嚴格版」→ 落地: shadow 每次開倉（blind/aligned/statistical/seeded/qrl 6 個開倉位）snapshot「統計 lean 光譜」——零決策邏輯改動（純記錄,白名單透傳,唔入 features/OLR 輸入）:
 - **`entryShadowGateVerdictAtOpen`**: 開倉時 shadow-gate 處置——WR<55%+EV≤0→block / wilsonLB>0.65+EV>0→boost / else neutral（同 real `applyShadowGate` 完全一致,單一 source of truth）
-- **`entryOlrPWinAtOpen`**: 開倉時 OLR P(win)（`olrShadowPwin` helper,clamp [0,1],失敗→null）——統計 lean 嘅 real 側
+- **`entryOlrPWinAtOpen`**: 開倉時 OLR P(win)（`olrShadowPwin` helper——**語義修正 `pickOlrPwin`: nSamples>0 先記真預測,空 query(缺席)標 null**——clamp [0,1],失敗→null）——統計 lean 嘅 real 側
 - 加埋已有 `entryShadowWRAtOpen`/`entryShadowPnlSumAtOpen`（snapshotSelfStats）→ **收據 = 完整統計 lean 光譜**
 - **邏輯實驗（先證後改）**: 2037 筆 shadow 分組——開倉時 WR≥0.55 → 結果 WR 21%（**反預測!同 real ρ_clean=−0.112 一致**——高信心統計 lean 係反指標,shadow-gate「WR 高 boost」方向存疑——留待 SCL 樣本嚴格重驗）
-- **驗證**: 新測試 6（verdict 三態/wilsonScore 門檻/OLR clamp+垃圾防禦/features 唔污染/garbage cell）+ 全量 **4474 pass + 13 pre-existing（零新增）**; tsc clean。
+- **qrl OLR 漏傳修復(7414cda)**: openQRLShadow call site 漏 olrShadowPwin（qrl 佔 97% 樣本）——單行補傳——live 驗證 OLR 收據 0→5
+- **🔴 缺席語義修正(pickOlrPwin)**: OLREngine.query 對「冇模型/樣本不足」返回 `{pWin:0.5, nSamples:0}`——0.5 係缺席佔位唔係預測——收據必須分辨（nSamples>0 先記,否則 null）——同 P2 fallback 假象同一失敗原型——抽 `pickOlrPwin()` 純函數（可測,測試 S1-S5）+ olrShadowPwin 改用;live 驗證 60/60 收據全真值零假 0.5
+- **驗證**: 新測試 12（攻擊 7 + 語義 5）+ 全量 **4481 pass + 13 pre-existing（零新增）**; tsc clean。
 
 ### Phase 2 落地: 減法（六誤傷候選停用 4 個, env 可回滾）
 主神「先做減法落地」→ 減法重播（`scripts/p9-softgate-ablation.ts`）: 出手組 avg 正 + 誤傷率>53% = 「誤傷(大賺單被縮) cover 命中(細蝕單被縮)」→ 停用釋放正期望:
