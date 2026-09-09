@@ -292,6 +292,17 @@ const exitPriceLockConfig = {
   minHoldMinutes: Math.max(1, Math.floor(parseLockNumEnv(process.env['EXIT_PRICE_LOCK_MIN_HOLD_MIN'], 15))),
 } as const;
 
+/** P9-softgate-ablation(2026-09-09): 減法落地——樣本充足(n≥15)+誤傷>53% soft gate 停用。
+ *  前哨裁決(scripts/p1-ablation-replay.ts + p9-softgate-ablation.ts):
+ *    success-pattern 55%(n=47)/reversal-point 60%(n=35)/convexity 55%(n=33)/mae-pattern 53%(n=17)
+ *    出手組 avg 全部 > 全場 +0.43% = 收緊咗本應賺嘅倉(大賺 cover 命中細蝕——停用反而釋放正期望);
+ *    causal 78%(n=9)/eq-ev 63%(n=8) 樣本不足 → 保留收集; shape/trend-alignment/four-window 有效對照 → 保留。
+ *  env 回滾: P9_SOFTGATE_DISABLE=''(全部恢復)或指定子集(逗號分隔)。 */
+const P9_SOFTGATE_DISABLE = new Set(
+  (process.env['P9_SOFTGATE_DISABLE'] ?? 'success-pattern,reversal-point,convexity,mae-pattern')
+    .split(',').map((s: string) => s.trim()).filter(Boolean),
+);
+
 /** v2.0.226 / v2.0.211: Compute learning weight based on close context.
  *  Extracted to src/evolution/learning-weight.ts for unit testability.
  *  See learning-weight.ts for the full decision table + v2.0.211 fix notes
@@ -13928,7 +13939,10 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // 「You can't tune what you can't attribute」——UI 睇到邊個因素係兇手。
         // 數值不變（只係分兩步計），純觀測層改動。
         const baseConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier;
-        let effectiveConfidence = baseConfidence * shapeMultiplier * convexityMultiplier;
+        // P9-softgate-ablation(2026-09-09): convexity 停用(誤傷 55%,n=33)——shape 保留(誤傷 15% 有效)。
+        const effShapeMult = P9_SOFTGATE_DISABLE.has('shape') ? 1 : shapeMultiplier;
+        const effConvexityMult = P9_SOFTGATE_DISABLE.has('convexity') ? 1 : convexityMultiplier;
+        let effectiveConfidence = baseConfidence * effShapeMult * effConvexityMult;
         // v2.0.872-P8-transparency: conviction 乘數總帳——每一個乘數都入帳，
         // Plan-G 顯示同 asset_analyses metadata 全鏈透明（主神:睇到 15% vs 0% 矛盾）。
         const convLedger: Array<{ gate: string; mult: number }> = [
@@ -14033,7 +14047,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
               // 中性 → ×0.85 / 好入場(管理問題)→ ×1.0(唔抑制)
               // 樣本太少/數據缺失 → 1.0(唔干擾)
               // 獨立 flag:MAE_PATTERN_GATE=false → 現有行為(可回滾)
-              if (process.env['MAE_PATTERN_GATE'] !== 'false' && this.entryQuality) {
+              // P9-softgate-ablation(2026-09-09): mae-pattern 停用(誤傷 53%,n=17)——減法落地
+              if (process.env['MAE_PATTERN_GATE'] !== 'false' && this.entryQuality && !P9_SOFTGATE_DISABLE.has('mae-pattern')) {
                 const maeMult = this.entryQuality.getMaePatternMultiplier(pwinSym, gateAction as 'buy' | 'sell');
                 if (maeMult < 1.0) {
                   effectiveConfidence *= maeMult;
@@ -14087,7 +14102,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // 唔用歷史統計做 gate（方案 A/C 已裁決唔做）。soft 唔閘;REVERSAL_POINT_GATE=false 回滾。
         // 驗證: SKHX -14.7% 案例 score 0.75 HIGH（×0.5）;誤傷贏單 0/6（20 筆反事實）。
         try {
-          if (process.env['REVERSAL_POINT_GATE'] !== 'false' && (gateAction === 'buy' || gateAction === 'sell')) {
+          // P9-softgate-ablation(2026-09-09): reversal-point 停用(誤傷 60%,n=35)——減法落地
+          if (process.env['REVERSAL_POINT_GATE'] !== 'false' && (gateAction === 'buy' || gateAction === 'sell') && !P9_SOFTGATE_DISABLE.has('reversal-point')) {
             const rpSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
             const entryPx = safeNum(finalDecision.entryPrice, 0);
             if (entryPx > 0) {
@@ -14202,7 +14218,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // 低波動擴張/新聞/動量確認 -1.47% 到 -2.42%（降權 ×0.7）。
         // 完整閉環: close → record → 統計（持久化 success-patterns.json）→ 入場 gate getMultiplier（soft）。
         try {
-          if ((gateAction === 'buy' || gateAction === 'sell') && this.successPatternTracker) {
+          // P9-softgate-ablation(2026-09-09): success-pattern 停用(誤傷 55%,n=47)——減法落地
+          if ((gateAction === 'buy' || gateAction === 'sell') && this.successPatternTracker && !P9_SOFTGATE_DISABLE.has('success-pattern')) {
             const sp = classifySuccessPattern(finalDecision.entryThesis);
             const spMult = this.successPatternTracker.getMultiplier(sp);
             if (spMult !== 1.0) {

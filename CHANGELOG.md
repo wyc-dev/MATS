@@ -10,7 +10,7 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 | # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
 |:--|:---|:---|:---|:---|
-| P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決完成(2026-09-09)** + **SCL 基建落地** | §27 六誤傷候選真偽——attribution hit-miss 375 records: 誤傷率 **causal 78% / eq-ev 63% / reversal-point 60% / success-pattern+convexity 55% / mae-pattern 53%**（出手組 avg 全 > 全場 +0.43%）＋重複懲罰 base×success-pattern 78% / success×reversal 75%——對照 trend-alignment 23% / shape+four-window 15% 有效（`scripts/p1-ablation-replay.ts` 可重跑）——**SCL（Shadow 乘數收據）落地: shadow 開倉收據 shadow-gate verdict + OLR pwin——2392 筆/日 → 數小時 per-gate n≥15,嚴格驗證唔再等 real** | 方向性裁決完成；**嚴格決策重播等 SCL 樣本累積 + entryConvictionLedger（21 筆）**；減法落地待主神批 + 831 流程 | SCL 樣本（數小時） + 主神批 |
+| P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決 + 減法落地(2026-09-09)** | §27 六誤傷候選真偽——attribution hit-miss 375 records 誤傷率 causal 78%/eq-ev 63%/reversal-point 60%/success-pattern+convexity 55%/mae-pattern 53%（出手組 avg 全 > 全場）→ **減法重播**(scripts/p9-softgate-ablation.ts): 停用 4 個樣本充足(n≥15)誤傷 gate（success-pattern/reversal-point/convexity/mae-pattern, env `P9_SOFTGATE_DISABLE` 回滾）;causal/eq-ev 樣本不足保留;有效對照 shape/trend-alignment/four-window 保留——停用期望 +40.4/29.5/23.3/22.2pp(中性檔) | 減法已落地(env 可即時回滾);**SCL 樣本(verdict/OLR 收據 2392 筆/日)數小時達標 → 嚴格重驗 + 2-4 週後確認停用成效** | SCL 樣本 + 主神複審 |
 | P2 | shadow WR ρ 重驗（attack-round6/7） | ρ 預測力——E1 fallback 假象 vs bnb symbol 效應 | 122 舊筆 live-fallback；clean entry-snapshot 累積中 | 2-4 週 |
 | P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
 | P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
@@ -75,6 +75,14 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - 加埋已有 `entryShadowWRAtOpen`/`entryShadowPnlSumAtOpen`（snapshotSelfStats）→ **收據 = 完整統計 lean 光譜**
 - **邏輯實驗（先證後改）**: 2037 筆 shadow 分組——開倉時 WR≥0.55 → 結果 WR 21%（**反預測!同 real ρ_clean=−0.112 一致**——高信心統計 lean 係反指標,shadow-gate「WR 高 boost」方向存疑——留待 SCL 樣本嚴格重驗）
 - **驗證**: 新測試 6（verdict 三態/wilsonScore 門檻/OLR clamp+垃圾防禦/features 唔污染/garbage cell）+ 全量 **4474 pass + 13 pre-existing（零新增）**; tsc clean。
+
+### Phase 2 落地: 減法（六誤傷候選停用 4 個, env 可回滾）
+主神「先做減法落地」→ 減法重播（`scripts/p9-softgate-ablation.ts`）: 出手組 avg 正 + 誤傷率>53% = 「誤傷(大賺單被縮) cover 命中(細蝕單被縮)」→ 停用釋放正期望:
+- **停用 4 個**（n≥15 + 誤傷>53% + avg>全場）: success-pattern 55%(n=47, +0.63%)/ reversal-point 60%(n=35, +1.54%)/ convexity 55%(n=33, +1.19%)/ mae-pattern 53%(n=17, +1.82%)——停用期望(中性 75% 開啟): +40.4/+29.5/+23.3/+22.2pp
+- **保留**（n<10 樣本不足）: causal 78%(n=9)/ eq-ev 63%(n=8)——繼續收集
+- **保留有效對照**: shape(15%)/ trend-alignment(23%)/ four-window(15%)/ base(綜合項)
+- **落地**: `P9_SOFTGATE_DISABLE` env（預設 success-pattern,reversal-point,convexity,mae-pattern;逗號分隔;空 = 全部恢復）——4 個 gate 乘入前 skip（shape/convexity 拆開 ternary——唔會誤傷 shape）; mae-pattern/reversal-point 原有 env flag 保留疊加
+- **驗證**: 全量 **4474 pass + 13 pre-existing（零新增）**; tsc clean; SCL 樣本數小時後嚴格重驗停用成效（2-4 週確認）
 
 ---
 
