@@ -5735,11 +5735,22 @@ ${recentExamples}
       //   |m4h| > 0.5%（強動量）→ trend-following（順勢 boost，逆勢 HARD BLOCK）
       //   |m4h| < 0.5%（弱動量）→ mean-reversion（逆勢 boost，順勢懲罰）
       // 驗證: 全樣本 356 單 Δ +245.37%，7/9 symbol 乾淨，threshold sweep 單調，era split 都正。
+      // P9-rs-null-fallback(2026-09-09, SILVER 事故 −11.7%): compute4hMomentumPct 喺 1h candles
+      // 不足時返回 null → regimeSwitchDirectionalBias(side, null) = 中性 1.0 → 「強升勢 SELL」冇 block
+      // （09-07 16:40 SILVER m4h=null + momentumLong +0.80% 開 SELL → −11.7%）。
+      // 修復: m4h null 時 fallback 用 entry marketFeatures.momentumLong(pick(m4h,m1h) 另一源頭)
+      // ——「冇數據唔可以當『順勢』放行」——強升勢 SELL 照 HARD BLOCK；≤0.5% 微升 micro-rip SELL 照保留。
       if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
-        const m4h = this.compute4hMomentumPct(sym);
+        let m4h = this.compute4hMomentumPct(sym);
+        if ((m4h === null || !Number.isFinite(m4h)) && process.env['RS_NULL_FALLBACK'] !== 'false') {
+          const ml = this.lastCycleShadowContexts?.get(sym)?.features['momentumLong'];
+          if (typeof ml === 'number' && Number.isFinite(ml) && Math.abs(ml) <= 1) {
+            m4h = ml * 100; // fraction → %（同 compute4hMomentumPct 輸出 % 一致）
+          }
+        }
         const mult = regimeSwitchDirectionalBias(action, m4h);
         if (mult === 0) {
-          return { confidence: 0, blocked: true, reason: `regime-switch: m4h=${m4h?.toFixed(2) ?? 'n/a'}% 強動量逆勢 → HARD BLOCK`, size: 0 };
+          return { confidence: 0, blocked: true, reason: `regime-switch: m4h=${m4h?.toFixed(2) ?? 'n/a'}% 強動量逆勢 → HARD BLOCK${m4h === null ? ' (both sources null)' : m4h !== this.compute4hMomentumPct(sym) ? ' (momentumLong fallback)' : ''}`, size: 0 };
         }
         if (mult !== 1.0) {
           confidence *= mult;
@@ -6121,6 +6132,51 @@ ${recentExamples}
       }
       if (lines.length === 1) return '';
       return '\n' + lines.join('\n');
+    } catch { return ''; }
+  }
+
+  /** P9-tip-scan-all(2026-09-09): 買 tip 全 symbol 掃描——dipReversionSignal(buy-tip 兩時代
+   *  +23.2/+124pp——唯一實證 edge)而家只喺 exploration 路徑(限 1 symbol per cycle)→ 每 cycle
+   *  對所有 trading symbols 掃描,有 TIP-BUY(中上位 + 賣壓)/ TIP-SELL(高位 rip)訊號 → 注入
+   *  agent context(純提示,唔 hard block——LLM 有「確定 edge」嘅誘因先會郁)。
+   *  env TIP_SCAN_ALL=false 回滾。任何 symbol 數據缺 → skip(唔 crash)。 */
+  private scanTipBuySignals(): string {
+    try {
+      if (process.env['TIP_SCAN_ALL'] === 'false') return '';
+      const syms = new Set<string>([normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '')]);
+      for (const m of (this.tradingMarkets ?? [])) syms.add(normalizeSymbol(m));
+      if (syms.size === 0) return '';
+      const lines: string[] = [];
+      for (const sym of syms) {
+        try {
+          const ms = this.marketState?.getState(sym);
+          if (!ms || !Number.isFinite(ms.price) || ms.price <= 0) continue;
+          const ph = this.marketState?.getPriceHistory(sym) ?? [];
+          const recent = Array.isArray(ph) ? ph.slice(-25) : [];
+          let rangePosition: number | null = null;
+          if (recent.length >= 10) {
+            const numeric = recent.filter((c: number) => Number.isFinite(c) && c > 0) as number[];
+            if (numeric.length >= 10) {
+              const hi = Math.max(...numeric), lo = Math.min(...numeric);
+              if (hi - lo > 0) rangePosition = (ms.price - lo) / (hi - lo);
+            }
+          }
+          const dip = dipReversionSignal({
+            regime: ms.regime ?? 'unknown',
+            volatility: typeof ms.volatility === 'number' ? ms.volatility : null,
+            obImbalance: typeof ms.orderBookImbalance === 'number' ? ms.orderBookImbalance : 0,
+            rangePosition,
+          });
+          if (dip) {
+            const dir = dip.direction === 'buy' ? 'TIP-BUY' : 'TIP-SELL';
+            const note = dip.direction === 'buy'
+              ? '買 tip——中上位 + 賣壓被吸收(兩時代實證 +1.02/倉, 唯一確定有效 edge)——建議考慮 BUY'
+              : '賣 rip——高位封頂(對稱實證——高位 SELL 有 edge)——建議考慮 SELL';
+            lines.push(`🧪[${dir}] ${sym}: σ=${((ms.volatility ?? 0) * 100).toFixed(2)}% obImb=${((ms.orderBookImbalance ?? 0) * 100).toFixed(0)}% rangePos=${rangePosition !== null ? (rangePosition * 100).toFixed(0) + '%' : 'n/a'} → ${note}`);
+          }
+        } catch { /* skip——單 symbol 失敗唔影響全掃描 */ }
+      }
+      return lines.length ? '\n=== TIP SCAN(買 tip/賣 rip——實證 edge)===\n' + lines.join('\n') : '';
     } catch { return ''; }
   }
 
@@ -10072,6 +10128,13 @@ ${recentExamples}
       const shadowVoiceBlock = this.buildShadowVoiceBlock();
       if (shadowVoiceBlock) {
         marketDesc += `\n${shadowVoiceBlock}`;
+      }
+      // P9-tip-scan-all(2026-09-09): 買 tip 全 symbol 掃描——dipReversionSignal(buy-tip 兩時代
+      // +23.2/+124pp 唯一實證 edge)而家只喺 exploration 路徑(限 1 symbol)——每 cycle 對所有
+      // trading symbols 掃描 TIP-BUY(中上位 + 賣壓)/ TIP-SELL(高位 rip)——注入 context(純提示)。
+      const tipScanBlock = this.scanTipBuySignals();
+      if (tipScanBlock) {
+        marketDesc += `\n${tipScanBlock}`;
       }
 
       // v2.0.870-sell-decay-attack G2: Side-Balance 警告（每 20 cycle throttle）——
