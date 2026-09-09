@@ -79,6 +79,15 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **⚔️ pickOlrPwin 契約攻擊輪(6 向量, 2 真漏洞修)**: V1 Proxy getter bomb → throw(純函數契約違反)→ 全函數 try/catch(任何輸入唔 throw,保守 null);V2 nSamples denormal/亞整數(1e-300/0.5/1.2)→ 當有效樣本 → `Number.isInteger(n) && n>=1`(樣本數係整數);V3 非 object 全形態/V4 null-proto/frozen/V5 併發 100/V6 query garbage features——全防
 - **驗證**: 新測試 18（攻擊 7+語義 5+契約 6）+ 全量 **4492 pass + 13 pre-existing（零新增）**; tsc clean。
 
+### P9-provenance-restrict（2026-09-09, 主神「架構審計」）: 已證偽源全清除——confidence 只由有分辨力證據嘅源組成
+主神「再一次驗證 ARCHITECTURE 藍圖,停用所有失效組件」→ 全面審計 3 個「已證偽但仍乘 confidence」嘅組件（全部 env 可回滾）:
+- **F1 cal-trust 停用**: n=56(樣本最大之一)誤傷 55%,出手組 avg +1.37% vs 全場 +0.43% → 停用期望 +57.6pp——加入 `P9_SOFTGATE_DISABLE` 預設
+- **F2 OLR blend 側移除**: `pwinBlendFactor` 唔再計 OLR—僅 comboBlend 可 override——OLR ρ=+0.02 已證偽 + **OLR≥0.60 → avg −0.15% WR 46%(反預測, 831 §20 第 5 次)**——移除後避免負期望 +24.1pp + 釋放低端(OLR≤0.40 → +0.16% 不再被壓)
+- **F3 llmDirectionTrust → 1.0**: 零歸因(0 records)+ LLM 方向 51.8% coin flip(09-04 三層驗證)——方向信任唔可以乘 confidence;OLR pwin 保留 agent context 作判斷(唔乘數)
+- **保留**: comboBlend(未證偽)/EV filter/Plan G/calibratedConsensus/shape/trend-alignment/four-window——只有「有分辨力證據」嘅源留喺乘數鏈
+- **新組件候選(等 SCL + 831)**: ①「統計 lean 反轉 gate」(Shadow WR≥0.55→26% / OLR≥0.60→46% 反單調——低 lean 先係買點) ②GOT 自動 deadweight 流程(P4 落地) ③實證來源白名單架構
+- **驗證**: 三項停用期望計量(cal +57.6pp / OLR +24.1pp + 低端釋放 / LLM 零歸因)+ 全量 **4492 pass + 13 pre-existing（零新增）**; tsc clean; live 收據持續(verdict 58 / OLR 59)。
+
 **量化候選（P11 材料, 列 pending）**: live 收據已見「統計 lean 內部矛盾」（skhx OLR 0.681 + verdict block——OLR 高但 shadow WR 低）——「lean 衝突偵測」候選（但需 SCL 樣本證明矛盾方向有預測力先定案,831 門檻）。
 
 ### Phase 2 落地: 減法（六誤傷候選停用 4 個, env 可回滾）

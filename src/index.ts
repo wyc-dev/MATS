@@ -297,9 +297,10 @@ const exitPriceLockConfig = {
  *    success-pattern 55%(n=47)/reversal-point 60%(n=35)/convexity 55%(n=33)/mae-pattern 53%(n=17)
  *    出手組 avg 全部 > 全場 +0.43% = 收緊咗本應賺嘅倉(大賺 cover 命中細蝕——停用反而釋放正期望);
  *    causal 78%(n=9)/eq-ev 63%(n=8) 樣本不足 → 保留收集; shape/trend-alignment/four-window 有效對照 → 保留。
- *  env 回滾: P9_SOFTGATE_DISABLE=''(全部恢復)或指定子集(逗號分隔)。 */
+ *  env 回滾: P9_SOFTGATE_DISABLE=''(全部恢復)或指定子集(逗號分隔)。
+ *  P9-provenance-restrict(2026-09-09): += cal-trust(誤傷 55%,n=56 樣本最大之一)。 */
 const P9_SOFTGATE_DISABLE = new Set(
-  (process.env['P9_SOFTGATE_DISABLE'] ?? 'success-pattern,reversal-point,convexity,mae-pattern')
+  (process.env['P9_SOFTGATE_DISABLE'] ?? 'success-pattern,reversal-point,convexity,mae-pattern,cal-trust')
     .split(',').map((s: string) => s.trim()).filter(Boolean),
 );
 
@@ -13757,9 +13758,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             }
           } catch { /* cold-start safe: keep default 1.0 (no discount) */ }
         }
-        const olrBlendFactor = olrHasData
-          ? DynamicThresholdCalculator.pwinBlendFactor(olrPWin)
-          : 1.0;
+        // P9-provenance-restrict(2026-09-09): OLR blend 乘數已移除(ρ=+0.02 已證偽 + OLR≥0.6 反預測)——
+        // olrBlendFactor 不再計入 confidence;OLR pwin 只保留於 agent context 供判斷(唔乘數)。
+        const olrBlendFactor = 1.0; // OLR blend 已停用——保留變數名避免 break 周邊引用,恆 1.0
 
         // v2.0.870-P6: OLR 硬閘——OLR P(win) < 30% → block（LLM 唔可以 override 統計信號）。
         // 40 單實證 trade 35(bnb -3.4%)thesis「OLR BUY P(win)=29% is against, but...」照入。
@@ -13883,10 +13884,7 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           } catch { /* non-fatal */ }
         }
         const llmDirectionTrust = this.llmDirectionVerifier && llmDirectionConfig.enabled
-          ? this.llmDirectionVerifier.getTrustMultiplier(
-              normalizeSymbol(finalDecision.symbol || activeSymbol),
-              this.extractTrendType(finalDecision.rationale),
-            )
+          ? 1.0 // P9-provenance-restrict(2026-09-09): LLM 方向 51.8% coin flip(09-04 三層驗證無預測力)——方向信任唔可以乘 confidence
           : 1.0;
         // v2.0.865: EV Filter 乘數——負 EV(手續費都搵唔返)軟性降
         // v2.0.870-gatedir-fix: HOLD 冇方向 → ×1.0（唔 fallback buy 誤計 EV）
@@ -13929,12 +13927,11 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         const comboBlend = gateAction !== 'hold'
           ? this.comboTracker.getComboBlendFactor(pwinSym, gateAction as 'buy' | 'sell', regime)
           : null;
-        let pwinBlendFactor = olrBlendFactor;
+        let pwinBlendFactor = 1.0; // P9-provenance-restrict(2026-09-09): OLR 側移除——OLR ρ=+0.02 已證偽 + OLR≥0.60 → avg −0.15% 反預測(831 §20 第 5 次)——只有 comboBlend(未證偽)可以 override
         let comboBlendUsed: { blendFactor: number; reason: string } | null = null;
-        if (comboBlend && comboBlend.blendFactor > olrBlendFactor) {
+        if (comboBlend && comboBlend.blendFactor > 1.0) {
           pwinBlendFactor = comboBlend.blendFactor;
           comboBlendUsed = { blendFactor: comboBlend.blendFactor, reason: comboBlend.reason };
-          log.info(`🟢 [winner-first] ${gateAction.toUpperCase()} ${pwinSym}: combo blend ${comboBlend.blendFactor.toFixed(3)} overrides OLR blend ${olrBlendFactor.toFixed(3)} — ${comboBlend.reason}`);
         }
 
         // ── Final effective confidence: consensus × P(win) × penalty × boost ──
@@ -14313,7 +14310,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // dampen conviction by the regime-trust factor. Already well-calibrated
         // regimes (Brier < 0.25) get a slight boost. Insufficient data → no change.
         const calibrationTrust = this.computeCalibrationTrustMultiplier(regime);
-        if (calibrationTrust !== 1.0) {
+        // P9-provenance-restrict(2026-09-09): cal-trust 誤傷 55%(n=56,樣本最大之一)——停用
+        if (calibrationTrust !== 1.0 && !P9_SOFTGATE_DISABLE.has('cal-trust')) {
           effectiveConfidence *= calibrationTrust;
           convLedger.push({ gate: 'cal-trust', mult: calibrationTrust });
           log.info(`🔵 [cal-trust] ${gateAction.toUpperCase()} ${pwinSym} regime=${regime}: Brier-calibrated trust ×${calibrationTrust.toFixed(3)} (effective=${(effectiveConfidence * 100).toFixed(0)}%)`);
