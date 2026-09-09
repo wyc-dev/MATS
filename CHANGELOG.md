@@ -9276,3 +9276,20 @@ MAE -8.47% · MFE +2.20%
 **實測**:成功發去 MATS Builder group(時區測試訊號)。
 
 **驗證**:12/12。全量 2064/2076(12 pre-existing)。`tsc --noEmit` 零錯誤。
+
+## v2.0.873-P9-per-cycle-reflection（2026-09-09, 主神「每個 cycle 反思」）: SystemEngineer 權限+思路升級 + 加固
+
+> 主神:「我希望 System Engineer 每個 cycle 都能夠如此反思,包括為何沒有開倉,為何上一個 Cycle 並沒有開倉導致今個 Cycle 未能盈利,以及以上嘅所有質疑及修正思路」——由「被動止血」轉「主動 hunt edge」。
+
+### 三層實作
+1. **SystemEngineer.md 加 PER-CYCLE REFLECTION 章節**: 反思權限(診斷冇開倉/因果追溯零 look-ahead/質疑診斷/修正建議)+ 反思四問 + 主神思維模式 7 條(結構追因/對合理答案不信任/橫向掃描/時程 re-calibrate/邏輯跳躍檢驗/已證偽禁止/結果閉環)
+2. **system-engineer.ts SYSTEM_PROMPT**: 每次 audit 強制輸出 `[REFLECTION BLOCK]`(四問: 冇開倉 edge / 上 cycle 因果 / 反例質疑 / 下 cycle 修正)
+3. **index.ts**: 每 cycle agent context 注入輕量 `🔄 REFLECTION` 提示(開倉決策前自問有冇錯過 edge/上 cycle miss/已證偽源污染——純提示)
+
+### 攻擊輪加固(reflection-audit-attack)
+- 🔴 persisted garbage record → system-engineer audit 3 個 formatting 位(`tradeSummary`/`buildTradePatternAnalysis`/`buildDirectionSummary`)crash → 成個 audit 每次中斷——**per-record try/catch + safe access**(單一 malformed record skip,唔 kill audit)
+- 審視確認 runSystemEngineer 三層 fail-safe(call-site try + 主體 try + engineerRunning lock)
+- 紅先驗證 7 種 garbage 全唔 crash; 全量 **4495 pass + 13 pre-existing**; tsc clean
+
+### 教訓(寫入思維)
+- 01dc3f0 曾喺 template literal 插入 triple-backtick → TS1127(commit 壞 code)→ 6576daf hotfix 改 `[REFLECTION BLOCK]` 標記——「改 code 都要 tsc prove」——同「診斷要 prove」同一律
