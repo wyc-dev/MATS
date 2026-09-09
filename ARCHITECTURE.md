@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.873-P9-core-fixes
+> **作者**: YC Wong · **版本**: 2.0.873-P9-softgate-ablation
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **測試狀態（v2.0.873-P9-core-fixes）**: vitest 4273 pass + 13 pre-existing fail（v2.0.854/868 時代，零新增）；另 9 個 legacy `node:test` 格式 file vitest 收集唔到 + 1 個測已剷代碼——開發噪音非 regression；`tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）；OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
@@ -14,8 +14,8 @@
 
 | # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
 |:--|:---|:---|:---|:---|
-| P1 | convLedger 消融重播（multiplier-ablation-fix） | §27 六誤傷候選（mae-pattern/convexity/success-pattern/causal/reversal-point/eq-ev）真偽裁決 | 1006 舊筆標污染；修正後 entryConvictionLedger 樣本累積中 | 2-4 週 |
-| P2 | shadow WR ρ 重驗（attack-round6/7） | ρ 預測力——E1 fallback 假象 vs bnb symbol 效應 | 122 舊筆 live-fallback；clean entry-snapshot 累積中 | 2-4 週 |
+| P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決 + 減法落地(2026-09-09)** | §27 六誤傷候選真偽——attribution hit-miss 375 records 誤傷率 causal 78%/eq-ev 63%/reversal-point 60%/success-pattern+convexity 55%/mae-pattern 53%（出手組 avg 全 > 全場）→ **減法重播**(scripts/p9-softgate-ablation.ts): 停用 4 個樣本充足(n≥15)誤傷 gate（success-pattern/reversal-point/convexity/mae-pattern, env `P9_SOFTGATE_DISABLE` 回滾）;causal/eq-ev 樣本不足保留;有效對照 shape/trend-alignment/four-window 保留——停用期望 +40.4/29.5/23.3/22.2pp(中性檔) | 減法已落地(env 可即時回滾);SCL 樣本(verdict/OLR 收據 2392 筆/日)數小時達標 → 嚴格重驗 + 2-4 週後確認停用成效 | SCL 樣本 + 主神複審 |
+| P2 | shadow WR ρ 重驗（attack-round6/7）——✅ **2026-09-09 結案** | 三層重驗一致——entryShadowWinRate 冇正預測力,真 snapshot 係反預測: Real clean(entry-snapshot,n=29)ρ=−0.17 / Real fallback(n=99)ρ=**+0.14**(正 ρ=假象源,E1 確認) / **Shadow 2070 筆 ρ=−0.03,8/8 symbol 全負**(btc −0.05 ~ silver −0.40)——唔係 bnb 效應,係系統性反預測 | 重驗完成——E1 假象確認 + symbol 效應排除——**P2 結案**;shadow-gate 方向留 SCL 嚴格重驗 | SCL 樣本 |
 | P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
 | P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
 | P5 | 6 soft gate 誤傷 counterfactual（mfe-expose-attack） | gate 系統性過度保守裁決 | 每 gate 10-19 樣本（269 單標準） | 2-4 週 |
@@ -24,6 +24,7 @@
 | P8 | time-window 候選 1/2/3 接駁（time-window）
 | P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
 | P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 / cycle 粒度)——潛在 +86.8 margin% | 86 筆 exit_price_lock(17 誤標已修復) | candle 級重放 + entry-quality 閾值對照 |
+| P11 | **統計 lean 分辨力嚴格重驗(SCL 收據, 2026-09-09 新增)**: shadow WR 反指標(8/8 symbol 負 ρ) + OLR pwin 分辨力(real ρ=+0.02 已證偽)——用 SCL 收據(verdict/OLR/WR/EV, 2392 筆/日)數小時 n≥15 | 收據由 09-09 起累積(60/60 真值已驗證) | 樣本累積(數小時) → shadow-gate 方向 + lean 衝突偵測裁決(831) |
 
 ---
 
