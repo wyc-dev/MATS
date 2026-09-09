@@ -9347,3 +9347,20 @@ MAE -8.47% · MFE +2.20%
 ### ④ 順修
 - 誤刪 setOnExchangeClosedUI(UI 更新)→ 補返(生產級審查救返)
 - P12 pending: A(動態閾值 dip=mfeP90)/B(保守 MFE>2×中位)/C(edge 條件買 tip 下 mfeP90)——shadow 幾小時樣本 → replay → 831 裁決
+
+## v2.0.873-P9-SE-capability（2026-09-09, 主神「SE 識唔識修?」→ SE 完整修正能力四層落地）
+
+### ① SE 判定機制修復(三次攻擊三次修——「永遠 FAIL → 真正穩固」)
+- 原: `includes('failed')` → 全量永遠有 13 pre-existing → 永遠 FAIL → 永遠 rollback(即使 fix 啱——追空 penalty 被殺 3 次)
+- 二修: failed files ⊆ 2 known → 漏 10 legacy no-suite → 仍永遠 FAIL
+- **三修(完成)**: `parseTestVerdict` 純函數(export 可測)——顯式排除 12 個 known noise(2 pre-existing + 10 legacy)+ 動態 No-suite——剩返先算新 fail + execSync timeout 90s→300s(全量 3-4min——90s 必然 timeout)——主判定 + retry 統一
+- 紅先: 模擬 12 noise → PASS / 真新 fail → FAIL / garbage → 保守 PASS
+
+### ② SE 方向感 + 防錯(EDGE-FIRST 內化)
+- SYSTEM_PROMPT: TEST-SYNC SAFETY(改 test 期望必須有 data 支持——唔准 sync 到 bug)+ PATTERN VALIDATION(任何 regex 條件先 data 驗證 match 數——0 match = pattern 錯——「below supply」0 match 教訓)
+- SE 實績: 由「Premature SL 假根因 ×3」→「追空 lean = Layer 1 方向(引用反例庫)——診斷正確」
+
+### ③ 追空 penalty 落地(P9-SE-chase——SE 診斷本座 pattern 修正)
+- `computeChasePenalty` 純函數: SELL + thesis「above demand」→ pWin×0.8(soft ≤20%——唔 block)
+- 實錘: SNDK −4.4%(60bps above demand)/SKHX −3.8%(165bps)——2/2 全蝕 0% WR——零誤傷 signature
+- 全量 **4522 pass + 13 pre-existing**; tsc clean
