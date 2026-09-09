@@ -10,7 +10,7 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 | # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
 |:--|:---|:---|:---|:---|
-| P1 | convLedger 消融重播（multiplier-ablation-fix） | §27 六誤傷候選（mae-pattern/convexity/success-pattern/causal/reversal-point/eq-ev）真偽裁決 | 1006 舊筆標污染；修正後 entryConvictionLedger 樣本累積中 | 2-4 週 |
+| P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決完成(2026-09-09)** | §27 六誤傷候選真偽——attribution hit-miss 375 records: 誤傷率 **causal 78% / eq-ev 63% / reversal-point 60% / success-pattern+convexity 55% / mae-pattern 53%**（出手組 avg 全 > 全場 +0.43%）＋重複懲罰 base×success-pattern 78% / success×reversal 75%——對照 trend-alignment 23% / shape+four-window 15% 有效（`scripts/p1-ablation-replay.ts` 可重跑） | 方向性裁決完成；**嚴格 per-gate mult=1 決策重播仍等 entryConvictionLedger 樣本（21 筆）**；減法落地待主神批 + 831 流程 | 樣本累積 + 主神批 |
 | P2 | shadow WR ρ 重驗（attack-round6/7） | ρ 預測力——E1 fallback 假象 vs bnb symbol 效應 | 122 舊筆 live-fallback；clean entry-snapshot 累積中 | 2-4 週 |
 | P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
 | P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
@@ -59,6 +59,14 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 ### 驗證
 - 新測試 17（label-fix 10 + attack 7）+ 3 個 pre-existing 測試正名（mae-macro C2 / mae-extreme E9——舊期望鎖定「完全回吐照鎖」bug 行為,已修正為正確語義）; 全量 **4468 pass + 13 pre-existing（零新增）**; tsc clean。
 - 現有 F2/F3 向後兼容（implied 反推）; 今日兩筆賺單（DRAM +15.1%/+7.4%）保持 exit_price_lock 零誤傷。
+
+### 研究層（同日, 零 production 決策改動）: P1 前哨裁決
+主神「Shadow trade 已經一段時間,應該可以驗證 P1 了吧?」→ 本座初答 4-6 週被主神一針見血指正（shadow 1948 筆/19.5h = 日均 2392 筆）→ **發現捷徑: attribution `contribution` 係 hit-miss 語義,唔受 1006 舊筆 convLedger 污染影響 → 375 gate records 即刻可裁決**（n=33-56/gate,超 P5 門檻 3 倍）。
+- **六誤傷候選誤傷率**: causal 78%（n=9）/ eq-ev 63%（n=8）/ reversal-point 60%（n=35）/ success-pattern 55%（n=47）/ convexity 55%（n=33）/ mae-pattern 53%（n=17）——出手組 avg 全部 > 全場 +0.43%（+0.20~+1.63pp）= 收緊咗本應賺嘅倉。
+- **對照有效 gate**: trend-alignment 23%（n=30）/ shape 15% / four-window 15%——有分辨力。
+- **重複懲罰**: base×success-pattern Jaccard **78%** / success-pattern×reversal-point **75%** / convexity×success-pattern 61%——同一資訊罰 2-3 次。
+- **落地**: 新 `scripts/p1-ablation-replay.ts`（可重跑裁決工具）+ `PLAN_p1-shadow-ablation.md`（時程修正 + 架構發現: 六候選 gate 需要 real 決策 context,shadow 層計算唔到——Shadow 收據基建適用於「可喺 shadow context 計」嘅 gate（OLR blend / shadow-gate / regime）,加速未來驗證數小時達標——列 Phase 1 待批）。
+- **誠實界線**: hit-miss 係方向性裁決——嚴格 per-gate mult=1 決策重播仍等 entryConvictionLedger 樣本（21 筆）; 減法落地待主神批 + 831 全流程。
 
 ---
 
