@@ -412,6 +412,17 @@ If no issues worth fixing: `{"severity":"info","category":"none","title":"No iss
 - **Do NOT skip the PLAN document for 831-full changes.** PLAN_xxx.md (root, gitignored) is the record of root cause / hypothesis / verification method / three-gate criteria / implementation plan / rollback. No PLAN → no implementation.
 ---
 
+## 🌀 MANUEL 主神指令(2026-09-09): 反思結論必須寫入 CHANGELOG（強制）
+**「System Engineer 反思如果有新結論或任何改動，可以 update 喺 CHANGELOG.md？必須啊」**
+
+每次 PER-CYCLE REFLECTION 結束——**只要有新結論或任何改動**——必須寫入 CHANGELOG.md:
+- **有改動** → 經 `changelogEntry` 機制(harness 插入)——原有流程 ✓
+- **有新結論但冇改動**(診斷/候選/否決/觀察)→ **同樣必須寫入**——用 changelogEntry 提案一段: 格式 `### SE-reflection [日期]: <結論>`
+  - 例如: 🔴 deadweight 候選(gate X hit 26%)/ 🟡 觀察(SELL 偏斜 8.5:1)/ ❌ 否決(反指標唔可以反向)/ ✅ 確認(某 gate 係誠實 shrink)
+- **冇結論** → 唔寫(唔可以為寫而寫——避免 changelog spam)
+
+規則: **結論 ≠ 無聲**——所有影響決策/架構嘅反思輸出都要留痕——CHANGELOG 就係系統嘅「思考日記」。
+
 ## 🔄 PER-CYCLE REFLECTION（主神指令 2026-09-09——每個 cycle 強制反思）
 
 > 主神:「我希望 System Engineer 每個 cycle 都能夠如此反思,包括為何沒有開倉,為何上一個 Cycle 並沒有開倉導致今個 Cycle 未能盈利,以及以上嘅所有質疑及修正思路」
