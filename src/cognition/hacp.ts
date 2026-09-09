@@ -825,41 +825,26 @@ export class HACPEngine {
           const position = posCtx.find(ctx => ctx.symbol === p.symbol);
           if (!position) return true; // No position context — let Skeptics decide
 
-      // v2.0.869-P6: guard extracted to pure function (thesis-validation-guard.ts)
-      // for unit-testability. Logging stays here; the decision is deterministic.
-      // v2.0.874: PREMATURE-SL FIX — the guard now requires the adverse move to
-      // exceed the ATR-scaled SL distance before allowing thesis invalidation.
-      // Trade records show 5 of 7 warning incidents are premature_sl exits
-      // (SNDK -18.2%, SKHX -8.0%, bnb -5.3%, SKHX -3.8%, SNDK -4.4%, GOLD -3.9%)
-      // where the SL fired on a minor retracement (1.1% SL on a 5% target move).
-      // The guard now checks: (1) adverse move beyond ATR-scaled SL threshold,
-      // (2) thesis actually invalidated (S/R broken, momentum reversed). If the
-      // thesis target is still valid and the adverse move is within ATR-scaled
-      // tolerance, HOLD the position instead of exiting.
-      const verdict = shouldAllowThesisValidation(position, Date.now());
-      if (verdict.allow) {
-        if (verdict.reason === 'structure_confirmed') {
-          log.info(`📊 [v2.0.832] ${p.symbol}: SL hit (price ${position.currentPrice.toFixed(2)} ${position.side === 'buy' ? '≤' : '≥'} SL ${(position.stopLossPrice ?? 0).toFixed(2)}) — bypassing all pre-check guards, allowing Skeptics validation`);
-        }
-        return true; // Bypass all guards — let Skeptics validate
-      }
+          // v2.0.869-P6: guard extracted to pure function (thesis-validation-guard.ts)
+          // for unit-testability. Logging stays here; the decision is deterministic.
+          const verdict = shouldAllowThesisValidation(position, Date.now());
+          if (verdict.allow) {
+            if (verdict.reason === 'structure_confirmed') {
+              log.info(`📊 [v2.0.832] ${p.symbol}: SL hit (price $${position.currentPrice.toFixed(2)} ${position.side === 'buy' ? '≤' : '≥'} SL $${(position.stopLossPrice ?? 0).toFixed(2)}) — bypassing all pre-check guards, allowing Skeptics validation`);
+            }
+            return true; // Bypass all guards — let Skeptics validate
+          }
 
-      const pnlPct = position.unrealizedPnlPct ?? 0;
-      if (verdict.reason === 'profitable') {
-        log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position is PROFITABLE (+${(pnlPct * 100).toFixed(2)}%). Thesis is working, not invalid. Skipping Skeptics validation entirely.`);
-      } else if (verdict.reason === 'minor_loss') {
-        log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — price moved only ${(pnlPct * 100).toFixed(2)}% (needs < -0.5% to invalidate). Skipping Skeptics validation.`);
-      } else if (verdict.reason === 'hold_time') {
-        const holdTimeMinutes = position.openedAt && position.openedAt > 0 ? (Date.now() - position.openedAt) / 60000 : 0;
-        log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position held only ${holdTimeMinutes.toFixed(0)} min (needs ≥ 30 min). The 59-minute pattern proves premature exits destroy profit. Skipping Skeptics validation.`);
-      } else {
-        // v2.0.874: verdict.reason === 'passed' — the position passed the guard
-        // (significant loss + held long enough + no structural confirmation).
-        // This is the ONLY case where Skeptics validation should proceed.
-        log.info(`📊 [v2.0.874] ${p.symbol}: position passed pre-check (significant loss, held ≥30min, no SL hit) — allowing Skeptics validation`);
-        return true;
-      }
-      return false; // Remove from validation list — do NOT call Skeptics
+          const pnlPct = position.unrealizedPnlPct ?? 0;
+          if (verdict.reason === 'profitable') {
+            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position is PROFITABLE (+${(pnlPct * 100).toFixed(2)}%). Thesis is working, not invalid. Skipping Skeptics validation entirely.`);
+          } else if (verdict.reason === 'minor_loss') {
+            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — price moved only ${(pnlPct * 100).toFixed(2)}% (needs < -0.5% to invalidate). Skipping Skeptics validation.`);
+          } else {
+            const holdTimeMinutes = position.openedAt && position.openedAt > 0 ? (Date.now() - position.openedAt) / 60000 : 0;
+            log.warn(`🚫 [v2.0.782 PRE-CHECK] Thesis INVALIDATION for ${p.symbol} BLOCKED — position held only ${holdTimeMinutes.toFixed(0)} min (needs ≥ 30 min). The 59-minute pattern proves premature exits destroy profit. Skipping Skeptics validation.`);
+          }
+          return false; // Remove from validation list — do NOT call Skeptics
         });
         
         if (preCheckedPositions.length === 0) {

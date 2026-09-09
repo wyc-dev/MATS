@@ -96,6 +96,7 @@ import { computeMom24PctFromCandles, mom24EnvThresholds, shouldBlockMom24, shoul
 import { shouldDeferToBoundary } from './analysis/boundary-align.ts';
 import { computeSrDistancePct, shouldShrinkSrSize } from './analysis/sr-size-gate.ts';
 import { evaluateDeadweightGates, sanitizeGateName } from './analysis/gate-deadweight.ts';
+import { ClosePathRecorder } from './evolution/close-path-recorder.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, regimeSwitchDirectionalBias, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
@@ -669,6 +670,9 @@ class MATSSystem {
   private gateLedgerCache = new Map<string, Array<{ gate: string; mult: number }>>();
   /** P9-got-deadweight(2026-09-09): 市場適應——GOT hit rate<45% & n≥30 嘅 gate 自動停用 set */
   private _deadweightGates = new Set<string>();
+
+  /** P9-let-run(2026-09-09): Close-Path Recorder——real trade close 後 24h price path 收集(零決策——D 重放基建) */
+  private closePathRecorder = new ClosePathRecorder();
 
   /** P9-got-deadweight: gate 自動停用 check——deadweight set 內 → 唔執行(gate 生命周期管理) */
   private isGateDeadweight(name: string): boolean {
@@ -1772,6 +1776,20 @@ class MATSSystem {
             if (pWin !== undefined) this.calibrationWatchdog.consume(trade.symbol, pWin, trade.pnlPct);
           }
         } catch { /* non-fatal */ }
+        // P9-let-run(2026-09-09): Close-Path Recorder——BUY/SHORT 贏單 close 後 24h price path
+        // 收集(零決策——主神 D:candle path 精確重放「let-run」alpha 驗證基建)。
+        try {
+          if (trade && typeof trade === 'object' && typeof trade.symbol === 'string' && Number.isFinite(trade.pnlPct)) {
+            const t = trade as { id?: string; side?: string; entryPrice?: number; exitPrice?: number; closedAt?: number; openedAt?: number; investment?: number; maxValueReached?: number; symbol?: string; pnlPct?: number };
+            const inv = Number(t.investment) > 0 ? Number(t.investment) : 0;
+            const mfePct = inv > 0 && Number.isFinite(t.maxValueReached) ? ((Number(t.maxValueReached) - inv) / inv) : 0;
+            this.closePathRecorder.record({
+              id: t.id ?? `${t.symbol}:${t.closedAt ?? Date.now()}`, symbol: t.symbol, side: t.side,
+              entryPrice: t.entryPrice, closePrice: t.exitPrice, closedAt: t.closedAt ?? Date.now(),
+              mfeAtClosePct: mfePct, pnlPctAtClose: Number(t.pnlPct),
+            });
+          }
+        } catch { /* 非致命——recorder 失敗唔影響 close */ }
       });
       // v2.0.33: Wire UI callback for exchange position closes — immediately
       // refresh cachedHLFills + pushToAPI() so the UI updates instantly
@@ -11333,6 +11351,18 @@ ${recentExamples}
       // Only when the gate is disabled does execution fall entirely to the
       // pre-PAEL paths below.
       await this.runExitPriceLockGate();
+
+      // P9-let-run(2026-09-09): 每 cycle 更新 close 後 price path(零決策收集——D 重放基建)
+      try {
+        const cprSyms = new Set<string>([normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '')]);
+        for (const m of (this.tradingMarkets ?? [])) cprSyms.add(normalizeSymbol(m));
+        const cprNow = Date.now();
+        for (const s of cprSyms) {
+          const cp = this.marketState?.getState(s)?.price;
+          if (Number.isFinite(cp) && (cp as number) > 0) this.closePathRecorder.update(s, cp, cprNow);
+        }
+        this.closePathRecorder.finalize(cprNow);
+      } catch { /* 非致命 */ }
 
       // v2.0.869-P15: Regime-Reversal Profit Lock——組合信號(MFE ≥ 1.5×ATR AND
       // P(win) < 0.5)鎖利。獨立 gate,同 PAEL/MFE Lock 並排。
