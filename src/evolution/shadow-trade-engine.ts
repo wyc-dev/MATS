@@ -21,6 +21,7 @@
 
 import { createLogger } from '../observability/logger.ts';
 import { OLREngine, FEATURE_NAMES } from './olr-engine.ts';
+import { wilsonScore } from './evolution-utils.ts';
 import { normalizeSymbol } from '../trading/portfolio.ts';
 
 const log = createLogger({ phase: 'shadow-trade' });
@@ -61,8 +62,14 @@ export interface ShadowPosition {
   openTimestamp: number;
   /** Feature snapshot at entry time */
   features: Record<string, number>;
-    /** P9-shadow-entry-snapshot: dedicated entry rationale (self WR/EV) — never in features dict (OLR input stable). */
-    entryStats?: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number };
+    /** P9-shadow-entry-snapshot + SCL(2026-09-09): dedicated entry rationale (self WR/EV + shadow-gate verdict + OLR pwin) — never in features dict (OLR input stable). */
+    entryStats?: {
+      entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number;
+      /** SCL: 開倉時 shadow-gate 處置——real 如開倉,shadow-gate 會點處理(同 applyShadowGate 邏輯): WR<55%+EV≤0→block / wilsonLB>0.65+EV>0→boost / else neutral. 記錄用嚟 Shadow 層嚴格驗證 gate 分辨力——零決策. */
+      entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral';
+      /** SCL: 開倉時 OLR P(win)——記錄用嚟 Shadow 層重驗 OLR 分辨力(P9 已證偽 real ρ=+0.02——純驗證字段,喂唔入任何決策). */
+      entryOlrPWinAtOpen?: number | null;
+    };
   /** Current status — 'open' until SL/TP hit */
   status: 'open' | 'win' | 'loss';
   /** Cycle when resolved (SL/TP hit) */
@@ -523,6 +530,10 @@ export class ShadowTradeEngine {
     features: Record<string, number>,
     thesisDirection: 'buy' | 'sell' | null = null,
     srProvider?: { getZones: (symbol: string, price: number) => { support: number; resistance: number } | null },
+    /** SCL(2026-09-09): 開倉時 OLR P(win)——統計 lean 收據(零決策,Shadow 層重驗用) */
+    olrPwinLong?: number | null,
+    /** SCL(2026-09-09): 開倉時 OLR P(win)——統計 lean 收據(零決策,Shadow 層重驗用) */
+    olrPwinShort?: number | null,
   ): void {
     // v2.0.834: Guard against NaN/Infinity — same fix as openAlignedShadow.
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
@@ -587,7 +598,7 @@ export class ShadowTradeEngine {
       this.positions.push({
         id: longId,
         symbol: sym,
-        entryStats: this.snapshotSelfStats(sym, 'buy'),
+        entryStats: this.snapshotSelfStats(sym, 'buy', olrPwinLong),
         side: 'buy',
         entryPrice,
         stopLossPrice: longSL,
@@ -615,7 +626,7 @@ export class ShadowTradeEngine {
       this.positions.push({
         id: shortId,
         symbol: sym,
-        entryStats: this.snapshotSelfStats(sym, 'sell'),
+        entryStats: this.snapshotSelfStats(sym, 'sell', olrPwinShort),
         side: 'sell',
         entryPrice,
         stopLossPrice: shortSL,
@@ -677,6 +688,8 @@ export class ShadowTradeEngine {
     cycle: number,
     features: Record<string, number>,
     statScore: number,
+    /** SCL(2026-09-09): 開倉時 OLR P(win)——統計 lean 收據(零決策,Shadow 層重驗用) */
+    olrPwin?: number | null,
   ): void {
     // Guard against NaN/Infinity — same as openAlignedShadow.
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
@@ -714,7 +727,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
-        entryStats: this.snapshotSelfStats(sym, side),
+        entryStats: this.snapshotSelfStats(sym, side, olrPwin),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -775,6 +788,8 @@ export class ShadowTradeEngine {
     /** v2.0.870-sell-seed-accel S1: cooldown cycles（跌勢 6 / 非跌勢 24）——
      *  跌勢期間 sell 樣本回流快 4 倍, 非跌勢保持保守。 */
     cooldownCycles: number = 24,
+    /** SCL(2026-09-09): 開倉時 OLR P(win)——統計 lean 收據(零決策,Shadow 層重驗用) */
+    olrPwin?: number | null,
   ): void {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
     if (side !== 'buy' && side !== 'sell') return;
@@ -817,7 +832,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
-        entryStats: this.snapshotSelfStats(sym, side),
+        entryStats: this.snapshotSelfStats(sym, side, olrPwin),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -860,6 +875,8 @@ export class ShadowTradeEngine {
     cycle: number,
     features: Record<string, number>,
     qrlSignal?: { spread: number; buyQ: number; sellQ: number },
+    /** SCL(2026-09-09): 開倉時 OLR P(win)——統計 lean 收據(零決策,Shadow 層重驗用) */
+    olrPwin?: number | null,
   ): void {
     // Guard against NaN/Infinity — same as openAlignedShadow.
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
@@ -895,7 +912,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
-        entryStats: this.snapshotSelfStats(sym, side),
+        entryStats: this.snapshotSelfStats(sym, side, olrPwin),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -980,6 +997,8 @@ export class ShadowTradeEngine {
     weightedScore: number,
     primaryDriver: { agent: string; weight: number; action: string },
     agentVotes: Array<{ agent: string; weight: number; action: string }>,
+    /** SCL(2026-09-09): 開倉時 OLR P(win)——統計 lean 收據(零決策,Shadow 層重驗用) */
+    olrPwin?: number | null,
   ): void {
     // v2.0.834: Guard against NaN/Infinity entry price — `<= 0` does NOT
     // catch NaN (NaN <= 0 === false) or Infinity (Infinity <= 0 === false).
@@ -1022,7 +1041,7 @@ export class ShadowTradeEngine {
     this.positions.push({
       id,
       symbol: sym,
-        entryStats: this.snapshotSelfStats(sym, side),
+        entryStats: this.snapshotSelfStats(sym, side, olrPwin),
       side,
       entryPrice,
       stopLossPrice: finalSL,
@@ -1550,8 +1569,13 @@ export class ShadowTradeEngine {
    * EV at open time (self-referential rationale). Stored on the position as a
    * dedicated field — NEVER injected into the features dict (OLR input) — so no
    * decision consumer is affected. Skip if sample < 5 (too thin to be meaningful).
+   *
+   * SCL(2026-09-09): 順埋計「shadow-gate verdict」(如果 real 開倉,shadow-gate 會點
+   * 處置——block/boost/neutral,同 index.ts applyShadowGate 完全一致) + OLR pwin
+   * (由 index.ts 傳入)——「統計 lean 光譜」收據——日後 Shadow 層嚴格驗證
+   * (per-gate 分辨力,2392 筆/日,數小時達標)唔使等 real 稀疏樣本。
    */
-  private snapshotSelfStats(sym: string, side: 'buy' | 'sell'): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } {
+  private snapshotSelfStats(sym: string, side: 'buy' | 'sell', olrPwin?: number | null): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } {
     const cell = this.statsBySymbolSide.get(`${normalizeSymbol(sym)}|${side}`);
     // ATTACK-round: state-injection guard — NaN/negative/infinite cell must NOT
     // produce a poisoned record (NaN WR / negative n / 1e308 EV).
@@ -1559,13 +1583,32 @@ export class ShadowTradeEngine {
     const n = cell.wins + cell.losses;
     // n 本身都要 finite: 1e308+1e308 = Infinity(Number.MAX_VALUE 爆)——cap 1e9(統計不可能超)
     if (!Number.isFinite(n) || n < 5 || n > 1e9) return {};
-    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } = {
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } = {
       entryShadowWRAtOpen: cell.wins / n,
       entryShadowNAtOpen: Math.round(n),
     };
     if (Number.isFinite(cell.totalPnlPct)) {
       // 衰減後累計 margin sum(decayed)——唔係 per-trade EV;研究請用 n+sum 折算
       out.entryShadowPnlSumAtOpen = Math.min(Math.max(cell.totalPnlPct, -100), 100); // clamp
+    }
+    // SCL: shadow-gate verdict——同 index.ts applyShadowGate 完全一致(單一 source of truth 註解):
+    //   total≥20 && rawWr<0.55 && EV≤0 → block; total≥20 && wilsonLB>0.65 && EV>0 → boost; else neutral.
+    // 純記錄(唔影響 shadow 開倉本身)——用嚟 Shadow 層驗證「gate 出手分辨力」。
+    try {
+      const total = cell.wins + cell.losses;
+      if (total >= 20 && Number.isFinite(cell.wins) && Number.isFinite(cell.losses)) {
+        const rawWr = cell.wins / total;
+        const ev = Number.isFinite(cell.totalPnlPct) ? (cell.totalPnlPct as number) : 0;
+        if (rawWr < 0.55 && ev <= 0) out.entryShadowGateVerdictAtOpen = 'block';
+        else if (wilsonScore(cell.wins, total) > 0.65 && ev > 0) out.entryShadowGateVerdictAtOpen = 'boost';
+        else out.entryShadowGateVerdictAtOpen = 'neutral';
+      }
+    } catch { /* 唔影響收據——verdict 缺省 neutral */ }
+    // SCL: OLR pwin 收據(clamp [0,1],garbage 唔入)——記錄用嚟 Shadow 層重驗 OLR 分辨力(零決策)。
+    if (typeof olrPwin === 'number' && Number.isFinite(olrPwin)) {
+      out.entryOlrPWinAtOpen = Math.min(Math.max(olrPwin, 0), 1);
+    } else if (olrPwin === null) {
+      out.entryOlrPWinAtOpen = null;
     }
     return out;
   }
@@ -1575,10 +1618,10 @@ export class ShadowTradeEngine {
    * 'banana'/1e308）唔可以直接 spread 入 recentResults（string spread 會產生數字 key 污染）。
    * 白名單抽 3 個 field + finite 檢查 + clamp。治本: 寫入前 sanitize。
    */
-  private safeEntryStats(s: unknown): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } {
+  private safeEntryStats(s: unknown): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } {
     if (!s || typeof s !== 'object' || Array.isArray(s)) return {};
-    const e = s as { entryShadowWRAtOpen?: unknown; entryShadowNAtOpen?: unknown; entryShadowPnlSumAtOpen?: unknown };
-    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number } = {};
+    const e = s as { entryShadowWRAtOpen?: unknown; entryShadowNAtOpen?: unknown; entryShadowPnlSumAtOpen?: unknown; entryShadowGateVerdictAtOpen?: unknown; entryOlrPWinAtOpen?: unknown };
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } = {};
     if (Number.isFinite(e.entryShadowWRAtOpen) && (e.entryShadowWRAtOpen as number) >= 0 && (e.entryShadowWRAtOpen as number) <= 1) {
       out.entryShadowWRAtOpen = e.entryShadowWRAtOpen as number;
     }
@@ -1587,6 +1630,16 @@ export class ShadowTradeEngine {
     }
     if (Number.isFinite(e.entryShadowPnlSumAtOpen)) {
       out.entryShadowPnlSumAtOpen = Math.min(Math.max(e.entryShadowPnlSumAtOpen as number, -100), 100);
+    }
+    // SCL: verdict 白名單(垃圾值唔准入——唔可以扮 block/boost 污染收據)
+    if (e.entryShadowGateVerdictAtOpen === 'block' || e.entryShadowGateVerdictAtOpen === 'boost' || e.entryShadowGateVerdictAtOpen === 'neutral') {
+      out.entryShadowGateVerdictAtOpen = e.entryShadowGateVerdictAtOpen;
+    }
+    // SCL: OLR pwin clamp [0,1];非 finite → null(保守,唔污染)
+    if (Number.isFinite(e.entryOlrPWinAtOpen)) {
+      out.entryOlrPWinAtOpen = Math.min(Math.max(e.entryOlrPWinAtOpen as number, 0), 1);
+    } else if (e.entryOlrPWinAtOpen === null) {
+      out.entryOlrPWinAtOpen = null;
     }
     return out;
   }

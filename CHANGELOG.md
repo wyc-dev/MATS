@@ -10,7 +10,7 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 | # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
 |:--|:---|:---|:---|:---|
-| P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決完成(2026-09-09)** | §27 六誤傷候選真偽——attribution hit-miss 375 records: 誤傷率 **causal 78% / eq-ev 63% / reversal-point 60% / success-pattern+convexity 55% / mae-pattern 53%**（出手組 avg 全 > 全場 +0.43%）＋重複懲罰 base×success-pattern 78% / success×reversal 75%——對照 trend-alignment 23% / shape+four-window 15% 有效（`scripts/p1-ablation-replay.ts` 可重跑） | 方向性裁決完成；**嚴格 per-gate mult=1 決策重播仍等 entryConvictionLedger 樣本（21 筆）**；減法落地待主神批 + 831 流程 | 樣本累積 + 主神批 |
+| P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決完成(2026-09-09)** + **SCL 基建落地** | §27 六誤傷候選真偽——attribution hit-miss 375 records: 誤傷率 **causal 78% / eq-ev 63% / reversal-point 60% / success-pattern+convexity 55% / mae-pattern 53%**（出手組 avg 全 > 全場 +0.43%）＋重複懲罰 base×success-pattern 78% / success×reversal 75%——對照 trend-alignment 23% / shape+four-window 15% 有效（`scripts/p1-ablation-replay.ts` 可重跑）——**SCL（Shadow 乘數收據）落地: shadow 開倉收據 shadow-gate verdict + OLR pwin——2392 筆/日 → 數小時 per-gate n≥15,嚴格驗證唔再等 real** | 方向性裁決完成；**嚴格決策重播等 SCL 樣本累積 + entryConvictionLedger（21 筆）**；減法落地待主神批 + 831 流程 | SCL 樣本（數小時） + 主神批 |
 | P2 | shadow WR ρ 重驗（attack-round6/7） | ρ 預測力——E1 fallback 假象 vs bnb symbol 效應 | 122 舊筆 live-fallback；clean entry-snapshot 累積中 | 2-4 週 |
 | P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
 | P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
@@ -67,6 +67,14 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **重複懲罰**: base×success-pattern Jaccard **78%** / success-pattern×reversal-point **75%** / convexity×success-pattern 61%——同一資訊罰 2-3 次。
 - **落地**: 新 `scripts/p1-ablation-replay.ts`（可重跑裁決工具）+ `PLAN_p1-shadow-ablation.md`（時程修正 + 架構發現: 六候選 gate 需要 real 決策 context,shadow 層計算唔到——Shadow 收據基建適用於「可喺 shadow context 計」嘅 gate（OLR blend / shadow-gate / regime）,加速未來驗證數小時達標——列 Phase 1 待批）。
 - **誠實界線**: hit-miss 係方向性裁決——嚴格 per-gate mult=1 決策重播仍等 entryConvictionLedger 樣本（21 筆）; 減法落地待主神批 + 831 全流程。
+
+### Phase 1 落地: SCL（Shadow Conviction Receipt）——統計 lean 光譜收據基建
+主神「先補基建嚴格版」→ 落地: shadow 每次開倉（blind/aligned/statistical/seeded/qrl 6 個開倉位）snapshot「統計 lean 光譜」——零決策邏輯改動（純記錄,白名單透傳,唔入 features/OLR 輸入）:
+- **`entryShadowGateVerdictAtOpen`**: 開倉時 shadow-gate 處置——WR<55%+EV≤0→block / wilsonLB>0.65+EV>0→boost / else neutral（同 real `applyShadowGate` 完全一致,單一 source of truth）
+- **`entryOlrPWinAtOpen`**: 開倉時 OLR P(win)（`olrShadowPwin` helper,clamp [0,1],失敗→null）——統計 lean 嘅 real 側
+- 加埋已有 `entryShadowWRAtOpen`/`entryShadowPnlSumAtOpen`（snapshotSelfStats）→ **收據 = 完整統計 lean 光譜**
+- **邏輯實驗（先證後改）**: 2037 筆 shadow 分組——開倉時 WR≥0.55 → 結果 WR 21%（**反預測!同 real ρ_clean=−0.112 一致**——高信心統計 lean 係反指標,shadow-gate「WR 高 boost」方向存疑——留待 SCL 樣本嚴格重驗）
+- **驗證**: 新測試 6（verdict 三態/wilsonScore 門檻/OLR clamp+垃圾防禦/features 唔污染/garbage cell）+ 全量 **4474 pass + 13 pre-existing（零新增）**; tsc clean。
 
 ---
 

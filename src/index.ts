@@ -5807,6 +5807,17 @@ ${recentExamples}
     } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
   }
 
+  /** SCL(2026-09-09): shadow 開倉時 OLR P(win) 收據——統計 lean 光譜嘅 real 側。
+   *  query 失敗/垃圾/冇數據 → null(冇收據,唔阻塞 shadow 開倉)。clamp [0,1]。零決策。 */
+  private olrShadowPwin(sym: string, side: 'buy' | 'sell', features: Record<string, number>): number | null {
+    try {
+      const f = features && typeof features === 'object' ? features : {};
+      const q = this.olrEngine?.query?.(normalizeSymbol(sym), f, side, this.totalCycles);
+      const p = q?.pWin;
+      return typeof p === 'number' && Number.isFinite(p) ? Math.min(Math.max(p, 0), 1) : null;
+    } catch { return null; }
+  }
+
   /** shadow-gate: decayed WR Wilson LB <30% + EV ≤0 → block;WR >65% + EV >0 → size boost。
    *  統一供 active 同所有 trading market 使用（v2.0.870-sell-seed-accel）。 */
   private applyShadowGate(
@@ -9604,6 +9615,11 @@ ${recentExamples}
             tpShort,
             this.totalCycles,
             mktFeatures,
+            undefined,
+            undefined,
+            // SCL(2026-09-09): 開倉時 OLR P(win) 收據——盲 shadow 每 cycle 開,記錄 buy/sell 兩側統計 lean
+            this.olrShadowPwin(mktSym, 'buy', mktFeatures),
+            this.olrShadowPwin(mktSym, 'sell', mktFeatures),
           );
         }
       } catch (err) {
@@ -11108,6 +11124,8 @@ ${recentExamples}
               // The actual shadow side is still rlAction (first arg).
               leanSide, leanScore,
               primaryDriver, agentVotes,
+              // SCL(2026-09-09): 開倉時 OLR P(win) 收據
+              this.olrShadowPwin(sym, rlAction, features),
             );
 
             // ── v2.0.846 Phase 1a: A/B pure-statistics shadow ──────────────
@@ -11126,6 +11144,8 @@ ${recentExamples}
               this.shadowEngine.openStatisticalShadow(
                 sym, entryPrice, statLean.side, statSlPrice, statTpPrice,
                 this.totalCycles, features, statLean.score,
+                // SCL(2026-09-09): 開倉時 OLR P(win) 收據
+                this.olrShadowPwin(sym, statLean.side, features),
               );
               log.info(`[shadow] A/B: statistical lean ${statLean.side.toUpperCase()} ${sym} (score=${statLean.score.toFixed(3)}) vs LLM ${rlAction.toUpperCase()} — both tracked for edge attribution`);
             }
@@ -11159,6 +11179,8 @@ ${recentExamples}
                     this.totalCycles, features,
                     `mom24h=${mom24h !== null ? mom24h.toFixed(2) + '%' : 'n/a'}, mom4h=${mom4h !== null ? mom4h.toFixed(2) + '%' : 'n/a'}, regime=${seedRegime}`,
                     6, // S1: 跌勢 cooldown 6 cycle（樣本回流快 4 倍）
+                    // SCL(2026-09-09): 開倉時 OLR P(win) 收據
+                    this.olrShadowPwin(sym, 'sell', features),
                   );
                 }
               } catch { /* non-fatal */ }
