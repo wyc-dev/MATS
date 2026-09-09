@@ -10136,6 +10136,9 @@ ${recentExamples}
       if (tipScanBlock) {
         marketDesc += `\n${tipScanBlock}`;
       }
+      // 🔄 PER-CYCLE REFLECTION(2026-09-09 主神指令): 每個 cycle 開倉決策前自問——
+      // 「有冇錯過 edge?」唔單止「有冇做錯」。輕量提示(唔 hard rule——agents 自己判斷)。
+      marketDesc += `\n🔄 REFLECTION: 開倉決策前自問——①有冇實證 edge 訊號喺手(TIP-BUY/高位 rip/sell-cold-shrink 警告等)? ②上個 cycle 有冇因 HOLD/gate 錯過本應開嘅倉? ③信心係咪被已證偽源(OLR/統計 lean 高信心)污染?——soft 動作優先, 唔好為開而開, 但亦唔好有 edge 都唔開`;
 
       // v2.0.870-sell-decay-attack G2: Side-Balance 警告（每 20 cycle throttle）——
       // 單向失衡（如 90 單零 SELL）要 LOUD,唔可以靜靜咁持續。

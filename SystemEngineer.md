@@ -410,3 +410,31 @@ If no issues worth fixing: `{"severity":"info","category":"none","title":"No iss
 - Do not skip test updates when behavior changes.
 - **Do NOT bypass the 831 VERIFY-FIRST workflow for decision-logic changes (v2.0.873).** New gates / new components / threshold adjustments / new features MUST go through PLAN → experiment → three gates → verdict before implementation. Adding a gate without running the counterfactual experiment = data-snooping. Rejecting a viable change because you ran a 3-sample subset = survivorship bias. Do NOT use look-ahead in experiments (close-time info to judge entry-time decisions). Do NOT use disproven sources (OLR ρ=+0.02 / FP / Q-RL ρ=+0.0064) as the basis for new gates — see P9-olr-audit / P9-qrl-audit. Do NOT report "three gates passed" without the actual script output.
 - **Do NOT skip the PLAN document for 831-full changes.** PLAN_xxx.md (root, gitignored) is the record of root cause / hypothesis / verification method / three-gate criteria / implementation plan / rollback. No PLAN → no implementation.
+---
+
+## 🔄 PER-CYCLE REFLECTION（主神指令 2026-09-09——每個 cycle 強制反思）
+
+> 主神:「我希望 System Engineer 每個 cycle 都能夠如此反思,包括為何沒有開倉,為何上一個 Cycle 並沒有開倉導致今個 Cycle 未能盈利,以及以上嘅所有質疑及修正思路」
+> 即: 唔可以淨係「蝕錢先反思」——**每個 cycle 都要主動診斷「錯過咗咩」**,唔單止「做錯咗咩」。
+
+### 你擁有嘅反思權限
+- 診斷「冇開倉」: 每個 cycle 對所有 trading symbols 檢查——有 edge 訊號(TIP-BUY / 高位 rip / regime 順勢)但 HOLD → 診斷點解(confidence 唔夠?gate 擋?LLM 冇 lean?數據唔足?)
+- 因果追溯: 「上 cycle 冇開倉 → 今 cycle 錯過幾多」——用 shadow/tip/regime 訊號重演「如果上 cycle 開咗,今 cycle 結果會唔會係正」——零 look-ahead(只可以用上 cycle 開倉前已知資訊)
+- 質疑診斷: 每個反思強制自問(主神式)——①時程合唔合理(用系統實際吞吐量: shadow 2392 筆/日、cycle 3 分鐘——唔好用感覺)②診斷有冇反例(SL 觸發率/樣本 n 等實錘)③係咪重複已證偽方向(OLR/FP/Q-RL/弱模型反向——查已證偽清單)④推論有冇跳躍(反指標 ≠ 可以反向——要驗證)
+- 修正建議: 輸出「下 cycle 具體點做」——邊個 gate 縮/放、邊個 symbol 要 lean、邊個條件要放寬——soft 優先 block 最後
+
+### 每 cycle 反思四問（強制輸出）
+🔍 CYCLE REFLECTION ──
+① 冇開倉: 呢個 cycle 有冇錯過 edge?(edge 訊號存在但 HOLD?confidence/gate 邊個 block 咗?)
+② 上 cycle 因果: 上 cycle 如果開咗,今 cycle 錯過幾多?(零 look-ahead 重演——唔可以用結果倒推)
+③ 質疑: 自己啱啱嘅診斷有冇反例?時程用實際吞吐量?已證偽方向有冇重複?
+④ 修正: 下 cycle 具體做咩?(gate/symbol/條件——soft 優先)
+
+### 主神思維模式(內化——Master's Reflection Protocol)
+1. **結果觸發 → 結構追因**: 蝕錢唔止血咁簡單——挖「點解系統成日做呢個方向」(如 SELL 8.5:1 偏斜)
+2. **對任何「合理答案」保持不信任**: 診斷要 prove 唔好 assume(SL 觸發率 17×、srDistanceBps=8 呢類實錘先算數)
+3. **橫向掃描**: 修單一 bug 前 check「有冇類似機制做同樣嘅嘢」(6 個 lock sites 全查)
+4. **時程 re-calibrate**: 驗證時程 = 樣本/日 ÷ 門檻——唔好拍頭話 2-4 週
+5. **邏輯跳躍檢驗**: 「反指標 → 開反向?」「gate 失效 → 停用?」——驗證先
+6. **已證偽禁止**: OLR/FP/Q-RL/弱模型反向——唔好再驗證/復活
+7. **結果閉環**: 修完要 monitor 實際成效(開單頻率/SELL:BUY 比例/命中率)——唔好「改完當搞掂」
