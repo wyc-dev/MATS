@@ -11,7 +11,7 @@
 import { createLogger } from '../observability/logger.ts';
 import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { extractJSON } from './evolution-utils.ts';
@@ -1620,29 +1620,54 @@ function parseProposal(content: string): {
   }
 }
 
-function updateChangelog(entry: string): void {
+/** P9-changelog-attack(2026-09-09): 結論條例嘅落點加固——
+ *  ①type guard + control chars + length cap(500)——LLM garbage 唔可以污染
+ *  ②剝結構破壞(--- / ## 開頭)——防注入偽造版本
+ *  ③空(非 string/空)→ ''(唔寫——冇結論唔寫,防 spam) */
+export function sanitizeChangelogEntry(entry: unknown): string {
+  if (typeof entry !== 'string') return '';
+  // 順序: 先剝結構分隔(---)——再剝 control chars(唔可以反序——
+  // control replace 會將 \n 變空格,令 split 唔 match)
+  let clean = (entry.split('\n---\n')[0] ?? '').replace(/[\x00-\x1F]/g, ' ').slice(0, 500);
+  // 開頭 ###(可選 SE-reflection: 前綴)→ 統一 'SE-reflection: '——防 double prefix、保留內容
+  clean = clean.replace(/^#{1,6}\s*(?:SE-reflection:\s*)?/i, 'SE-reflection: ');
+  return clean.trim();
+}
+
+function updateChangelog(entry: unknown): void {
   try {
+    const clean = sanitizeChangelogEntry(entry);
+    if (!clean) return; // 冇有效 entry → 唔寫(changelog 唔可以冇結論就 spam)
     const changelogPath = join(PROJECT_ROOT, 'CHANGELOG.md');
     const content = readFileSync(changelogPath, 'utf-8');
     // Insert after the "---\n" that follows the header, before the first version
     const insertPoint = content.indexOf('\n---\n');
+    const block = '\n## ' + clean + '\n\n';
+    const tmpPath = changelogPath + '.tmp-' + process.pid + '-' + Date.now();
     if (insertPoint > 0) {
       const after = content.slice(insertPoint + 5); // after "---\n"
-      const newContent = content.slice(0, insertPoint + 5) + '\n## ' + entry + '\n\n' + after;
-      writeFileSync(changelogPath, newContent, 'utf-8');
-      log.info(`📝 [system-engineer] CHANGELOG.md updated: ${entry}`);
+      writeFileSync(tmpPath, content.slice(0, insertPoint + 5) + block + after, 'utf-8');
+    } else {
+      // P9-changelog-attack: 冇 "\n---\n" 分隔(格式變)→ append 檔尾——保證寫入(主神「必須啊」——結論唔可以靜默丟失)
+      writeFileSync(tmpPath, content + '\n\n' + block, 'utf-8');
     }
+    renameSync(tmpPath, changelogPath); // atomic(同其他學習組件一致——併發安全)
+    log.info(`📝 [system-engineer] CHANGELOG.md updated: ${clean.slice(0, 100)}`);
   } catch (err) {
     log.warn(`[system-engineer] CHANGELOG update failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
-function updateArchitecture(update: string): void {
+function updateArchitecture(update: unknown): void {
   try {
+    const clean = sanitizeChangelogEntry(update); // 同款 sanitize
+    if (!clean) return;
     const archPath = join(PROJECT_ROOT, 'ARCHITECTURE.md');
     const content = readFileSync(archPath, 'utf-8');
-    // Append to end of file
-    writeFileSync(archPath, content + '\n\n## System Engineer Update\n' + update + '\n', 'utf-8');
+    const tmpPath = archPath + '.tmp-' + process.pid + '-' + Date.now();
+    // Append to end of file(atomic)
+    writeFileSync(tmpPath, content + '\n\n## System Engineer Update\n' + clean + '\n', 'utf-8');
+    renameSync(tmpPath, archPath);
     log.info(`📝 [system-engineer] ARCHITECTURE.md updated`);
   } catch (err) {
     log.warn(`[system-engineer] ARCHITECTURE update failed: ${err instanceof Error ? err.message : String(err)}`);
