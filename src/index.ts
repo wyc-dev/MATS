@@ -5743,7 +5743,7 @@ ${recentExamples}
       if (process.env['MOMENTUM_DIRECTION_GATE'] !== 'false') {
         let m4h = this.compute4hMomentumPct(sym);
         if ((m4h === null || !Number.isFinite(m4h)) && process.env['RS_NULL_FALLBACK'] !== 'false') {
-          const ml = this.lastCycleShadowContexts?.get(sym)?.features['momentumLong'];
+          const ml = this.lastCycleShadowContexts?.get(sym)?.features?.['momentumLong'];
           if (typeof ml === 'number' && Number.isFinite(ml) && Math.abs(ml) <= 1) {
             m4h = ml * 100; // fraction → %（同 compute4hMomentumPct 輸出 % 一致）
           }
