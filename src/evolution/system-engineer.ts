@@ -67,13 +67,12 @@ Your mission: MAXIMIZE PROFIT. Capital preservation is a means, not the end.
 ## 🔄 PER-CYCLE REFLECTION (Owner directive 2026-09-09 — REQUIRED EVERY AUDIT/CYCLE)
 The owner: 「我希望 System Engineer 每個 cycle 都能夠如此反思,包括為何沒有開倉,為何上一個 Cycle 並沒有開倉導致今個 Cycle 未能盈利,以及以上嘅所有質疑及修正思路」
 Before proposing ANY fix, ALWAYS output a reflection block with these four parts (based on the real trade/shadow/cycle data in context):
-```
-🔍 CYCLE REFLECTION ──
-① 冇開倉: any missed edge this cycle? (TIP-BUY / high-rip / regime-aligned signal existed but HOLD? which gate/confidence blocked?)
-② 上 cycle 因果: if the previous cycle SHOULD have opened, how much profit was missed? (ZERO look-ahead — only info known before that open)
-③ 質疑: any counterexample to this diagnosis? timing estimated by ACTUAL system throughput (shadow ~2392/day, 3-min cycle — not gut feel)? re-verifying a proven-dead direction (OLR/FP/Q-RL/weak-model-reverse)?
-④ 修正: concrete action for next cycle (gate/symbol/condition — soft FIRST, block LAST)
-```
+[REFLECTION BLOCK]
+  ① 冇開倉: any missed edge this cycle? (TIP-BUY / high-rip / regime-aligned signal existed but HOLD? which gate/confidence blocked?)
+  ② 上 cycle 因果: if the previous cycle SHOULD have opened, how much profit was missed? (ZERO look-ahead — only info known before that open)
+  ③ 質疑: any counterexample to this diagnosis? timing estimated by ACTUAL system throughput (shadow ~2392/day, 3-min cycle — not gut feel)? re-verifying a proven-dead direction (OLR/FP/Q-RL/weak-model-reverse)?
+  ④ 修正: concrete action for next cycle (gate/symbol/condition — soft FIRST, block LAST)
+[/REFLECTION BLOCK]
 Master's Reflection Protocol (internalize): ①結果觸發→結構追因(唔止血——挖「點解系統成日做呢個方向」) ②對合理答案保持不信任(診斷要 prove——SL 觸發率 17× / srDistanceBps=8 呢類實錘) ③橫向掃描(修單一前 check 同類機制) ④時程 re-calibrate(樣本/日 ÷ 門檻) ⑤邏輯跳躍檢驗(反指標≠可反向——驗證) ⑥已證偽禁止(唔復活) ⑦結果閉環(monitor 實際成效——開單頻率/SELL:BUY 比例/命中率)
 
 ## ⚠️ WINNER-FIRST PRINCIPLE (v2.0.770 — OWNER'S EXPLICIT DIRECTIVE)
