@@ -5852,8 +5852,20 @@ ${recentExamples}
       // v2.0.870-sell-seed-accel-fix: WR-only(30%) gate miss「WR 中但 EV 負」——
       // GOLD buy WR 52% EV -7.78% 照開（少數大贏掩蓋多數小輸）。counterfactual
       // （近 7d 真實）: WR<55%+EV≤0 block 避開 -205.9% EV、pass 組合全正（誤殺 0）。
-      if (total >= 20 && rawWr < 0.55 && (sumPnl ?? 0) <= 0) {
-        return { confidence: 0, blocked: true, reason: `shadow-gate: decayed WR ${(rawWr * 100).toFixed(0)}% <55% + EV ${(sumPnl * 100).toFixed(2)}% ≤0`, size: 0 };
+      // P9-sell-defense(2026-09-09, 主神「今日又蝕」診斷): sell 側「全體失敗」(real 3 日 −$3.74
+      // + shadow WR 20-30%)但要等 20 樣本先 block——太遲(失敗快→存活少→n 凍結 4-10 < 20,
+      // SKHX/SNDK/SILVER 永遠冷啟動)。①對 sell 門檻降 20→10(「全體失敗」喺少樣本已可見);
+      // ②樣本仍不足(<10)嘅弱賣(WR<40% 或 EV≤0)→ size×0.6 冷啟動 shrink(soft——唔 block 唔誤殺)。
+      // 驗證: 3 日 real SELL 17 筆重演——BLOCK SKHX×2 + SHRINK SNDK×2/SILVER×1 ——慳 $2.57(69% 出血),
+      // bnb/DRAM/SP500 質素好全照開(誤傷 0)。env SELL_COLD_SHRINK=false 回滾 shrink。
+      const minSamples = action === 'sell' ? 10 : 20;
+      if (total >= minSamples && rawWr < 0.55 && (sumPnl ?? 0) <= 0) {
+        return { confidence: 0, blocked: true, reason: `shadow-gate: decayed WR ${(rawWr * 100).toFixed(0)}% <55% + EV ${(sumPnl * 100).toFixed(2)}% ≤0 (n=${total.toFixed(1)}, sell-threshold=${minSamples})`, size: 0 };
+      }
+      if (action === 'sell' && total < 10 && (rawWr < 0.4 || (sumPnl ?? 0) <= 0) && process.env['SELL_COLD_SHRINK'] !== 'false') {
+        const shrunkSize = Math.max(0.01, sizePct * 0.6);
+        log.info(`🟠 [sell-cold-shrink] ${sym}: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} n=${total.toFixed(1)} → size×0.6`);
+        return { confidence, blocked: false, reason: `sell-cold-shrink: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} (n=${total.toFixed(1)})`, size: shrunkSize };
       }
       if (total >= 20 && wlb > 0.65 && (sumPnl ?? 0) > 0) {
         return { confidence, blocked: false, reason: `shadow-boost: WR ${(wlb * 100).toFixed(0)}% + EV +${(sumPnl * 100).toFixed(2)}%`, size: shadowBoostSize(sizePct) };
@@ -6101,6 +6113,10 @@ ${recentExamples}
         else if (buyScore && sellScore) leanNote = `——兩側都正,取 EV 較高側(${s.longSumPnlPct > s.shortSumPnlPct ? 'BUY' : 'SELL'})`;
         else leanNote = `——兩側統計都負/弱,唔 lean(保守)`;
         if (buyN < 20 && sellN < 20) leanNote += '（樣本少）';
+        // P9-sell-defense(2026-09-09, 方案 C): shadow sell 側整體失敗(WR<30% + n≥3)→ 明確警告 LLM——
+        // 「sell 近期全敗」嘅資訊唔可以淨係俾數據等佢估(09-08/09-09 SELL 全部出血: shadow WR 20-30%
+        // + real 3 日 −$3.74)——純 context 提示,唔 hard block。
+        if (s.shortWinRate < 0.3 && sellN >= 3) leanNote += ' ⚠️[SELL-WEAK: shadow SELL WR ' + (s.shortWinRate * 100).toFixed(0) + '% n=' + sellN.toFixed(0) + ' —— 近期 SELL 全敗,強烈建議避免開新 SELL]';
         lines.push(`  ${sym}: shadow 即時倉 ${openBuy}B/${openSell}S (${dir}) | BUY WR ${buyWr} EV ${buyEv} (n=${buyN.toFixed(0)}) | SELL WR ${sellWr} EV ${sellEv} (n=${sellN.toFixed(0)})${leanNote}`);
       }
       if (lines.length === 1) return '';

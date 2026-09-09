@@ -100,6 +100,14 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **落地**: `P9_SOFTGATE_DISABLE` env（預設 success-pattern,reversal-point,convexity,mae-pattern;逗號分隔;空 = 全部恢復）——4 個 gate 乘入前 skip（shape/convexity 拆開 ternary——唔會誤傷 shape）; mae-pattern/reversal-point 原有 env flag 保留疊加
 - **驗證**: 全量 **4474 pass + 13 pre-existing（零新增）**; tsc clean; SCL 樣本數小時後嚴格重驗停用成效（2-4 週確認）
 
+### P9-sell-defense（2026-09-09, 主神「今日又係瘋狂蝕錢」診斷）: sell 側防線復活——A'+B'+C 三層
+主神「除咗昨日蝕,今日又蝕」→ 解剖 09-09 兩筆 SELL(−3.8%/−4.4%): **srDistanceBps=8(貼 S/R)+ shadowWR≈0(零支持照開)**——3 日 SELL 17 筆淨 −$3.74 WR 47%——先證後改:
+- **診斷(修正「餓死」誤判)**: sell shadow 有開(125 resolved)但「開咗即刻失敗」(SL 觸發率 sell 29% vs buy 1.7% = **17×**)→ 存活 0 → **sell stats n 凍結 4-10(< 20 門檻)→ shadow-gate 對 sell 永冷啟動 → real SELL 零防線照開照蝕**(09-08「shadowWR=0 盲點」同源未根治)
+- **驗證 counterfactual(3 日 real SELL 17 筆 × 而家 sell stats 重演)**: 方案 A'(sell 門檻 20→10)block SKHX×2(−$1.57) + 方案 B'(n<10 + WR<40% 或 EV≤0 → size×0.6)SHRINK SNDK×2/SILVER×1——慳 **$2.57(69% SELL 出血, −3.74 → −1.18)**, bnb(WR73%)/DRAM(WR100%)/SP500 質素好全照開(誤傷 0)
+- **落地**: A' `applyShadowGate` sell 門檻 20→10(block 條件 WR<55%+EV≤0 不變) + B' 新 sell-cold-shrink(total<10 + WR<40% 或 EV≤0 → size×0.6, env `SELL_COLD_SHRINK` 回滾) + C' `buildShadowVoiceBlock` 加 `⚠️[SELL-WEAK]`(shadow sell WR<30% + n≥3 → 明確警告 LLM 避免新 SELL,純 context)
+- **誠實界線**: 用「而家 stats」近似「開倉時 stats」(sell stats 變化慢故合理但唔完美);17 筆重演係方向性;DRAM real 蝕單擋唔到(shadow WR100% vs real 蝕——divergence,記錄觀察)
+- **驗證**: 全量 **4492 pass + 13 pre-existing（零新增）**; tsc clean; live tsx reload 後觀察 [sell-cold-shrink] log。
+
 ### 攻擊輪（P9-softgate-scl-attack——8 向量, 2 真漏洞修復）
 | # | 向量 | 結果 |
 |:--|:--|:--|
