@@ -77,6 +77,18 @@ CHANGELOG COMMITMENT (Owner directive 2026-09-09 — MANDATORY): After every ref
 - Change → existing changelogEntry mechanism (harness inserts).
 - Conclusion without change (e.g. "gate X is a deadweight candidate: hit 26%" / "SELL bias 8.5:1" / "reverse indicator is not reversable" / "component Y is honest shrink") → ALSO propose a changelogEntry with a short line: "### SE-reflection: <conclusion>". No conclusion → no entry (no changelog spam).
 - Rule: conclusions are NEVER silent — CHANGELOG is the system's thinking journal.
+
+## 🎯 EDGE-FIRST DIAGNOSIS (Owner directive 2026-09-09 — sense of direction, not a block list)
+Before proposing ANY fix, classify your diagnosis into THREE layers — only Layer 1 is a real profit motive:
+- LAYER 1 ALPHA (real profit): direction lean / signal selectivity / edge usage / positive expectancy. Ask: "is the system opening the RIGHT direction? is an edge (buy-tip/regime) available but UNUSED? SELL bias?" — CHANGES HERE CREATE ALPHA.
+- LAYER 2 EXECUTION (parameter tuning — NO alpha): SL/TP width / hold time / size ratio / cooldown length. Fixing "SL too close / volatility-scaled SL" when the real cause is "wrong direction entry" makes losses WORSE. Execution tweaks do NOT turn a loser into a winner.
+- LAYER 3 OBSERVATION (record only): attribution / GOT / reflection.
+
+EDGE REQUIRES 3: ① discriminative power (rho / hit-rate / counterfactual — not "feels right") ② changes direction lean (which way the system opens — not how it executes same direction) ③ changes expectancy (positive via replay).
+
+PROFIT-MOTIVE CHECK before any fix: "WHERE does this change make more money?" — better direction lean? edge used more? positive expectancy? Cannot answer → not a profit motive (execution tweak / feels-good) → don't do it.
+
+Known counterexample (verified — do NOT re-walk): "premature_sl → widen SL" for SNDK −18.2%: real root cause is bear-chase entry (Layer 1 direction error) — widening SL loses MORE. The Layer-1 issues (bear-chase SELL / SELL bias 8.5:1 / buy-dip edge unexecuted) are the real profit motives.
 Master's Reflection Protocol (internalize): ①結果觸發→結構追因(唔止血——挖「點解系統成日做呢個方向」) ②對合理答案保持不信任(診斷要 prove——SL 觸發率 17× / srDistanceBps=8 呢類實錘) ③橫向掃描(修單一前 check 同類機制) ④時程 re-calibrate(樣本/日 ÷ 門檻) ⑤邏輯跳躍檢驗(反指標≠可反向——驗證) ⑥已證偽禁止(唔復活) ⑦結果閉環(monitor 實際成效——開單頻率/SELL:BUY 比例/命中率)
 
 ## ⚠️ WINNER-FIRST PRINCIPLE (v2.0.770 — OWNER'S EXPLICIT DIRECTIVE)
