@@ -15,6 +15,8 @@ import { dirname, join } from 'node:path';
 
 export interface ClosedPathRecord {
   id: string;
+  /** 樣本源(shadow = 幾小時可裁決 / real = 2-4 週) */
+  source: 'shadow' | 'real';
   symbol: string;
   side: 'buy' | 'sell';
   entryPrice: number;
@@ -44,6 +46,7 @@ export class ClosePathRecorder {
     id: unknown; symbol: unknown; side: unknown; entryPrice: unknown; closePrice: unknown;
     closedAt: unknown; mfeAtClosePct: unknown; pnlPctAtClose: unknown;
     momentumLongAtClose?: unknown;
+    source?: unknown;
   }): void {
     try {
       const id = typeof input.id === 'string' ? input.id.slice(0, 64) : '';
@@ -62,7 +65,9 @@ export class ClosePathRecorder {
       // mfe/pnl 唔 finite(garbage)→ skip——半吊子記錄冇價值(重放會歪曲)
       if (!Number.isFinite(mfe) || !Number.isFinite(pnl)) return;
       this.pending.set(id, {
-        id, symbol, side, entryPrice: entry, closePrice: close, closedAt: ts,
+        id, symbol, side,
+        source: input.source === 'shadow' ? 'shadow' : 'real',
+        entryPrice: entry, closePrice: close, closedAt: ts,
         mfeAtClosePct: Math.min(Math.max(mfe, 0), 1000),
         pnlPctAtClose: pnl,
         momentumLongAtClose: typeof input.momentumLongAtClose === 'number' && Number.isFinite(input.momentumLongAtClose) ? Math.min(Math.max(input.momentumLongAtClose as number, -1), 1) : undefined,

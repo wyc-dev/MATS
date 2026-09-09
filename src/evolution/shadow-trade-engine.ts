@@ -354,6 +354,29 @@ export class ShadowTradeEngine {
    *  τ=0 → no decay (old behavior, env rollback). */
   private statsBySymbolSide = new Map<string, { wins: number; losses: number; totalPnlPct: number; lastUpdatedTs?: number }>();
 
+  /** P9-let-run(2026-09-09): shadow resolve 通知(ClosePathRecorder 收 shadow post-close path——幾小時裁決 let-run) */
+  private onShadowResolvedCb: ((r: { id: string; symbol: string; side: 'buy' | 'sell'; entryPrice: number; closePrice: number; closedAt: number; mfeAtClosePct: number; pnlPctAtClose: number; momentumLongAtClose?: number }) => void) | null = null;
+  setOnShadowResolved(cb: ((r: { id: string; symbol: string; side: 'buy' | 'sell'; entryPrice: number; closePrice: number; closedAt: number; mfeAtClosePct: number; pnlPctAtClose: number; momentumLongAtClose?: number }) => void) | null): void {
+    this.onShadowResolvedCb = cb;
+  }
+  private notifyShadowResolved(pos: { id: string; symbol: string; side: 'buy' | 'sell'; entryPrice: number; closePrice: number; mfePct?: number; features?: Record<string, number> }, pnlPctFrac: number): void {
+    try {
+      if (!this.onShadowResolvedCb || !pos || typeof pos !== 'object') return;
+      if (typeof pos.id !== 'string' || !pos.id) return;
+      const entry = typeof pos.entryPrice === 'number' && Number.isFinite(pos.entryPrice) ? pos.entryPrice : 0;
+      const close = typeof pos.closePrice === 'number' && Number.isFinite(pos.closePrice) ? pos.closePrice : 0;
+      if (entry <= 0 || close <= 0) return;
+      const ml = pos.features?.['momentumLong'];
+      this.onShadowResolvedCb({
+        id: pos.id, symbol: pos.symbol, side: pos.side === 'sell' ? 'sell' : 'buy',
+        entryPrice: entry, closePrice: close, closedAt: Date.now(),
+        mfeAtClosePct: typeof pos.mfePct === 'number' && Number.isFinite(pos.mfePct) ? pos.mfePct : 0,
+        pnlPctAtClose: Number.isFinite(pnlPctFrac) ? pnlPctFrac : 0,
+        momentumLongAtClose: typeof ml === 'number' && Number.isFinite(ml) ? ml : undefined,
+      });
+    } catch { /* non-fatal */ }
+  }
+
   /** τ (hours) for shadow stat decay. env SHADOW_STAT_DECAY_HOURS; 0 = 唔衰減
    *  (回滾), invalid/negative → default 24h.
    *  v2.0.870-decay-sweep-attack: 極細值（1e-300 denormal）會令 exp(-dt/τ)
@@ -1219,6 +1242,8 @@ export class ShadowTradeEngine {
         }
 
         this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
+        // P9-let-run(2026-09-09): shadow resolve 通知(ClosePathRecorder 收集 post-close path——幾小時裁決)
+        this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: pos.stopLossPrice ?? pos.entryPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(pnl) ? pnl : 0);
         this.capRecentResults(200);
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
@@ -1275,6 +1300,8 @@ export class ShadowTradeEngine {
         }
 
         this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
+        // P9-let-run(2026-09-09): shadow resolve 通知(ClosePathRecorder 收集 post-close path——幾小時裁決)
+        this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: exitPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
         this.capRecentResults(200);
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);

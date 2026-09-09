@@ -20,16 +20,18 @@ import { join } from 'node:path';
 
 const FILE = join(process.cwd(), 'data', 'archive', 'close-path-archive.jsonl');
 if (!fs.existsSync(FILE)) {
-  console.log('⏳ close-path-archive.jsonl 未存在——Close-Path Recorder 由 real trade close 開始收集,2-4 週後有樣本。');
+  console.log('⏳ close-path-archive.jsonl 未存在——Close-Path Recorder 已接 real + shadow resolve——shadow 2392/日 → 幾小時後有樣本(唔係 2-4 週)。');
   process.exit(0);
 }
 const lines = fs.readFileSync(FILE, 'utf-8').split('\n').filter(Boolean);
 const recs = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-// 只 BUY 贏單(本驗證目標——SELL 另計)
-const buys = recs.filter((r: any) => r?.side === 'buy' && Number.isFinite(r.pnlPctAtClose) && Number.isFinite(r.entryPrice) && r.postClose && Number.isFinite(r.postClose.high));
-console.log('close-path 記錄:', recs.length, '| BUY 有 postClose:', buys.length);
-if (buys.length < 30) {
-  console.log(`⏳ 樣本 ${buys.length} < 30(831 門檻)——等待 Close-Path Recorder 累積(2-4 週)。`);
+// 只 BUY 贏單(本驗證目標——SELL 另計);shadow source 可幾小時裁決(2392/日)——唔等 real 2-4 週
+const allBuys = recs.filter((r: any) => r?.side === 'buy' && Number.isFinite(r.pnlPctAtClose) && Number.isFinite(r.entryPrice) && r.postClose && Number.isFinite(r.postClose.high));
+const buys = allBuys; // shadow + real 合併(分 source 輸出)
+const shadowN = allBuys.filter((r: any) => r?.source === 'shadow').length;
+console.log('close-path 記錄:', recs.length, '| BUY 有 postClose:', allBuys.length, '(shadow:' + shadowN + '/real:' + (allBuys.length - shadowN) + ')');
+if (allBuys.length < 30) {
+  console.log(`⏳ 樣本 ${allBuys.length} < 30(831 門檻)——shadow 幾小時內累積(2392/日),real 2-4 週。`);
   process.exit(0);
 }
 

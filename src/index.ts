@@ -1530,6 +1530,12 @@ class MATSSystem {
       log.info('Step 3.10/8: Initializing OLR + Shadow Trade Engine...');
       this.olrEngine = new OLREngine();
       this.shadowEngine = new ShadowTradeEngine(this.olrEngine);
+      // P9-let-run(2026-09-09): shadow resolve → Close-Path Recorder(shadow 2392/日 → 幾小時裁決 let-run)
+      try {
+        this.shadowEngine.setOnShadowResolved((r) => {
+          try { this.closePathRecorder.record({ ...r, source: 'shadow' }); } catch { /* non-fatal */ }
+        });
+      } catch { /* non-fatal */ }
       this.shadowResearchArchive = new EventArchive(path.join(process.env['MATS_DATA_DIR'] ?? 'data/evolution', 'shadow-events.jsonl'));
       // v2.0.219: Initialize advanced learning systems
       this.replayBuffer = new ReplayBuffer(this.olrEngine);
@@ -1766,7 +1772,6 @@ class MATSSystem {
       // should not appear in paper trade list).
       this.portfolio.setOnExchangeClosedLearning((trade) => {
         this.onPositionClosedLearning(trade);
-        // TailWatchdog/Calibration 統一 real-close 出口(2026-09-08): 所有 exchange close
         // 必經此 callback——之前分散喺 L3196 等,多入口漏咗 closeTrade-real/SL-TP reconcile
         // 路徑(SNDK −18.2% 歷史冇入 watchdog → 反手 BUY 冇被鎖)。
         try {
