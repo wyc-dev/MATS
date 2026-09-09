@@ -81,6 +81,12 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **⚔️ pickOlrPwin 契約攻擊輪(6 向量, 2 真漏洞修)**: V1 Proxy getter bomb → throw(純函數契約違反)→ 全函數 try/catch(任何輸入唔 throw,保守 null);V2 nSamples denormal/亞整數(1e-300/0.5/1.2)→ 當有效樣本 → `Number.isInteger(n) && n>=1`(樣本數係整數);V3 非 object 全形態/V4 null-proto/frozen/V5 併發 100/V6 query garbage features——全防
 - **驗證**: 新測試 18（攻擊 7+語義 5+契約 6）+ 全量 **4492 pass + 13 pre-existing（零新增）**; tsc clean。
 
+### 攻擊輪（P9-tipscan-rsnull, 2026-09-09）: F1(RS_NULL_FALLBACK)+F2(scanTipBuySignals)加固
+- V1🔴 F1 fallback `features['momentumLong']` 對 features null → TypeError(外層 catch 吞 → fallback 靜默失效)→ 修 `?.features?.['momentumLong']`
+- V2/V4🟢 dipReversionSignal garbage 全形態(Symbol/±1e308/banana)+ 併發 ×100——全防;順手確認 TIP-SELL(高位+賣壓封頂)邏輯
+- **量化收益**: TIP 全掃描激活「買 tip + 賣 rip」雙邊——同實證一致(高位/微跌 SELL 3 日 +$2.53 有 edge)
+- +3 測試, 全量 **4495 pass + 13 pre-existing（零新增）**; tsc clean。
+
 ### P9-provenance-restrict（2026-09-09, 主神「架構審計」）: 已證偽源全清除——confidence 只由有分辨力證據嘅源組成
 主神「再一次驗證 ARCHITECTURE 藍圖,停用所有失效組件」→ 全面審計 3 個「已證偽但仍乘 confidence」嘅組件（全部 env 可回滾）:
 - **F1 cal-trust 停用**: n=56(樣本最大之一)誤傷 55%,出手組 avg +1.37% vs 全場 +0.43% → 停用期望 +57.6pp——加入 `P9_SOFTGATE_DISABLE` 預設
@@ -107,6 +113,11 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **落地**: A' `applyShadowGate` sell 門檻 20→10(block 條件 WR<55%+EV≤0 不變) + B' 新 sell-cold-shrink(total<10 + WR<40% 或 EV≤0 → size×0.6, env `SELL_COLD_SHRINK` 回滾) + C' `buildShadowVoiceBlock` 加 `⚠️[SELL-WEAK]`(shadow sell WR<30% + n≥3 → 明確警告 LLM 避免新 SELL,純 context)
 - **誠實界線**: 用「而家 stats」近似「開倉時 stats」(sell stats 變化慢故合理但唔完美);17 筆重演係方向性;DRAM real 蝕單擋唔到(shadow WR100% vs real 蝕——divergence,記錄觀察)
 - **驗證**: 全量 **4492 pass + 13 pre-existing（零新增）**; tsc clean; live tsx reload 後觀察 [sell-cold-shrink] log。
+### P9-rs-null-fallback + tip-scan-all（2026-09-09, 主神「I need to win ASAP」）: 兩步——①升勢接刀死角 ②買 tip 全掃描
+- **F1(RS_NULL_FALLBACK)**: compute4hMomentumPct null(1h candles 不足)→ regime-switch 中性 1.0 → 強升勢 SELL 冇 block(09-07 SILVER m4h=null+momentumLong+0.8% 開 SELL −11.7% 事故)→ m4h null 時 fallback 用 entry marketFeatures.momentumLong——驗證: fallback 後 SILVER 案例 mult=0 HARD BLOCK;>0.5% 照 block / ≤0.5% micro-rip 保留
+- **F2(TIP_SCAN_ALL)**: dipReversionSignal(buy-tip 兩時代 +23.2/+124pp 唯一實證 edge)由 exploration 限 1 擴大到每 cycle 全 trading symbols 掃描——TIP-BUY(中上位+賣壓)/ TIP-SELL(高位 rip)注入 agent context(純提示唔 hard block)——啟動唯一實證 edge
+- **驗證**: 全量 4492 pass + 13 pre-existing; tsc clean; live tsx reload 自動生效
+
 
 ### 攻擊輪（P9-softgate-scl-attack——8 向量, 2 真漏洞修復）
 | # | 向量 | 結果 |
