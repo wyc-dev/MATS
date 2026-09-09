@@ -274,14 +274,18 @@ export function applyCalibration(
  *  `{ pWin: 0.5, nSamples: 0 }`——0.5 係「缺席佔位」唔係「模型預測 0.5」。
  *  收據必須分辨兩者: nSamples > 0 先記真預測;否則 null(誠實缺席)。
  *  同 P2 教訓(fallback fill 假象——正 ρ 係假象源)同一失敗原型: 缺席唔可以扮中性。
- *  純函數——garbage 輸入 → null;clamp [0,1]。 */
+ *  純函數契約(攻擊輪固化): 任何輸入(含 Proxy getter bomb / denormal / 亞整數)
+ *  都唔可以 throw——garbage → null;clamp [0,1]。 */
 export function pickOlrPwin(q: unknown): number | null {
-  if (!q || typeof q !== 'object') return null;
-  const n = (q as { nSamples?: unknown }).nSamples;
-  // 冇真實樣本(empty query / 樣本不足 / 垃圾 n)→ 唔可以記預測——缺席標 null
-  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return null;
-  const p = (q as { pWin?: unknown }).pWin;
-  return typeof p === 'number' && Number.isFinite(p) ? Math.min(Math.max(p, 0), 1) : null;
+  try {
+    if (!q || typeof q !== 'object') return null;
+    const maybe = q as { nSamples?: unknown; pWin?: unknown };
+    // 樣本數必須係整數 ≥ 1(denormal 1e-300 / 亞整數 0.5 / 負 / -0 都唔係「有效樣本」)
+    const n = maybe.nSamples;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) return null;
+    const p = maybe.pWin;
+    return typeof p === 'number' && Number.isFinite(p) ? Math.min(Math.max(p, 0), 1) : null;
+  } catch { return null; } // getter bomb / Proxy throw → 保守 null(純函數唔可以 throw)
 }
 
 export interface OLRQueryResult {

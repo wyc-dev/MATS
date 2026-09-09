@@ -76,7 +76,10 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **邏輯實驗（先證後改）**: 2037 筆 shadow 分組——開倉時 WR≥0.55 → 結果 WR 21%（**反預測!同 real ρ_clean=−0.112 一致**——高信心統計 lean 係反指標,shadow-gate「WR 高 boost」方向存疑——留待 SCL 樣本嚴格重驗）
 - **qrl OLR 漏傳修復(7414cda)**: openQRLShadow call site 漏 olrShadowPwin（qrl 佔 97% 樣本）——單行補傳——live 驗證 OLR 收據 0→5
 - **🔴 缺席語義修正(pickOlrPwin)**: OLREngine.query 對「冇模型/樣本不足」返回 `{pWin:0.5, nSamples:0}`——0.5 係缺席佔位唔係預測——收據必須分辨（nSamples>0 先記,否則 null）——同 P2 fallback 假象同一失敗原型——抽 `pickOlrPwin()` 純函數（可測,測試 S1-S5）+ olrShadowPwin 改用;live 驗證 60/60 收據全真值零假 0.5
-- **驗證**: 新測試 12（攻擊 7 + 語義 5）+ 全量 **4481 pass + 13 pre-existing（零新增）**; tsc clean。
+- **⚔️ pickOlrPwin 契約攻擊輪(6 向量, 2 真漏洞修)**: V1 Proxy getter bomb → throw(純函數契約違反)→ 全函數 try/catch(任何輸入唔 throw,保守 null);V2 nSamples denormal/亞整數(1e-300/0.5/1.2)→ 當有效樣本 → `Number.isInteger(n) && n>=1`(樣本數係整數);V3 非 object 全形態/V4 null-proto/frozen/V5 併發 100/V6 query garbage features——全防
+- **驗證**: 新測試 18（攻擊 7+語義 5+契約 6）+ 全量 **4492 pass + 13 pre-existing（零新增）**; tsc clean。
+
+**量化候選（P11 材料, 列 pending）**: live 收據已見「統計 lean 內部矛盾」（skhx OLR 0.681 + verdict block——OLR 高但 shadow WR 低）——「lean 衝突偵測」候選（但需 SCL 樣本證明矛盾方向有預測力先定案,831 門檻）。
 
 ### Phase 2 落地: 減法（六誤傷候選停用 4 個, env 可回滾）
 主神「先做減法落地」→ 減法重播（`scripts/p9-softgate-ablation.ts`）: 出手組 avg 正 + 誤傷率>53% = 「誤傷(大賺單被縮) cover 命中(細蝕單被縮)」→ 停用釋放正期望:
