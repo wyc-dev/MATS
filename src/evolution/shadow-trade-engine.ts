@@ -363,15 +363,20 @@ export class ShadowTradeEngine {
     try {
       if (!this.onShadowResolvedCb || !pos || typeof pos !== 'object') return;
       if (typeof pos.id !== 'string' || !pos.id) return;
+      // 攻擊輪加固: side 白名單——'hold'/垃圾 side 唔可以當 buy(方向錯→post-close path 計錯)
+      if (pos.side !== 'buy' && pos.side !== 'sell') return;
       const entry = typeof pos.entryPrice === 'number' && Number.isFinite(pos.entryPrice) ? pos.entryPrice : 0;
       const close = typeof pos.closePrice === 'number' && Number.isFinite(pos.closePrice) ? pos.closePrice : 0;
       if (entry <= 0 || close <= 0) return;
+      // 攻擊輪加固: mfe/pnl 非 finite(garbage)→ 唔 emit(同 ClosePathRecorder record 一致——半吊子記錄冇價值)
+      if (typeof pos.mfePct !== 'number' || !Number.isFinite(pos.mfePct)) return;
+      if (typeof pnlPctFrac !== 'number' || !Number.isFinite(pnlPctFrac)) return;
       const ml = pos.features?.['momentumLong'];
       this.onShadowResolvedCb({
-        id: pos.id, symbol: pos.symbol, side: pos.side === 'sell' ? 'sell' : 'buy',
+        id: pos.id, symbol: pos.symbol, side: pos.side,
         entryPrice: entry, closePrice: close, closedAt: Date.now(),
-        mfeAtClosePct: typeof pos.mfePct === 'number' && Number.isFinite(pos.mfePct) ? pos.mfePct : 0,
-        pnlPctAtClose: Number.isFinite(pnlPctFrac) ? pnlPctFrac : 0,
+        mfeAtClosePct: pos.mfePct,
+        pnlPctAtClose: pnlPctFrac,
         momentumLongAtClose: typeof ml === 'number' && Number.isFinite(ml) ? ml : undefined,
       });
     } catch { /* non-fatal */ }
