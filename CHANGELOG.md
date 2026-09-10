@@ -9482,3 +9482,22 @@ MAE -8.47% · MFE +2.20%
 ### 盈利提升候選（數據支持, 列 pending 等 831 —— n≥15 已過）
 - **順勢 SELL boost**: 順勢 sell(4h 跌勢) 79 筆 WR 49% avg **+0.88%**（正期望, 樣本足）——候選「順勢 SELL size ×1.2 boost」/ confidence lean（對照 shadow-boost 已有 wlb>0.65 機制）。⚠️ 四關驗證後先落地。
 - 逆勢 SELL(升勢追空) 7 筆 WR 71% avg +1.45%（細樣本, 支持 P9-sell-tune「賣 rip」已實施——唔加新 gate）。
+
+## v2.0.875-CYCLE-REVIEW（2026-09-10：恆常檢討系統——npm run dev 都有, 主神「檢討點解冇開倉/點解賺蝕, 更新去 investigation.md」）
+
+> 主神: 「就算係 npm run dev, 都應該要有檢討系統——檢討吓點解嗰個 Cycle 冇開倉, 又檢討吓開咗倉嘅點解會蝕錢同埋賺錢, 然後不斷更新去 investigation.md」。之前「檢討」只喺 engineer 模式(SE/LLM)——dev 模式零檢討。
+
+### 落地(規則式, 唔依賴 LLM/SE——任何模式都行)
+- 新 `src/analysis/cycle-reviewer.ts` 純函數 + 接駁:
+  - **①close 檢討**: 統一 `onPositionClosedLearning` 出口(所有 exchange close 必經)——每單檢討賺/蝕原因(TP 目標到達 / SL 止血 / 鎖利 / 反轉止蝕 / thesis 失效 / MFE-MAE)一行 → `data/evolution/investigation.md` (append-only, atomic temp+rename, 300 char cap, \n 結構注入折疊)
+  - **②冇開倉檢討**: runDecisionCycle 尾 `reviewNoOpenCycle`——累積 gate 攔截原因 + hold 決策, **idle ≥3 cycles** 寫「點解冇開倉」(gate blocked: shadow-gate WR 32% EV -0.5 等 + throttle 5 cycles)——dev 模式無 SE 都有檢討
+- 零決策影響: 全部 try/catch, append 失敗唔影響交易 cycle。
+
+### 攻擊防禦(測試 20)
+- buildCloseReview: garbage(pnl NaN/Infinity/string/Symbol/null/42/Symbol side)→ null 唔 crash; 正/負/零 pnl 檢討正確
+- buildNoOpenReview: buy/sell 有開倉意圖唔算冇開倉; 空/garbage decisions skip
+- appendInvestigation: **非 string line TypeError 漏洞修**(String() 兜底——C4 捉到); \n 注入折疊(唔可以開新行); 空 lines no-op; 超長 cap
+- 全量 4598 pass(4578 + 20), exit 0, tsc clean。
+
+### 用法
+- investigation.md 自動累積: 每單 close 檢討 + idle 3+ cycles 冇開倉檢討——主神隨時 `cat data/evolution/investigation.md` 睇。

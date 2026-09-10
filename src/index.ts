@@ -25,6 +25,7 @@ import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-learner.ts';
 import { applyPositionSizeFloor, isTrendFollowingSell } from './analysis/position-size.ts';
+import { buildCloseReview, buildNoOpenReview, appendInvestigation } from './analysis/cycle-reviewer.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -877,6 +878,11 @@ class MATSSystem {
   private terminalSideGuide = '';
   /** Per-symbol previous cycle context for shadow trade opening — Map<symbol, context> */
   private lastCycleShadowContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
+  // v2.0.875-CYCLE-REVIEW(2026-09-10, 主神「npm run dev 都要有檢討——點解冇開倉/點解賺蝕, 更新去 investigation.md」):
+  private cycleReviewBuffer: Array<{ sym: string; note: string }> = [];
+  private idleCycles = 0;
+  private lastIdleReviewCycle = 0;
+  private readonly investigationPath = 'data/evolution/investigation.md';
   /** v2.0.831: Per-cycle ATR cache — pre-fetched at cycle start so vol-gate
    *  and entry-gate don't need to make synchronous HL API calls (which timeout
    *  under rate-limiter pressure). Key = normalized symbol, value = ATR (absolute). */
@@ -4516,8 +4522,45 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
+  /** v2.0.875-CYCLE-REVIEW: 冇開倉檢討(任何模式 dev/engineer)——idle 3+ cycles 寫 investigation.md。
+   *  零決策影響: 純觀察記錄, throw 都唔影響 cycle。 */
+  private reviewNoOpenCycle(decision: { action?: string; confidence?: number; symbol?: unknown }, gates: Array<{ gate: string; passed: boolean; reason: string }>): void {
+    try {
+      // buffer: 累積 hold 原因(gate blocked + confidence)
+      const act = typeof decision?.action === 'string' ? decision.action : 'hold';
+      if (act === 'buy' || act === 'sell') {
+        this.idleCycles = 0;
+        this.cycleReviewBuffer = []; // 有開倉意圖 → reset buffer
+        return;
+      }
+      // 收集 gate 攔截(冇開倉嘅直接原因)
+      if (Array.isArray(gates)) {
+        for (const g of gates) {
+          if (!g || g.passed !== false) continue;
+          const note = `${g.gate}: ${typeof g.reason === 'string' ? g.reason.slice(0, 100) : '?'}`;
+          if (note.length > 4) this.cycleReviewBuffer.push({ sym: typeof decision?.['symbol'] === 'string' ? (decision['symbol'] as string) : '', note });
+        }
+      }
+      if (this.cycleReviewBuffer.length > 15) this.cycleReviewBuffer.shift();
+      this.idleCycles++;
+      if (this.idleCycles < 3) return;
+      if (this.totalCycles - this.lastIdleReviewCycle < 5) return; // throttle: 每 5 cycles 最多一次
+      this.lastIdleReviewCycle = this.totalCycles;
+      const review = buildNoOpenReview(this.totalCycles, {
+        decisions: this.cycleReviewBuffer.slice(-8).map((b) => ({
+          symbol: b.sym || 'active', action: 'hold', gateBlocked: b.note,
+        })),
+      });
+      if (review) appendInvestigation(this.investigationPath, [review]);
+      this.cycleReviewBuffer = [];
+    } catch { /* 檢討失敗唔影響交易 */ }
+  }
+
   private onPositionClosedLearning(trade: TradeRecord): void {
     try {
+      // v2.0.875-CYCLE-REVIEW: close 檢討(賺/蝕原因)→ investigation.md(dev/engineer 都行, 零決策影響)
+      const closeReview = buildCloseReview(trade);
+      if (closeReview) appendInvestigation(this.investigationPath, [closeReview]);
       const symbol = trade.symbol;
       // v2.0.856-attack (V11): if the trade's side is not canonical, the entire
       // learning pipeline (OLR/EXP/RIL/agentOutcomes/attribution) would feed a
@@ -13632,6 +13675,9 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
       activeAuditGates,
     );
   }
+
+  // v2.0.875-CYCLE-REVIEW: 冇開倉檢討(任何模式)——idle 3+ cycles 寫 investigation.md(零決策影響)
+  this.reviewNoOpenCycle(finalDecision, activeAuditGates);
 
   // v2.0.765: REMOVED systematic loser hard block — OWNER DIRECTIVE: NEVER hard block.
   // The dynamic volatility gate (v2.0.764) handles the root cause — low-vol noise trading.
