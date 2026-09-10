@@ -882,6 +882,8 @@ class MATSSystem {
   private readonly investigationPath = 'data/evolution/investigation.md';
   private missedEdgeCounters = new Map<string, number>();   // sym → 連續 cycles 有 edge 訊號但冇開
   private lastMarketReviewTitle = '';
+  /** 上週期賺錢資產追蹤: sym → { side, pnlPct, closedAt } (close pnl>0 累積, cap 6) */
+  private recentWinners = new Map<string, { side: string; pnlPct: number; closedAt: number }>();
   /** v2.0.831: Per-cycle ATR cache — pre-fetched at cycle start so vol-gate
    *  and entry-gate don't need to make synchronous HL API calls (which timeout
    *  under rate-limiter pressure). Key = normalized symbol, value = ATR (absolute). */
@@ -4583,7 +4585,28 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           ],
         );
       }
-    } catch { /* 檢討失敗唔影響交易 */ }
+      // v2.0.875-CYCLE-REVIEW-v4(2026-09-11, 主神「上週期賺錢資產點解冇再開倉」): recentWinners 追蹤
+      // close 賺錢嘅 asset 而家冇倉 → 🔥 missed re-open 候選(merge by sym)
+      const winNow = Date.now();
+      for (const [wsym, w] of this.recentWinners) {
+        let holding = false;
+        try { holding = !!this.portfolio.getPosition(wsym); } catch { /* 冇倉當冇 */ }
+        if (holding) continue;
+        const ws = wsym.split(':').pop() ?? wsym;
+        appendOrMergeInvestigation(
+          this.investigationPath,
+          [ws.toUpperCase(), 're-open'],
+          `  ⚠️ ${ws.toUpperCase()}: 上週期 ${String(w.side).toUpperCase()} 賺 ${(w.pnlPct * 100).toFixed(1)}% (close ${new Date(w.closedAt).toISOString().slice(0, 16).replace('T', ' ')}) — 而家冇倉 — missed re-open 候選 (cycle ${this.totalCycles} 更新)`,
+          [`## 🔥 上週期賺錢資產追蹤 (cycle ${this.totalCycles}, ${new Date(winNow).toISOString().slice(0, 16).replace('T', ' ')})`, `  ⚠️ ${ws.toUpperCase()}: 上週期 ${String(w.side).toUpperCase()} 賺 ${(w.pnlPct * 100).toFixed(1)}% — 而家冇倉 — missed re-open 候選`],
+        );
+      }
+    } catch (err) {
+      // v2.0.875-CYCLE-REVIEW-v4: 唔再靜默——log 原因(debug 系統自動寫唔到 investigation)
+      try {
+        // eslint-disable-next-line no-console
+        console.warn(`[investigation-review] failed: ${err instanceof Error ? err.message : String(err)}`);
+      } catch { /* noop */ }
+    }
   }
 
   private onPositionClosedLearning(trade: TradeRecord): void {
@@ -4591,6 +4614,18 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // v2.0.875-CYCLE-REVIEW: close 檢討(賺/蝕原因)→ investigation.md(dev/engineer 都行, 零決策影響)
       const closeReview = buildCloseReview(trade);
       if (closeReview) appendInvestigation(this.investigationPath, [closeReview]);
+      // v2.0.875-v4: 賺錢 asset 累積(recentWinners) — 上週期 edge 追蹤, 每 cycle 檢查冇倉 → missed re-open
+      try {
+        const wp = typeof trade.pnlPct === 'number' && Number.isFinite(trade.pnlPct) ? trade.pnlPct : 0;
+        const wsymN = normalizeSymbol(typeof trade.symbol === 'string' ? trade.symbol : '');
+        if (wp > 0 && wsymN) {
+          this.recentWinners.set(wsymN, { side: String(trade.side ?? '?'), pnlPct: wp, closedAt: typeof trade.closedAt === 'number' ? trade.closedAt : Date.now() });
+          if (this.recentWinners.size > 6) {
+            const oldest = [...this.recentWinners.entries()].sort((a, b) => a[1].closedAt - b[1].closedAt)[0]?.[0];
+            if (oldest) this.recentWinners.delete(oldest);
+          }
+        }
+      } catch { /* 追蹤失敗唔影響 */ }
       const symbol = trade.symbol;
       // v2.0.856-attack (V11): if the trade's side is not canonical, the entire
       // learning pipeline (OLR/EXP/RIL/agentOutcomes/attribution) would feed a
