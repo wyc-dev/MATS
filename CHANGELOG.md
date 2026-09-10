@@ -4,6 +4,30 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.874-SL-widen-experiment（2026-09-10：SE 對 SKHX 追空兩連敗嘅「regime-aware SL widening」提議——全樣本邏輯實驗否決＋永久禁區）
+
+> 背景: SE 診斷「SELL xyz:SKHX repeated premature_sl losses — SL not volatility-scaled for trending_bull」→ 自動改 `atr.ts`（regime-aware SL widening: momentumShort>0.5% + impliedVol<1.5% → effectiveSlMult≥2.0）→ 主神指示「過 test 再入 code」+「頂尖量化金融分析師 mindset 謹慎邏輯實驗」→ 本座做全樣本 counterfactual——**結論: 否決 + revert（atr.ts WIP 已還原, 零 code 入 production）。**
+
+### 邏輯實驗（21 筆可算 sl_tp 單, 15m-candle 零 look-ahead, margin% 統一 ×lev）
+| 指標 | widen 1.5× | widen 2.0×（SE 版）|
+|:--|:--|:--|
+| Σ pnl | **−216.2pp（vs 原 −157.9pp, 更差）** | −114.2pp（表面好轉 = 3 筆 outlier tail +47.6/+18.6/+9.4 拉動）|
+| 好轉 / 蝕多 | **5/21 / 16/21** | 9/21 / 12/21 |
+| SL 照打（新 SL 都穿）| 76%（16/21）——SL 正確止蝕, 價格繼續走輸方向 | 57%（12/21）|
+
+### 關鍵證據
+- **76% 嘅 sl_tp 係正確止蝕**: SL 被打後 24h 內價格繼續走輸方向——唔係 premature。widen SL 喺呢啲單只會令蝕更多（−8% → −12~16%）。
+- **SE 條件子集 0 樣本**: 冇任何 sl_tp 單喺開倉時同時滿足 momShort>0.5% + vol<1.5% 而又有 candle 數據——fix 嘅理論前提完全冇實證支持。
+- **SE 動機案例 = 假根因**: SKHX 09-08 SELL（1326→1347, +1.6%）/ 09-09 SELL（1380→1390, +0.7%）——兩筆都係 **trending_bull 追空接刀（Layer 1 方向錯）**, 唔係 SL 太緊。widen 只會令 −8% 變 −16%。同 SNDK −18.2% 已知反例同一 pattern（EDGE-FIRST: premature_sl → widen SL = 假根因）。
+
+### 落地（永久防護）
+- `src/analysis/atr.ts` WIP **已 revert**（未入 production）, tsc clean, worktree 乾淨。
+- `SystemEngineer.md` 反例禁區升級: 任何「SL widening 治 premature_sl」變體（regime-aware / volatility-scaled / execution-lens）已定案否決, **唔可以再以「呢個 case 唔同」繞過**——直接引用本篇。
+- `system-engineer.ts` SYSTEM_PROMPT Known counterexample 同步升級（量化實驗數據入 prompt——SE 下次自動診斷會見到）。
+
+### 真正方向（Layer 1, 列 pending 等樣本）
+SKHX 類「trending_bull 追空」兩連敗 = 方向 lean 問題（非 SL）。候選: 追空側時機 gate（弱動量 mean-reversion mode 下賣 rip 嘅確認）——但 n=2 未夠（831 門檻 n≥15）, 列 pending 由 SCL/shadow 樣本累積。
+
 ## v2.0.873-P9-SE-verdict-maxbuffer（2026-09-10：SE 判定「still wtf」三層元兇根治——主神連續觀察「tests 永遠 FAIL 啱 fix 全被 rollback」）
 
 > 主神貼 live log「Test retry 2/3 fix accepted → tests FAILED → Rolling back」+「tests FAILED 內容係 [NA] Loaded model noise」追問「still, wtf?」→ 三層執行環境盲點全根治（判定邏輯 6c6ef3e/5063b78 本身已啱,但**永遠到唔到**——「管道通但執行環境壞」原型再次出現）。全量 vitest **exit 0（4497 pass / 0 fail）**, tsc clean。

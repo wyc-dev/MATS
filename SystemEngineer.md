@@ -485,4 +485,5 @@ If no issues worth fixing: `{"severity":"info","category":"none","title":"No iss
 
 ### 反例(已驗證)——SE 唔好再行嘅路:
 - ❌ 「premature_sl 主因 → 拉闊 SL」: SNDK −18.2% 根因係「跌市追空開倉」(alpha 層方向錯)——SL 拉闊只會蝕更多——**執行層診斷當咗 alpha 層問題**
+- ❌ **任何「SL widening 治 premature_sl」變體(2026-09-10 全樣本實驗已定案, 唔可以再以「呢個 case 唔同」繞過)**: 全樣本 21 筆 sl_tp 單 15m-candle 零 look-ahead counterfactual——widen 1.5× Σ=−216pp（vs 原 −158pp, 更差）、好轉僅 5/21、16/21 SL 照打蝕更多; 76% 嘅 SL 被打後價格繼續走輸方向（= 正確止蝕, 非 premature); SE 條件子集（momentumShort>0.5% + vol<1.5%）0 筆有數據。SKHX 09-08/09-09 SELL 兩連敗（1326→1347 +1.6% / 1380→1390 +0.7%）根因係 trending_bull **追空接刀（Layer 1 方向錯）**——widen 只會令 −8% 變 −16%。任何 "regime-aware / volatility-scaled / execution-lens" SL widening 提議 = 同一假根因換名重做 → 直接引用本篇否決。
 - ✅ 「追跌做空 / SELL 偏斜 / 買 dip 未執行」: 呢啲先係 alpha 層（方向 lean / edge 使用率）——先係盈利動機
