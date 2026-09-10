@@ -4546,6 +4546,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const n = normalizeSymbol(sym);
         if (!list.includes(n)) list.push(n);
       }
+      // v2.0.875-v7 debug: 有市場先確認寫入(唔再靜默)
+      try {
+        log.info(`[CYCLE-REVIEW] reviewMarketPairs: ${list.length} 個市場檢討 (cycle ${this.totalCycles})`);
+      } catch { /* noop */ }
       if (list.length === 0) return;
 
       // 逐個資產檢討
@@ -9072,6 +9076,11 @@ ${recentExamples}
   }
 
   private async runDecisionCycle(): Promise<void> {
+    // v2.0.875-CYCLE-REVIEW-v7(2026-09-11 debug): 開頭都 call(雙保險——L13710 尾 call 若被 early return 跳過, 頭都寫)
+    try {
+      this.reviewMarketPairs();
+      log.info(`[CYCLE-REVIEW] runDecisionCycle 開頭 call reviewMarketPairs (edgeHints=${this.edgeHints.length})`);
+    } catch { /* 雙保險失敗唔影響 */ }
     if (isShuttingDown()) return;
     if (this.cycleInProgress) {
       log.warn('Previous decision cycle still running. Skipping this tick.');
