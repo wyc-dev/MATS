@@ -9515,3 +9515,14 @@ MAE -8.47% · MFE +2.20%
 
 ### 用法
 `cat data/evolution/investigation.md`——每 cycle 更新「當前檢討」+ Missed Edge 累積 + 開倉績效。
+
+## v2.0.875-CYCLE-REVIEW-v3（2026-09-10：investigation.md「修正取代新增」——每次寫前檢查有冇類似觀點, 主神規則）
+
+> 主神: 「每次 Edit 之前都需要檢查 investigation.md 當中有冇類似嘅觀點, 用修正取代新增」——Missed Edge 唔可以無限堆積相似發現, 文檔要保持精煉演化(似 ARCHITECTURE)。
+
+### 落地
+- 新 `appendOrMergeInvestigation(filePath, keyTokens, mergedLine, appendBlock)` 純函數:
+  寫之前 scan 全文——搵到「類似觀點」嘅 entry(行含**所有 keyTokens** 關鍵字 = 同 asset + 同 edge 類型)→ **merge 取代新增**(更新該行 timestamp/次數);冇類似 → 先 append。失敗 → append fallback(唔 crash)。
+- Missed Edge 接駁: 每次 ≥3 cycles 發現 → appendOrMerge(keyTokens=[sym, BUY-dip/SELL-rip])——**同一 asset 同一 edge 類型只會有一條**,持續更新(「連續 N cycles (cycle M 更新)」)。
+- 移除 missedEdgeReported Set(document scan 自然 dedup 取代)。
+- 測試 27(merge 取代新增 / 冇類似先 append / garbage fallback / section 覆寫)、全量 4605 pass、tsc clean。

@@ -25,7 +25,7 @@ import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-learner.ts';
 import { applyPositionSizeFloor, isTrendFollowingSell } from './analysis/position-size.ts';
-import { buildCloseReview, buildMarketReview, buildMissedEdge, appendInvestigation, writeCurrentInvestigationSection } from './analysis/cycle-reviewer.ts';
+import { buildCloseReview, buildMarketReview, buildMissedEdge, appendInvestigation, writeCurrentInvestigationSection, appendOrMergeInvestigation } from './analysis/cycle-reviewer.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -881,7 +881,6 @@ class MATSSystem {
   // v2.0.875-CYCLE-REVIEW(2026-09-10, 主神「每個 Cycle 檢討 Selected Market Pairs 點解冇開到倉, investigation.md 似 ARCHITECTURE——搵出當前狀況成因 + edge & alpha 改善」):
   private readonly investigationPath = 'data/evolution/investigation.md';
   private missedEdgeCounters = new Map<string, number>();   // sym → 連續 cycles 有 edge 訊號但冇開
-  private missedEdgeReported = new Set<string>();           // 已寫過嘅 (sym|edge) — dedup
   private lastMarketReviewTitle = '';
   /** v2.0.831: Per-cycle ATR cache — pre-fetched at cycle start so vol-gate
    *  and entry-gate don't need to make synchronous HL API calls (which timeout
@@ -4559,7 +4558,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       if (body) writeCurrentInvestigationSection(this.investigationPath, '📍 當前 Cycle 檢討', body);
       this.lastMarketReviewTitle = fullTitle;
 
-      // Missed Edge: 4h 強動量 + 冇倉 → 累積; ≥3 cycles → append(新發現 dedup)
+      // Missed Edge: 4h 強動量 + 冇倉 → 累積; ≥3 cycles → 寫入。
+      // 主神規則(2026-09-10): 寫之前檢查 investigation.md 有冇類似觀點(同 asset + 同 edge 類型)
+      // → 用修正取代新增(update timestamp/次數) — appendOrMergeInvestigation 天然 dedup
       const now = Date.now();
       for (const it of items) {
         const edgeLine = buildMissedEdge({ ...it, gateBlocked: it.gateBlocked });
@@ -4567,13 +4568,20 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const c = (this.missedEdgeCounters.get(it.symbol) ?? 0) + 1;
         this.missedEdgeCounters.set(it.symbol, c);
         if (c < 3) continue;
-        const key = it.symbol; // symbol 級 dedup(避免每 3 cycles 重複)
-        if (this.missedEdgeReported.has(key)) continue;
-        this.missedEdgeReported.add(key);
-        appendInvestigation(this.investigationPath, [
-          `## 🔥 Missed Edge 發現 (cycle ${this.totalCycles}, ${new Date(now).toISOString().slice(0, 16).replace('T', ' ')})`,
-          `  ${edgeLine} — 連續 ${c} cycles 訊號存在但未開倉, 列為 Alpha 改善候選`,
-        ]);
+        const symShort = it.symbol.split(':').pop() ?? it.symbol;
+        const momVal = typeof it.momentum4hPct === 'number' && Number.isFinite(it.momentum4hPct) ? it.momentum4hPct : 0;
+        const edgeType = momVal <= -0.5 ? 'BUY-dip' : 'SELL-rip';
+        const momStr = `${momVal >= 0 ? '+' : ''}${momVal.toFixed(2)}%`;
+        // 類似觀點 = 文檔已有同 asset + 同 edge 類型 -> merge 更新; 冇 -> append(首次發現)
+        appendOrMergeInvestigation(
+          this.investigationPath,
+          [symShort, edgeType],
+          `  ⚠️ ${symShort}: 「${edgeType}」訊號仍存在但未開倉 — 連續 ${c} cycles (cycle ${this.totalCycles} 更新, 4h ${momStr}, regime=${typeof it.regime === 'string' ? it.regime : '?'}) — 潛在 missed edge / Alpha 改善候選`,
+          [
+            `## 🔥 Missed Edge 發現 (cycle ${this.totalCycles}, ${new Date(now).toISOString().slice(0, 16).replace('T', ' ')})`,
+            `  ${edgeLine} — 連續 ${c} cycles 訊號存在但未開倉, 列為 Alpha 改善候選`,
+          ],
+        );
       }
     } catch { /* 檢討失敗唔影響交易 */ }
   }

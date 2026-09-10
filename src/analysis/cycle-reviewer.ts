@@ -106,9 +106,45 @@ export function appendInvestigation(filePath: string, lines: string[]): void {
 }
 
 /**
- * 覆寫「當前 Cycle 檢討」section(活文檔——每 cycle 更新反映最新狀況)。
- * @param sectionTitle 例如「📍 當前 Cycle 檢討」——以「## <title>」開頭嘅 block 會被覆寫。
+ * appendOrMerge(2026-09-10, 主神「每次 Edit 之前檢查 investigation.md 有冇類似觀點, 用修正取代新增」):
+ * 寫之前 scan 全文——搵「類似觀點」嘅 entry(行含所有 keyTokens 關鍵字)→ 修正取代新增(更新 timestamp/次數);
+ * 冇類似 → 先 append。返 'merged' | 'appended'。pure: 唔 throw, 失敗 → append fallback。
  */
+export function appendOrMergeInvestigation(
+  filePath: string,
+  keyTokens: string[],
+  mergedLine: string,
+  appendBlock: string[],
+): 'merged' | 'appended' {
+  const fs = require('node:fs');
+  try {
+    const dir = filePath.slice(0, filePath.lastIndexOf('/'));
+    if (dir) fs.mkdirSync(dir, { recursive: true });
+    const prev = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : `# MATS Investigation\n`;
+    const tokens = (Array.isArray(keyTokens) ? keyTokens : []).filter(
+      (t): t is string => typeof t === 'string' && t.length > 0,
+    );
+    if (tokens.length === 0) { appendInvestigation(filePath, appendBlock); return 'appended'; }
+    const lines = prev.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]!;
+      if (!l.includes(tokens[0]!)) continue;
+      const all = tokens.every((t) => l.includes(t));
+      if (!all) continue;
+      // 類似觀點 -> 修正取代新增(保留原行尾註解部分?——直接換成 mergedLine)
+      lines[i] = mergedLine;
+      const tmp = filePath + '.tmp';
+      fs.writeFileSync(tmp, lines.join('\n'), 'utf-8');
+      fs.renameSync(tmp, filePath);
+      return 'merged';
+    }
+    appendInvestigation(filePath, appendBlock);
+    return 'appended';
+  } catch {
+    try { appendInvestigation(filePath, appendBlock); } catch { /* noop */ }
+    return 'appended';
+  }
+}
 export function writeCurrentInvestigationSection(filePath: string, sectionTitle: string, body: string | null): void {
   const fs = require('node:fs');
   try {
