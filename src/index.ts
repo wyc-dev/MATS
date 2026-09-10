@@ -884,6 +884,10 @@ class MATSSystem {
   private lastMarketReviewTitle = '';
   /** 上週期賺錢資產追蹤: sym → { side, pnlPct, closedAt } (close pnl>0 累積, cap 6) */
   private recentWinners = new Map<string, { side: string; pnlPct: number; closedAt: number }>();
+  /** close 時間表: sym → lastClosedAt(無成交診斷用) */
+  private lastTradeTimes = new Map<string, number>();
+  /** 每 cycle 由 reviewMarketPairs 產生嘅 edge 提示(注入 agents context——檢討→Fix 迴路, 主神 2026-09-11「唔好淨係檢討, 要 fix」) */
+  private edgeHints: string[] = [];
   /** v2.0.831: Per-cycle ATR cache — pre-fetched at cycle start so vol-gate
    *  and entry-gate don't need to make synchronous HL API calls (which timeout
    *  under rate-limiter pressure). Key = normalized symbol, value = ATR (absolute). */
@@ -4600,6 +4604,35 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           [`## 🔥 上週期賺錢資產追蹤 (cycle ${this.totalCycles}, ${new Date(winNow).toISOString().slice(0, 16).replace('T', ' ')})`, `  ⚠️ ${ws.toUpperCase()}: 上週期 ${String(w.side).toUpperCase()} 賺 ${(w.pnlPct * 100).toFixed(1)}% — 而家冇倉 — missed re-open 候選`],
         );
       }
+      // v2.0.875-CYCLE-REVIEW-v5(2026-09-11, 主神「檢討要 Fix—唔好淨係檢討」): 構建 edge hints 注入 agents context
+      // ①有 edge 訊號但冇倉 ②上週期賺錢資產冇倉(re-open) ③長期無成交資產(診斷)
+      this.edgeHints = [];
+      for (const it of items) {
+        if (it.holding) continue;
+        const m4 = it.momentum4hPct;
+        const symU = (it.symbol.split(':').pop() ?? it.symbol).toUpperCase();
+        if (typeof m4 === 'number' && Number.isFinite(m4) && Math.abs(m4) >= 0.5) {
+          const sig = m4 <= -0.5 ? 'BUY-dip' : 'SELL-rip';
+          this.edgeHints.push(`${symU}: 「${sig}」訊號(4h ${m4 >= 0 ? '+' : ''}${m4.toFixed(2)}%)但冇倉——檢討發現, 考慮開倉`);
+        }
+      }
+      for (const [wsym, w] of this.recentWinners) {
+        let holding = false;
+        try { holding = !!this.portfolio.getPosition(wsym); } catch { /* 冇倉當冇 */ }
+        if (holding) continue;
+        this.edgeHints.push(`${(wsym.split(':').pop() ?? wsym).toUpperCase()}: 上週期 ${String(w.side).toUpperCase()} 賺 ${(w.pnlPct * 100).toFixed(1)}% — 而家冇倉 — 考慮重開 ${String(w.side).toUpperCase()}`);
+      }
+      // 長期無成交(近 3 日無 trade + 冇倉)→ 診斷提示
+      const threeDaysAgo = Date.now() - 3 * 24 * 3600 * 1000;
+      for (const it of items) {
+        if (it.holding) continue;
+        const symU = (it.symbol.split(':').pop() ?? it.symbol).toUpperCase();
+        if (this.edgeHints.some((h) => h.startsWith(symU + ':'))) continue; // 已有 edge hint
+        if (this.lastTradeTimes && this.lastTradeTimes.has(normalizeSymbol(it.symbol)) && (this.lastTradeTimes.get(normalizeSymbol(it.symbol)) ?? 0) > threeDaysAgo) continue;
+        const momS = typeof it.momentum4hPct === 'number' && Number.isFinite(it.momentum4hPct) ? `${it.momentum4hPct >= 0 ? '+' : ''}${it.momentum4hPct.toFixed(2)}%` : 'n/a';
+        this.edgeHints.push(`${symU}: 近 3 日無成交而家冇倉(4h=${momS}, regime=${typeof it.regime === 'string' ? it.regime : '?'})——診斷有冇可開 edge, 唔好長期 hold`);
+      }
+      if (this.edgeHints.length > 10) this.edgeHints = this.edgeHints.slice(0, 10);
     } catch (err) {
       // v2.0.875-CYCLE-REVIEW-v4: 唔再靜默——log 原因(debug 系統自動寫唔到 investigation)
       try {
@@ -4620,6 +4653,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const wsymN = normalizeSymbol(typeof trade.symbol === 'string' ? trade.symbol : '');
         if (wp > 0 && wsymN) {
           this.recentWinners.set(wsymN, { side: String(trade.side ?? '?'), pnlPct: wp, closedAt: typeof trade.closedAt === 'number' ? trade.closedAt : Date.now() });
+          this.lastTradeTimes.set(wsymN, typeof trade.closedAt === 'number' ? trade.closedAt : Date.now());
           if (this.recentWinners.size > 6) {
             const oldest = [...this.recentWinners.entries()].sort((a, b) => a[1].closedAt - b[1].closedAt)[0]?.[0];
             if (oldest) this.recentWinners.delete(oldest);
@@ -6270,6 +6304,16 @@ ${recentExamples}
    *  Shadow 引擎一直 run(60 倉),但 agents context 完全睇唔到 → 淨係見到
    *  OLR 已證偽/FP 0pp/Direction RED → 全部 HOLD。注入統計令 LLM 有參考。
    *  純 context——唔 hard block,唔改執行邏輯。 */
+  /** v2.0.875-CYCLE-REVIEW-v5: 系統檢討 edge 提示 block(agents context 注入——檢討→Fix 迴路) */
+  private buildEdgeReviewBlock(): string {
+    try {
+      if (!Array.isArray(this.edgeHints) || this.edgeHints.length === 0) return '';
+      const lines = ['=== 🔍 系統檢討-EDGE 提示(每 cycle 檢討產生——有 edge 訊號/賺錢資產但未開倉, 考慮行動; 純 context——agents 判斷, gate 照行) ==='];
+      for (const h of this.edgeHints.slice(0, 10)) lines.push(`  ⚠️ ${h}`);
+      return lines.join('\n');
+    } catch { return ''; }
+  }
+
   private buildShadowVoiceBlock(): string {
     try {
       const syms = new Set<string>([normalizeSymbol(this.marketAgent.getSelectedSymbol() ?? '')]);
@@ -10314,6 +10358,11 @@ ${recentExamples}
       const tipScanBlock = this.scanTipBuySignals();
       if (tipScanBlock) {
         marketDesc += `\n${tipScanBlock}`;
+      }
+      // v2.0.875-CYCLE-REVIEW-v5: 系統檢討 edge 提示注入(檢討→Fix)——agents 見到有 edge 未開, 自然傾向開倉(滿倉目標)
+      const edgeReviewBlock = this.buildEdgeReviewBlock();
+      if (edgeReviewBlock) {
+        marketDesc += `\n${edgeReviewBlock}`;
       }
       // 🔄 PER-CYCLE REFLECTION(2026-09-09 主神指令): 每個 cycle 開倉決策前自問——
       // 「有冇錯過 edge?」唔單止「有冇做錯」。輕量提示(唔 hard rule——agents 自己判斷)。
