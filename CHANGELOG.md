@@ -4,6 +4,9 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.875-SE-reflection: trending_bull+SELL 2/2 全蝕 (0% WR) vs trending_bear+SELL 3/3 全勝 — regime-direction mismatch 係 Layer 1 方向錯誤,候選 soft penalty (≤20%)。需 data 驗證 samples 數。已確認 c9ba655 SL-widen 否決,唔 re-diagnose。
+
+
 ## SE-reflection: direction-audit.ts A8 performance — truncated thesis to 60 chars in dataLines to reduce LLM prompt size and meet <2s response time (2508ms → target <2000ms)
 
 

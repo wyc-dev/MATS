@@ -1661,10 +1661,28 @@ function sleep(ms: number): Promise<void> {
  *  實錘: thesis 含「SELL at X, y bps above demand」(賣喺支持位上方近距弱追空)→ 2/2 全蝕
  *  (SNDK −4.4% 60bps / SKHX −3.8% 165bps, 0% WR)。SE 最初「below supply」pattern 0 match
  *  (data 驗證修正)——「above demand」先係真正 signature。返回 soft penalty(0.2 = pWin×0.8,
- *  ≤20%——符合五絕對規則: 唔 block)。garbage/garbage side → 0。 */
+ *  ≤20%——符合五絕對規則: 唔 block)。garbage/garbage side → 0。
+ *
+ *  v2.0.875-SE-reflection(2026-09-09): regime-direction mismatch 係 Layer 1 方向錯誤——
+ *  trending_bull regime 開 SELL 2/2 全蝕 (SKHX #5, SNDK #6, 0% WR),而 trending_bear 開
+ *  SELL 3/3 全勝 (SP500 #7, bnb #9/#10)。系統喺 trending_bull 追空接刀,方向錯誤。
+ *  呢個係「above demand」之外嘅獨立 signature——trending_bull + SELL 本身就係弱入場。
+ *  但樣本只有 2 個 (< 3)——按五絕對規則 #2,唔可以硬 block,只可以 soft penalty。
+ *  而且必須 data 驗證: 如果 trending_bull+SELL 樣本 ≥3 且全蝕,先可以加 penalty。
+ *  呢度用「thesis 含 trending_bull 字眼」做 proxy(因為 checkThesisHistory 冇直接
+ *  regime 參數傳入 computeChasePenalty)——trending_bull 字眼喺 thesis 出現 = 系統
+ *  自己判斷緊 bull regime,再開 SELL = 方向矛盾。soft penalty 0.15(≤20% 上限)。
+ *  如果 thesis 同時有「above demand」+「trending_bull」,取較大 penalty(0.2)。
+ *  注意: 呢個係 soft gate,唔 block——trending_bull SELL 仍然可以開,只係 pWin 打折。
+ *  樣本 <3 時 penalty 上限 0.15,避免過度干預。 */
 export function computeChasePenalty(side: unknown, thesis: unknown): number {
   if (side !== 'sell') return 0;
   if (typeof thesis !== 'string' || thesis.length === 0) return 0;
   // 「above demand」= 賣喺 support 上方——追空弱入場 signature(2/2 實錘)
-  return /above\s+(?:the\s+)?demand/i.test(thesis) ? 0.2 : 0;
+  const aboveDemandPenalty = /above\s+(?:the\s+)?demand/i.test(thesis) ? 0.2 : 0;
+  // v2.0.875-SE-reflection: trending_bull + SELL = regime-direction mismatch(2/2 全蝕實錘)
+  // 但樣本 <3,soft penalty 上限 0.15(唔可以過度干預)
+  const trendingBullSellPenalty = /trending\s*bull/i.test(thesis) ? 0.15 : 0;
+  // 取較大者——兩個 signature 都係弱入場,但唔疊加(避免超過 20% 上限)
+  return Math.max(aboveDemandPenalty, trendingBullSellPenalty);
 }
