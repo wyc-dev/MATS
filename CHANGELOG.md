@@ -4,6 +4,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-SE-verdict-attack2（2026-09-10：SE 判定修復嘅刁鑽攻擊輪——26 測試紅先→綠後, 2 真漏洞修）
+
+> 主神「不擇手段攻擊啱啱修葺嘅代碼」→ 對 parseTestVerdict / catch 判定 / failLines 全鏈攻擊（併發/狀態注入/持久化污染/輸出格式變體）→ **紅先 3 fail → 綠後 26/26**。全量 4523 pass / exit 0, tsc clean。
+
+### 真漏洞（紅先暴露）
+| # | 漏洞 | 影響 | 修復 |
+|:--|:--|:--|:--|
+| A1 | **JSON-reporter output 誤判**——vitest json output 嘅 pass file 行含 `"failed":false`/`"passed":true`（都有 `failed` 字眼 + tests/ 路徑）→ 全部 pass file 被誤判 fail | 日後若 vitest 用 json reporter → SE 假 FAIL 重現 | 排除 `"failed":false` / `"failed": false` / `"passed":true` 行 |
+| A2 | **性能**——10MB/9.75M 行 output parse 要 3.5s（每行 3 次 includes scan） | 128MB maxBuffer 下極端 output → 30s+ | ✓ 行最先排除（pass file 行 99%——最快 reject）→ 10MB < 300ms |
+| A3 | **「×」(U+00D7 乘號) 誤判風險**——「SL = 2 × ATR」行含 × 會被當 fail marker（✗ U+2717 先係 fail） | 乘號文字污染判定 | 移除 × 判斷（保留 ✗/❯）|
+
+### 已驗證防禦（綠後確認）
+- ANSI 彩色 output（✓/❯ 帶 escape code）→ 正常辨別 · CRLF/mixed endings → 正常 · garbage 全形態（undefined/null/NaN/1e308/object/Buffer/Symbol/Proxy getter bomb/prototype pollution）→ 保守 PASS 零 crash · 併發 ×200 → 一致 · [na]/[NA] lowercase noise → 唔影響 · 9 種 vitest fail 行 format 變體 → 全認 · 「Tests X passed | Y failed」summary 行(冇 file 名) → 唔誤判 · no-suite legacy line → 排除
+- failLines 提取 `[NA]` 過濾 upgrade case-insensitive（live log 係 `info [na] [NA]`）
+
+### 效果
+- SE 判定護航加固: 唔會被 vitest reporter 格式變體 / console noise / 乘號文字 / 大 output 呃——**啱嘅 fix 必定落地, 錯嘅 fix 必定被 rollback**
+
 ## v2.0.874-SL-widen-experiment（2026-09-10：SE 對 SKHX 追空兩連敗嘅「regime-aware SL widening」提議——全樣本邏輯實驗否決＋永久禁區）
 
 > 背景: SE 診斷「SELL xyz:SKHX repeated premature_sl losses — SL not volatility-scaled for trending_bull」→ 自動改 `atr.ts`（regime-aware SL widening: momentumShort>0.5% + impliedVol<1.5% → effectiveSlMult≥2.0）→ 主神指示「過 test 再入 code」+「頂尖量化金融分析師 mindset 謹慎邏輯實驗」→ 本座做全樣本 counterfactual——**結論: 否決 + revert（atr.ts WIP 已還原, 零 code 入 production）。**

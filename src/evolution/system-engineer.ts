@@ -67,11 +67,18 @@ export function parseTestVerdict(output: string): { passed: boolean; failedFiles
     // 但 vitest 成功 output 會列出全部 files「✓ tests/xxx.test.ts」（390+ 個）→ 全部誤判 fail → 永遠 FAIL。
     // 新邏輯: 逐行掃——只有「❯/✗/failed」語義 + 冇 ✓ 先行嘅 file 行先當 fail（排除 stdout | 測試自身 print）。
     const failed = new Set<string>();
+    // P9-SE-verdict-attack2(2026-09-10): 性能 + 正確性修復——
+    // ①✓ 行先排除（pass file 行 99%——最快 reject, 10MB/9.75M 行 output 3.5s → <200ms）
+    // ②JSON reporter「"failed": false」/「"passed": true」pass 行排除（唔可以當 fail——
+    //   日後若 vitest 用 json reporter 會將 pass file 全數誤判）
+    // ③移除「×」（U+00D7 multiplication sign）——唔係 fail 標記（✗ U+2717 先係）——
+    //   「SL = 2 × ATR」類文字唔可以誤判 fail
     for (const line of output.split('\n')) {
-      if (line.startsWith('stdout |')) continue; // test 自身 console 輸出（含 file 名但唔係 fail 標記）
-      if (line.includes('tests/') && line.includes('.test.ts') &&
-          !line.includes('✓') &&
-          (line.includes('failed') || line.includes('❯') || line.includes('✗') || line.includes('×') || line.includes('FAIL'))) {
+      if (line.includes('✓')) continue; // pass file 行（最快 reject）
+      if (line.startsWith('stdout |')) continue; // test 自身 console 輸出
+      if (!line.includes('.test.ts') || !line.includes('tests/')) continue; // 冇 file 名
+      if (line.includes('"passed":true') || line.includes('"failed":false') || line.includes('"failed": false')) continue; // JSON reporter pass 行
+      if (line.includes('failed') || line.includes('❯') || line.includes('✗') || line.includes('FAIL')) {
         const rel = line.match(/tests\/[A-Za-z0-9_.-]+\.test\.ts/)?.[0];
         if (rel) failed.add(rel);
       }
@@ -1130,7 +1137,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
         // Extract the failing test details from the output
         const failLines = testErrorOutput.split('\n').filter(l =>
           // P9-SE-maxbuffer: 排除 NA model「validation=FAIL/none」類 noise + test stdout 列(唔係 failure reporter 輸出——污染 LLM retry)
-          !l.includes('[NA]') && !l.startsWith('stdout |') &&
+          !l.toLowerCase().includes('[na]') && !l.startsWith('stdout |') &&
           (l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
           l.includes('⎯') || l.includes('Error:') || l.includes('Tests '))
         ).slice(0, 30);
@@ -1253,7 +1260,7 @@ Respond with EXACTLY ONE JSON object:
             const retryTestOut = String((retryTestErr?.stdout ?? '') + '\n' + (retryTestErr?.stderr ?? '') + '\n' + (retryTestErr?.message ?? String(retryTestErr)));
             const retryFailLines = retryTestOut.split('\n').filter(l =>
               // P9-SE-maxbuffer: 排除 NA noise + test stdout 列
-              !l.includes('[NA]') && !l.startsWith('stdout |') &&
+              !l.toLowerCase().includes('[na]') && !l.startsWith('stdout |') &&
               (l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
               l.includes('⎯') || l.includes('Error:') || l.includes('Tests '))
             ).slice(0, 20);
