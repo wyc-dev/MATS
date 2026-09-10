@@ -182,7 +182,7 @@ export async function auditTradeRecordsLLM(records: ThesisExperienceRecord[], em
       ? postFixVersionsFor(auditTimeline, r.ts, 8)
       : [];
     const postFixStr = postFix.length > 0 ? postFix.join(',') : '(none of the recent fixes were live yet)';
-    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=$${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'}${closeKind} regime=${r.regime} ${features} ${olr} ${shadow} closed=${closeIso} postFix=[${postFixStr}] | thesis: ${r.entryThesis.slice(0, 120)}`;
+    return `#${i + 1} ${r.side.toUpperCase()} ${r.symbol} ${r.outcome} pnl=${r.pnl.toFixed(2)} (${(r.pnlPct * 100).toFixed(1)}%) hold=${r.holdMin}min exit=${r.exitType ?? '?'}${closeKind} regime=${r.regime} ${features} ${olr} ${shadow} closed=${closeIso} postFix=[${postFixStr}] | thesis: ${r.entryThesis.slice(0, 60)}`;
   });
 
   const userPrompt = `Recent closed trades (${recent.length} of ${records.length} total):

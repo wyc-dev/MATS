@@ -4,6 +4,9 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## SE-reflection: direction-audit.ts A8 performance — truncated thesis to 60 chars in dataLines to reduce LLM prompt size and meet <2s response time (2508ms → target <2000ms)
+
+
 ## v2.0.873-P9-SE-verdict-attack2（2026-09-10：SE 判定修復嘅刁鑽攻擊輪——26 測試紅先→綠後, 2 真漏洞修）
 
 > 主神「不擇手段攻擊啱啱修葺嘅代碼」→ 對 parseTestVerdict / catch 判定 / failLines 全鏈攻擊（併發/狀態注入/持久化污染/輸出格式變體）→ **紅先 3 fail → 綠後 26/26**。全量 4523 pass / exit 0, tsc clean。
