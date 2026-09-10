@@ -62,7 +62,20 @@ const FORBIDDEN_PREFIXES = [
 export function parseTestVerdict(output: string): { passed: boolean; failedFiles: string[] } {
   try {
     if (typeof output !== 'string' || output.length === 0) return { passed: true, failedFiles: [] };
-    const raw = new Set(output.match(/tests\/[A-Za-z0-9_.-]+\.test\.ts/g) ?? []);
+    // P9-SE-verdict-fix2(2026-09-10, 主神連續觀察「still wtf」): 只認「真 fail」file——
+    // 舊版 match /tests\/[A-Za-z0-9_.-]+\.test\.ts/g =「任何出現過嘅 test file 都當 fail」——
+    // 但 vitest 成功 output 會列出全部 files「✓ tests/xxx.test.ts」（390+ 個）→ 全部誤判 fail → 永遠 FAIL。
+    // 新邏輯: 逐行掃——只有「❯/✗/failed」語義 + 冇 ✓ 先行嘅 file 行先當 fail（排除 stdout | 測試自身 print）。
+    const failed = new Set<string>();
+    for (const line of output.split('\n')) {
+      if (line.startsWith('stdout |')) continue; // test 自身 console 輸出（含 file 名但唔係 fail 標記）
+      if (line.includes('tests/') && line.includes('.test.ts') &&
+          !line.includes('✓') &&
+          (line.includes('failed') || line.includes('❯') || line.includes('✗') || line.includes('×') || line.includes('FAIL'))) {
+        const rel = line.match(/tests\/[A-Za-z0-9_.-]+\.test\.ts/)?.[0];
+        if (rel) failed.add(rel);
+      }
+    }
     // legacy no-suite(『No test suite found in file <path>』——normalize 做 tests/... 相對名)
     const noSuite = new Set<string>();
     for (const m of output.matchAll(/No test suite found in file\s+([^\s]+)/g)) {
@@ -85,7 +98,7 @@ export function parseTestVerdict(output: string): { passed: boolean; failedFiles
       'tests/recent-loss-gate.test.ts',
       'tests/tg-signal.test.ts',
     ];
-    const failedFiles = Array.from(raw).filter(f =>
+    const failedFiles = Array.from(failed).filter(f =>
       !noSuite.has(f) && !KNOWN_NOISE.some(k => f.includes(k.split('/').pop() as string)),
     );
     return { passed: failedFiles.length === 0, failedFiles };
@@ -1070,7 +1083,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
     if (tscPassed) {
       log.info(`🔧 [system-engineer] Running npm test...`);
       try {
-        const output = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 300_000, stdio: 'pipe', encoding: 'utf-8' }); // P9-SE-verdict: 全量測試 3-4min——90s 必然 timeout→永遠 FAIL
+        const output = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 300_000, maxBuffer: 128 * 1024 * 1024, stdio: 'pipe', encoding: 'utf-8' }); // P9-SE-verdict: 全量測試 3-4min——90s 必然 timeout→永遠 FAIL; P9-SE-maxbuffer(2026-09-10): 全量 vitest output 實測 >10MB(25s 已 4.4MB)——1MB 默認 maxBuffer 令 execSync 中途 throw → 永遠假 FAIL → 啱 fix 全被 rollback
         // v2.0.201: Parse the vitest summary line, not the entire output.
         const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
         // P9-SE-verdict: 統一純函數判定(排除 legacy no-suite + 2 pre-existing——唔會再永遠 FAIL)
@@ -1083,11 +1096,26 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
           log.warn(`❌ [system-engineer] tests FAILED: ${verdict.failedFiles.join(', ')} (新增 fail——非 pre-existing)`);
         }
       } catch (err: any) {
-        // execSync throws on non-zero exit code — test runner returns non-zero on failure
+        // P9-SE-verdict-fix2(2026-09-10, 主神「still wtf」——元兇): execSync throw 唔一定係 SE 引入 fail——
+        // 13 pre-existing fail files(v2.0.854/868 + legacy no-suite)令 vitest 永遠 exit≠0 → 必 throw → 盲 fail。
+        // 必須用 parseTestVerdict 分辨「failed ⊆ known-noise → PASS」(5063b78 語義真正落地——
+        // 之前淨係喺 try 內,永遠到唔到)。output 唔完整(partial/maxBuffer/超時)→ 保守 FAIL(唔可以誤 PASS)。
         const output = String(err?.stdout ?? err?.message ?? String(err));
         testErrorOutput = output;
-        const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
-        log.warn(`❌ [system-engineer] tests FAILED: ${testSummaryLine?.trim() ?? output.slice(0, 200)}`);
+        const hasVitestSummary = output.split('\n').some(l => /^\s*Tests\s+/.test(l));
+        if (hasVitestSummary && typeof err?.stdout === 'string' && err?.code !== 'ETIMEDOUT') {
+          const verdict = parseTestVerdict(output);
+          if (verdict.passed) {
+            testsPassed = true;
+            log.info(`✅ [system-engineer] tests passed (exit≠0 但 failed ⊆ pre-existing noise——parseTestVerdict 判定)`);
+          } else {
+            const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
+            log.warn(`❌ [system-engineer] tests FAILED: ${verdict.failedFiles.join(', ')} (新增 fail——非 pre-existing)`);
+          }
+        } else {
+          const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
+          log.warn(`❌ [system-engineer] tests FAILED: ${testSummaryLine?.trim() ?? output.slice(0, 200)}`);
+        }
       }
     }
 
@@ -1101,8 +1129,10 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
 
         // Extract the failing test details from the output
         const failLines = testErrorOutput.split('\n').filter(l =>
-          l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
-          l.includes('⎯') || l.includes('Error:') || l.includes('Tests ')
+          // P9-SE-maxbuffer: 排除 NA model「validation=FAIL/none」類 noise + test stdout 列(唔係 failure reporter 輸出——污染 LLM retry)
+          !l.includes('[NA]') && !l.startsWith('stdout |') &&
+          (l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
+          l.includes('⎯') || l.includes('Error:') || l.includes('Tests '))
         ).slice(0, 30);
         const failSummary = failLines.join('\n').slice(0, 3000);
 
@@ -1203,7 +1233,7 @@ Respond with EXACTLY ONE JSON object:
           }
 
           try {
-            const retryTestOutput = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 300_000, stdio: 'pipe', encoding: 'utf-8' });
+            const retryTestOutput = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 300_000, maxBuffer: 128 * 1024 * 1024, stdio: 'pipe', encoding: 'utf-8' }); // P9-SE-maxbuffer: 同主判定——128MB
             const retrySummary = retryTestOutput.split('\n').find(l => /^\s*Tests\s+/.test(l));
             testsPassed = parseTestVerdict(retryTestOutput).passed;
             if (testsPassed) {
@@ -1222,8 +1252,10 @@ Respond with EXACTLY ONE JSON object:
             // v2.0.728: Capture full test output from both stdout and stderr
             const retryTestOut = String((retryTestErr?.stdout ?? '') + '\n' + (retryTestErr?.stderr ?? '') + '\n' + (retryTestErr?.message ?? String(retryTestErr)));
             const retryFailLines = retryTestOut.split('\n').filter(l =>
-              l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
-              l.includes('⎯') || l.includes('Error:') || l.includes('Tests ')
+              // P9-SE-maxbuffer: 排除 NA noise + test stdout 列
+              !l.includes('[NA]') && !l.startsWith('stdout |') &&
+              (l.includes('FAIL') || l.includes('expected') || l.includes('AssertionError') ||
+              l.includes('⎯') || l.includes('Error:') || l.includes('Tests '))
             ).slice(0, 20);
             log.warn(`❌ [system-engineer] tests FAILED (test retry ${testRetryNum}): ${retryFailLines.join('; ').slice(0, 500) || retryTestOut.slice(0, 300)}`);
             testErrorOutput = retryTestOut;

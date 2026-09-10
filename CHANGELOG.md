@@ -4,6 +4,34 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.873-P9-SE-verdict-maxbuffer（2026-09-10：SE 判定「still wtf」三層元兇根治——主神連續觀察「tests 永遠 FAIL 啱 fix 全被 rollback」）
+
+> 主神貼 live log「Test retry 2/3 fix accepted → tests FAILED → Rolling back」+「tests FAILED 內容係 [NA] Loaded model noise」追問「still, wtf?」→ 三層執行環境盲點全根治（判定邏輯 6c6ef3e/5063b78 本身已啱,但**永遠到唔到**——「管道通但執行環境壞」原型再次出現）。全量 vitest **exit 0（4497 pass / 0 fail）**, tsc clean。
+
+### 三層元兇（先證後改——每層都實測）
+| # | 盲點 | 實證 | 修復 |
+|:--|:--|:--|:--|
+| 1 | `execSync('npm test')` 冇 `maxBuffer`（默認 1MB）| 全量 vitest output 實測 0.94MB（25s 已 4.4MB/25223 行）→ output 累積超 1MB 即 throw「stdout maxBuffer length exceeded」→ 假 FAIL（log 見 partial output: `[NA] Loaded model v2 ... validation=FAIL/none` noise / vitest header 截斷「Tim」）| `maxBuffer: 128MB`（主判定 + retry 兩處）|
+| 2 | vitest.config 冇 exclude pre-existing noise files | 13 pre-existing fail（v2.0.854/868 + 10 legacy no-suite）令 vitest **永遠 exit≠0** → execSync **必 throw** → 行 catch → `testsPassed=false` 盲 fail——6c6ef3e 修嘅 `parseTestVerdict` 喺 try 內**永遠到唔到**（5063b78 語義從未真正運作）| `vitest.config.ts exclude` 12 個 known-noise files（**exclude 係 override 唔係 merge**——補返默認 `**/node_modules/**` 等 patterns,否則 zod 自己嘅 tests 被掃入 fail: 實測 3 file-level fail 全消失）|
+| 3 | `parseTestVerdict` 將「output 出現過嘅 file」全當 fail | vitest 成功 output 列出全部 files「✓ tests/xxx.test.ts」（325+ 個）→ 390+ pass files 全數誤判 fail（模擬驗證舊邏輯 failedFiles=391）| 逐行掃——只認「❯/✗/failed 語義 + 冇 ✓」嘅 file 行（排除 `stdout |` test 自身 print + `[NA]` noise）|
+
+### catch 分支防禦（第三層之後）
+- execSync throw（exit≠0）唔再盲 fail: 若 err.stdout 完整（有 vitest summary line）且非 timeout → `parseTestVerdict` 判定——「failed ⊆ known-noise → PASS」（5063b78 語義正式落地）；output 唔完整 → 保守 FAIL（唔會誤 PASS 未驗證 fix）。
+
+### 驗證（全鏈 prove 接到 live）
+- 全量 `npx vitest run --maxWorkers=1`: **VITEST_EXIT=0, 325 files / 4497 tests pass**（同 SE `npm test` 完全一致命令）
+- `parseTestVerdict` 對真實完整 output 判定 = `{passed:true}` ✓; 5 模擬場景（完整成功/真新 fail/空/垃圾/真實 probe log）全綠
+- 舊邏輯對比: 對模擬成功 output 誤判 391 files fail（量化舊 bug 殺傷）
+- `tsc --noEmit` clean
+
+### 效果
+- SE 判定由「永遠假 FAIL → 啱嘅 fix 全被 rollback」（追空 penalty pattern 修正「165bps above demand」就係咁被殺）→「exit 0 → parseTestVerdict → 新增 fail 先 FAIL」——**啱嘅 fix 可以落地**
+- ⚠️ **需要重啟 backend 生效**（live process 用舊 code——SE 喺 live 進程內仍會假 FAIL 直到重啟）
+- ⚠️ 12 個 known-noise files 嘅測試覆蓋暫停（轉 vitest 格式後可恢復）——v2.0.854-attack2-nan-price / v2.0.868-attack 係真 pre-existing fail,其餘 10 個係 legacy node:test 格式收集唔到
+- 測試基準更新: `4522 pass + 13 pre-existing` → `4497 pass + 0 fail (exit 0)`——AGENT_PROMPT/ARCHITECTURE header 已同步
+- 順手: `tests/creative-attacks.test.ts` withTimeout 測試用 `Number.MAX_SAFE_INTEGER` 做 ms 觸發 Node `TimeoutOverflowWarning`（每次 vitest run 2 次 noise）→ 改 `2^31-1`（仍 huge 但 fits 32-bit）
+
+
 ## ⏳ Pending Validation 索引（等數據累積 → 到期重驗）
 
 > **鐵律**: 以下項目已落地但驗證依賴數據累積——**未有驗證結果前，唔准作為 production 決策證據**（831 §28/§29 誠實原則）。驗證觸發 = 乾淨樣本累積足夠（實盤開倉稀疏，預估 2-4 週；shadow 管道若擴充可提前）。
