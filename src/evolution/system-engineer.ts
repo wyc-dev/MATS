@@ -112,6 +112,40 @@ export function parseTestVerdict(output: string): { passed: boolean; failedFiles
   } catch { return { passed: true, failedFiles: [] }; }
 }
 
+/** P9-testupdate-fix(2026-09-10, 主神「why always Test oldCode not found」):
+ * 統一 block-match fallback —— LLM 生成嘅 oldCode 常有 whitespace 差異(頭尾/縮排/多餘空行)。
+ * 三級: ①exact substring ②單空格 normalized(collapse) ③逐行 trim 滑動窗口(返回 file 中精確 text）。
+ * 返「file 中精確 matched text」(可直接 replace)或 null(保守: 唔改, 唔 crash)。
+ * 之前 testUpdate 只做 exact includes() → LLM 差一個空格就 skip → 測試期望 sync 唔到 → 啱 fix 又被 rollback。 */
+export function findBlockMatch(content: string, oldCode: string): string | null {
+  if (typeof content !== 'string' || typeof oldCode !== 'string' || oldCode.length === 0) return null;
+  if (oldCode.trim().length === 0) return null; // 純空白 needle 冇意義(L1 exact 之前 guard)
+  if (content.includes(oldCode)) return oldCode;
+  // L2: 單空格 normalized(快速 reject)
+  const normOld = oldCode.trim().replace(/\s+/g, ' ');
+  if (content.replace(/\s+/g, ' ').includes(normOld)) {
+    // L3: 逐行 trim 滑動窗口 —— 攞 file 中精確 text(唔可以淨係用 norm 版 replace,會破壞格式)
+    // 空行 tolerant: LLM 喺 block 中間插入/刪除空行時, 空行唔強制 match、亦唔消耗 file 行數(指針對齊) 
+    const fileLines = content.split('\n');
+    const oldLines = oldCode.trim().split('\n');
+    const nonEmpty = oldLines.filter((l) => l.trim().length > 0);
+    const n = fileLines.length, k = nonEmpty.length;
+    if (k === 0 || k > n) return null;
+    for (let i = 0; i + k <= n; i++) {
+      let ok = true, f = i;
+      for (let j = 0; j < oldLines.length; j++) {
+        const o = oldLines[j]!.trim();
+        if (o.length === 0) continue; // 空行: 唔消耗 file 行
+        if (f >= n || fileLines[f]!.trim() !== o) { ok = false; break; }
+        f++;
+      }
+      if (ok) return fileLines.slice(i, i + k).join('\n');
+    }
+    return null;
+  }
+  return null;
+}
+
 const SYSTEM_PROMPT = `You are the System Engineer of MATS, a multi-agent quant trading system on Hyperliquid DEX.
 Your mission: MAXIMIZE PROFIT. Capital preservation is a means, not the end.
 
@@ -961,12 +995,14 @@ Respond with EXACTLY ONE JSON object:
         const testPath = join(PROJECT_ROOT, testFile);
         if (existsSync(testPath)) {
           originalTestContent = readFileSync(testPath, 'utf-8');
-          if (originalTestContent.includes(proposal.testUpdate.oldCode)) {
-            const newTestContent = originalTestContent.replace(proposal.testUpdate.oldCode, proposal.testUpdate.newCode);
+          // P9-testupdate-fix: exact → 逐行 trim fallback(唔再因 whitespace 微差 skip)
+          const matchedOld = findBlockMatch(originalTestContent, proposal.testUpdate.oldCode);
+          if (matchedOld !== null) {
+            const newTestContent = originalTestContent.replace(matchedOld, proposal.testUpdate.newCode);
             writeFileSync(testPath, newTestContent, 'utf-8');
             log.info(`🔧 [system-engineer] Test updated: ${testFile}`);
           } else {
-            log.warn(`⚠️ [system-engineer] Test oldCode not found — skipping test update`);
+            log.warn(`⚠️ [system-engineer] Test oldCode not found (exact+normalized) — skipping test update`);
             originalTestContent = null;
           }
         }
@@ -1198,13 +1234,14 @@ Respond with EXACTLY ONE JSON object:
             log.warn(`🚫 [system-engineer] Test retry ${testRetryNum} did not produce a valid fix — ${testRetryNum < MAX_TEST_RETRIES ? 'trying again' : 'giving up'}`);
             continue;
           }
-          if (!currentFileContent.includes(testRetryProposal.proposedFix.oldCode)) {
+          const retryMatchedOld = findBlockMatch(currentFileContent, testRetryProposal.proposedFix.oldCode);
+          if (retryMatchedOld === null) {
             log.warn(`🚫 [system-engineer] Test retry ${testRetryNum} oldCode not found in file — ${testRetryNum < MAX_TEST_RETRIES ? 'trying again' : 'giving up'}`);
             continue;
           }
 
           log.info(`🔧 [system-engineer] Test retry ${testRetryNum} fix accepted — applying corrected fix...`);
-          const retryContent = currentFileContent.replace(testRetryProposal.proposedFix.oldCode, testRetryProposal.proposedFix.newCode);
+          const retryContent = currentFileContent.replace(retryMatchedOld, testRetryProposal.proposedFix.newCode);
           writeFileSync(fullPath, retryContent, 'utf-8');
 
           // Apply test update if provided
@@ -1212,8 +1249,10 @@ Respond with EXACTLY ONE JSON object:
             const retryTestPath = join(PROJECT_ROOT, testRetryProposal.testUpdate.file);
             if (existsSync(retryTestPath)) {
               const retryTestContent = readFileSync(retryTestPath, 'utf-8');
-              if (retryTestContent.includes(testRetryProposal.testUpdate.oldCode)) {
-                const newTestContent = retryTestContent.replace(testRetryProposal.testUpdate.oldCode, testRetryProposal.testUpdate.newCode);
+              // P9-testupdate-fix: exact → 逐行 trim fallback
+              const retryMatchedTest = findBlockMatch(retryTestContent, testRetryProposal.testUpdate.oldCode);
+              if (retryMatchedTest !== null) {
+                const newTestContent = retryTestContent.replace(retryMatchedTest, testRetryProposal.testUpdate.newCode);
                 writeFileSync(retryTestPath, newTestContent, 'utf-8');
                 log.info(`🔧 [system-engineer] Test file updated: ${testRetryProposal.testUpdate.file}`);
                 if (!originalTestContent) {
