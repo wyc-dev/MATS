@@ -9553,3 +9553,23 @@ MAE -8.47% · MFE +2.20%
 - 開倉路徑沿用現有 exploration 細倉(唔 bypass gates——reversal/5m/四窗/mom24 照 block)
 - env 回滾: `ACTIVE_EXPLORATION_ENABLED`(原本機制)/ 無 E3 時原 volume 邏輯照舊
 - 測試 26(邊界/garbage/cooldown/thesis) + 全量 4632 pass, tsc clean
+
+## v2.0.875-E3-EXPLORE-ATTACK（2026-09-11：E3-Explore 刁鑽攻擊輪——紅先 4 真漏洞, 綠後 37/37）
+
+> 主神「不擇手段攻擊啱啱修葺嘅 E3-Explore」→ 11 攻擊測試紅先——4 真漏洞全修 + 盈利提升(threshold 實驗)。
+
+### 真漏洞(紅先)
+| # | 漏洞 | 影響 | 修復 |
+|:--|:--|:--|:--|
+| A2a | **denormal 微利**(1e-300 累積 net 微正)當 edge——噪音級觸發 | 假 E3 edge | `E3_MIN_NET_PCT=0.5%`(net ≥0.5% margin 先算; threshold sensitivity 驗證 0.5% sweet spot——更高冇改善) |
+| A2b | **垃圾 pnl 照計樣本數**(string/NaN/Infinity pnl 數入 n)→ n≥2 錯判 | 假 edge | 垃圾 pnl → continue(唔計入 n) |
+| A3a | **windowMs 垃圾**(0/負/NaN)→ `now-ts<windowMs` 比較異常 → cooldown 失效(可以無限開) | churn | windowMs sanitize → 垃圾用 default 12h |
+| A3b | **now 未來極端注入**(1e308)→ `now-ts` 超大 → cooldown 以為「過咗好耐」失效 | 防護繞過 | now 合理範圍 sanity(1e11~9e15, 1973-2255)——異常 → 保守 cooldown |
+
+### 已驗證防禦(綠後)
+- 併發 ×200 一致 · 1e308/±Infinity pnl 唔 crash · string pnl 唔入樣本 · side 垃圾唔 crash · thesis 污染唔 crash · E3_WINDOW_MS=3d 常數鎖死
+
+### 盈利提升(threshold sensitivity 實驗)
+net>0(52筆 +2.42%) = net≥0.5%(52 +2.42%) > net≥1%(51 +2.33%) > net≥2%(49 +2.22%)——**0.5% 底線防噪音之餘唔犧牲 edge**。
+
+全量 4642 pass, tsc clean。

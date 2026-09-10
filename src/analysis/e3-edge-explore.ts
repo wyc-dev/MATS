@@ -16,6 +16,9 @@ export interface E3TradeRef {
 /** 近 3 日窗（ms） */
 export const E3_WINDOW_MS = 3 * 24 * 3600 * 1000;
 
+/** E3+ 最小 net edge(margin fraction)——denormal/噪音級微利(1e-300)唔可以當 edge(頂尖量化師: 訊號要 significant)。 */
+export const E3_MIN_NET_PCT = 0.005; // ≥0.5% margin
+
 /**
  * 對某 asset 嘅近 3 日成交, 判斷 E3+ edge 方向。
  * @param recent 該 asset 最近成交（要含 closedAt/side/pnlPct, 由 caller 過濾「開倉前已知」）
@@ -27,29 +30,35 @@ export function findE3PlusSide(recent: E3TradeRef[], m4hPct: unknown): 'buy' | '
   let buyN = 0, buyNet = 0, sellN = 0, sellNet = 0;
   for (const t of recent) {
     if (typeof t !== 'object' || t === null) continue;
+    // A2-attack(2026-09-11): 垃圾 pnl(NaN/Infinity/string/null)→ 唔可以計入樣本數(n)——否則 n≥2 錯判
+    const pnl = t.pnlPct;
+    if (typeof pnl !== 'number' || !Number.isFinite(pnl)) continue;
     const side = typeof t.side === 'string' ? t.side.toLowerCase() : '';
-    const pnl = typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct) ? t.pnlPct : 0;
     if (side === 'buy') { buyN++; buyNet += pnl; }
     else if (side === 'sell') { sellN++; sellNet += pnl; }
   }
   // 4h 動量支持: m4h<0 → 跌勢 買dip; m4h>0 → 升勢 賣rip。garbage/null/-0 → 唔支持
   const m4 = typeof m4hPct === 'number' && Number.isFinite(m4hPct) ? m4hPct : null;
   if (m4 === null || m4 === 0) return null;
-  // E3: 同方向 ≥2 筆 且 net>0 + m4 支持
-  if (m4 < 0 && buyN >= 2 && buyNet > 0) return 'buy';
-  if (m4 > 0 && sellN >= 2 && sellNet > 0) return 'sell';
+  // E3+: 同方向 ≥2 筆 且 net ≥ 0.5% margin(顯著——denormal/噪音微利唔算) + m4 支持
+  if (m4 < 0 && buyN >= 2 && buyNet >= E3_MIN_NET_PCT) return 'buy';
+  if (m4 > 0 && sellN >= 2 && sellNet >= E3_MIN_NET_PCT) return 'sell';
   return null;
 }
 
 /** Cooldown: 同 asset 最近 E3 開倉後 windowMs 內唔再開（防 churn）。垃圾 ts → false(唔開)。 */
 export function shouldCooldown(lastOpenTs: unknown, now: number, windowMs: number = 12 * 3600 * 1000): boolean {
-  if (typeof now !== 'number' || !Number.isFinite(now)) return true; // 保守: 異常 now → cooldown
+  // A3-attack(2026-09-11): now 異常(0/負/NaN/Infinity/未來極端 1e308)→ 保守 cooldown(唔會喺異常時亂開)
+  if (typeof now !== 'number' || !Number.isFinite(now) || now <= 0) return true;
+  if (now < 1e11 || now > 9e15) return true; // epoch 合理範圍(1973-2255)——注入極端 → 保守
+  // windowMs 垃圾(0/負/NaN)→ 用 default 12h(唔可以令 cooldown 失效)
+  const w = typeof windowMs === 'number' && Number.isFinite(windowMs) && windowMs > 0 ? windowMs : 12 * 3600 * 1000;
   // undefined/null/0 = 未開過 → 唔 cooldown(可以開); 其他 garbage(string/NaN/Infinity)→ 保守 cooldown(唔亂開)
   if (lastOpenTs === undefined || lastOpenTs === null) return false;
   if (typeof lastOpenTs !== 'number' || !Number.isFinite(lastOpenTs)) return true;
   const ts = lastOpenTs as number;
   if (ts <= 0) return false;
-  return now - ts < windowMs;
+  return now - ts < w;
 }
 
 /** E3 開倉 thesis 生成（簡潔, 俾 exploration trade 用）。 */
