@@ -102,7 +102,7 @@ import { ClosePathRecorder } from './evolution/close-path-recorder.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, regimeSwitchDirectionalBias, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
-import { findE3PlusSide, shouldCooldown, buildE3Thesis } from './analysis/e3-edge-explore.ts';
+import { findE3PlusSide, shouldCooldown, buildE3Thesis, E3_WINDOW_MS } from './analysis/e3-edge-explore.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
 import { decideLightLossProtection, createLLPPConfig, computeLLPPMaxDefer } from './analysis/light-loss-protection.ts';
 import { shouldBlock5mDirection, DEFAULT_GATE_5M_KSIGMA, DEFAULT_GATE_5M_FLOOR_BPS, DEFAULT_GATE_5M_CAP_BPS, DEFAULT_GATE_5M_CANDLES } from './analysis/momentum-5m-gate.ts';
@@ -887,6 +887,9 @@ class MATSSystem {
   private recentWinners = new Map<string, { side: string; pnlPct: number; closedAt: number }>();
   /** E3+ 候選數(selectExplorationTarget 更新——有 E3+ 時探索唔再等 %3) */
   private lastE3CandidateCount = 0;
+  /** E3+ 揀中嘅 sym + 方向(exploration direction override 用——OLR/FP 已證偽, 方向由實證 edge 主導) */
+  private e3ExploreSym: string | null = null;
+  private lastE3ExploreSide: 'buy' | 'sell' | null = null;
   /** close 時間表: sym → lastClosedAt(無成交診斷用) */
   private lastTradeTimes = new Map<string, number>();
   /** 每 cycle 由 reviewMarketPairs 產生嘅 edge 提示(注入 agents context——檢討→Fix 迴路, 主神 2026-09-11「唔好淨係檢討, 要 fix」) */
@@ -1314,13 +1317,14 @@ class MATSSystem {
     // 近3日同方向 net>0 + 4h 動量支持 buy dip/sell rip)。冇 E3+ → fallback 原最高 volume。
     try {
       const now = Date.now();
-      const threeDays = now - 3 * 24 * 3600 * 1000;
+      const windowMs = E3_WINDOW_MS; // 統一 window 常數(3d——窗長 sensitivity 驗證最優)
+      const cutoff = now - windowMs;
       const closed = this.portfolio.getClosedRealTrades?.() ?? [];
       const recentBySym = new Map<string, Array<{ closedAt: number; side?: unknown; pnlPct?: unknown }>>();
       for (const t of closed) {
         const sym = normalizeSymbol(typeof t.symbol === 'string' ? t.symbol : '');
         const ct = typeof t.closedAt === 'number' ? t.closedAt : 0;
-        if (!sym || ct < threeDays) continue;
+        if (!sym || ct < cutoff) continue;
         if (!recentBySym.has(sym)) recentBySym.set(sym, []);
         recentBySym.get(sym)!.push({ closedAt: ct, side: t.side, pnlPct: t.pnlPct });
       }
@@ -1328,6 +1332,8 @@ class MATSSystem {
       for (const sym of (this.tradingMarkets ?? [])) {
         const n = normalizeSymbol(sym);
         if (this.portfolio.hasPosition(n)) continue;
+        // cooldown: 12h 內開過/close 過 → 唔 churn(shouldCooldown 保守)
+        if (shouldCooldown(this.lastTradeTimes.get(n), now)) continue;
         const m4 = this.compute4hMomentumPct(n);
         const side = findE3PlusSide(recentBySym.get(n) ?? [], m4);
         if (side) e3Candidates.push({ sym: n, side });
@@ -1337,10 +1343,14 @@ class MATSSystem {
         // 多個 E3+ → 揀 volume 最大嗰個(E3 內比較)
         e3Candidates.sort((a, b) => (volMap.get(b.sym) ?? 0) - (volMap.get(a.sym) ?? 0));
         const pick = e3Candidates[0]!;
+        this.e3ExploreSym = pick.sym;
+        this.lastE3ExploreSide = pick.side;
         log.info(`🧪 [E3-edge-explore] target=${pick.sym} side=${pick.side.toUpperCase()} (${e3Candidates.length} 個 E3+ 候選, 優先於 volume-only)`);
         return pick.sym;
       }
-    } catch { /* E3 掃描失敗 → fallback 原邏輯 */ }
+      this.e3ExploreSym = null;
+      this.lastE3ExploreSide = null; // 冇 E3 → fallback volume(唔 override 方向)
+    } catch { this.e3ExploreSym = null; this.lastE3ExploreSide = null; /* E3 掃描失敗 → fallback 原邏輯 */ }
     return selectExplorationTargetPure(
       activeSymbol,
       this.tradingMarkets ?? [],
@@ -12038,6 +12048,13 @@ ${recentExamples}
           // Use Pattern Classifier to pick direction — compare BUY vs SELL win rates.
           // Fallback to technical signals when pattern data is insufficient.
           let direction: string | null = null;
+          // v2.0.875-E3-direction(2026-09-11): E3+ 實證 edge 方向 override OLR/FP——探索 target 由 E3 揀,
+          // 方向都係 E3 實證嗰邊(OLR ρ=+0.02 已證偽——方向信唔過已證偽源, 信實證 edge)
+          const e3DirOverride = this.lastE3ExploreSide !== null && normalizeSymbol(exploreTarget) === (this.e3ExploreSym ?? '');
+          if (e3DirOverride && this.lastE3ExploreSide) {
+            direction = this.lastE3ExploreSide;
+            log.info(`🧪 [E3-edge-explore] E3+ 實證方向 ${direction.toUpperCase()} override(OLR/FP 已證偽——方向由實證 edge 主導)`);
+          }
           // v2.0.872-P9: Dip-Reversion boost flag（同 direction 同 scope——try 內外都見到）
           let dipReversionBoost = false;
           try {
@@ -12106,7 +12123,7 @@ ${recentExamples}
               const ENTRY_EDGE = 0.10;   // score must beat breakeven by 10pp
               const BLOCK_EDGE = -0.05;  // hard block when 5pp BELOW breakeven on both
 
-              if (buyEdge > ENTRY_EDGE && buyScore > sellScore) {
+              if (!e3DirOverride && buyEdge > ENTRY_EDGE && buyScore > sellScore) {
                 direction = 'buy';
                 log.info(`🧪 OLR+FP-guided: BUY score=${(buyScore * 100).toFixed(0)}% (edge=${(buyEdge * 100).toFixed(0)}pp over breakeven ${(beLong * 100).toFixed(0)}%; OLR=${(olrBuy.pWin * 100).toFixed(0)}%, FP=${(fpLong * 100).toFixed(0)}%)`);
               } else if (sellEdge > ENTRY_EDGE && sellScore > buyScore) {
@@ -12122,7 +12139,7 @@ ${recentExamples}
             }
 
             // If OLR+FP hard-blocked, skip all remaining signal checks
-            if (olrBlocked) {
+            if (olrBlocked && !e3DirOverride) {
               direction = null;
             }
             // If both no_edge or mixed, fall through to other signals
