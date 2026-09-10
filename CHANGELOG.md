@@ -9469,3 +9469,16 @@ MAE -8.47% · MFE +2.20%
 - sell-cold-shrink 加 **順勢豁免**: `m4h<0`(4h 跌勢)順勢 SELL → 唔 shrink(log 🟦 標記); 反趨勢(m4h≥0 追空)→ 照 ×0.6(防追空冷啟動)。env `SELL_COLD_SHRINK=false` 全關。
 - 疊加 POSITION_SIZE_FIXED floor(用戶 10% 設定 = ground truth)——雙層保護: 用戶設定永不被 shrink 抹殺 + 反趨勢賣保留防禦。
 - 全量 4531 pass, tsc clean。
+
+## v2.0.875-shrink-attack（2026-09-10：POSITION_SIZE_FIXED + sell-cold 順勢豁免嘅刁鑽攻擊輪——47 測試全綠, 1 真漏洞修）
+
+> 主神「不擇手段攻擊啱啱修葺嘅 code」→ 對 POSITION_SIZE_FIXED floor + sell-cold-shrink 順勢豁免全鏈攻擊（併發/狀態注入/持久化污染/邊界）→ 抽純函數 + sanitize。
+
+### 真漏洞（V1 持久化污染）
+- **userFloor 冇 sanitize**: floor 直接讀 `marketAgent.getConfig().positionSizePct`——config 被持久化污染（負數/0/NaN/1e308/'banana'/object）→ floor 產生**負注碼 / 爆炸 margin**（1e308 → notional 天文數字, margin 爆倉）。之前 inline 版本冇任何 guard（只 guard result.size）。
+- **修**: 新 `src/analysis/position-size.ts` 純函數——`applyPositionSizeFloor(resultSize, userFloor)`（userFloor 必須有限 0..1, garbage→0.10 default, clamp [0,1]）+ `isTrendFollowingSell(m4h)`（-0/NaN/Infinity/string/garbage → false 保守）。index.ts 兩處接駁。
+- 其他 46 測試全防: resultSize garbage 全形態 → floor 兜底0.10; userFloor 16 形態 → 唔 crash 唔出負注碼; 邊界(-0/0/>1/1e308); 併發 ×200 一致; 持久化 round-trip。
+
+### 盈利提升候選（數據支持, 列 pending 等 831 —— n≥15 已過）
+- **順勢 SELL boost**: 順勢 sell(4h 跌勢) 79 筆 WR 49% avg **+0.88%**（正期望, 樣本足）——候選「順勢 SELL size ×1.2 boost」/ confidence lean（對照 shadow-boost 已有 wlb>0.65 機制）。⚠️ 四關驗證後先落地。
+- 逆勢 SELL(升勢追空) 7 筆 WR 71% avg +1.45%（細樣本, 支持 P9-sell-tune「賣 rip」已實施——唔加新 gate）。

@@ -24,6 +24,7 @@ import { QRLTable, qrlDirectionConfig, qrlExpectancyMultiplier, type AlphaDiscov
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-learner.ts';
+import { applyPositionSizeFloor, isTrendFollowingSell } from './analysis/position-size.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -5874,10 +5875,14 @@ ${recentExamples}
       // 保留所有 HARD BLOCK(風險控制靠 block 唔靠 shrink——Soft 優先 Block 最後原則)。
       // env POSITION_SIZE_FIXED=false 回滾(shrinks 照舊)。
       if (process.env['POSITION_SIZE_FIXED'] !== 'false' && !result.blocked && !opts?.skipShadowGate) {
+        // P9-shrink-attack(2026-09-10): 純函數 + sanitize——userFloor 由 config 嚟, 可以被
+        // 持久化污染(負數/NaN/1e308/garbage)——applyPositionSizeFloor clamp [0,1] + garbage→0.10 default,
+        // 唔會出負注碼/爆炸 margin。47 攻擊測試(併發/持久化污染/邊界)。
         const userFloor = this.marketAgent.getConfig().positionSizePct ?? 0.10;
-        if (Number.isFinite(result.size) && result.size < userFloor) {
-          log.info(`🟦 [pos-fixed] ${sym}: size ${(result.size * 100).toFixed(1)}% → floor ${(userFloor * 100).toFixed(0)}% (用戶設定 ground truth)`);
-          result.size = userFloor;
+        const floored = applyPositionSizeFloor(result.size, userFloor);
+        if (Math.abs(floored - (Number.isFinite(result.size) ? result.size : -1)) > 1e-9) {
+          log.info(`🟦 [pos-fixed] ${sym}: size ${(Number.isFinite(result.size) ? (result.size * 100).toFixed(1) : '?')}% → floor ${(floored * 100).toFixed(1)}% (用戶設定 ground truth)`);
+          result.size = floored;
         }
       }
       return result;
@@ -5934,13 +5939,14 @@ ${recentExamples}
         // 甚至反預測) + SNDK 由追空蝕(−18.2%)轉順勢贏(+20.5%)而 shadow WR 一直 0.16 以下——
         // sell-cold-shrink 喺順勢方向純誤傷。修: 順勢賣(m4h<0)豁免 shrink; 反趨勢維持 ×0.6 防追空。
         const m4h = this.compute4hMomentumPct(sym);
-        const trendFollowingSell = m4h !== null && Number.isFinite(m4h) && m4h < 0;
+        // P9-shrink-attack: 純函數——garbage m4h(NaN/Infinity/string/-0)→ false(保守)
+        const trendFollowingSell = isTrendFollowingSell(m4h);
         if (!trendFollowingSell) {
           const shrunkSize = Math.max(0.01, sizePct * 0.6);
           log.info(`🟠 [sell-cold-shrink] ${sym}: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} n=${total.toFixed(1)} m4h=${m4h?.toFixed(2) ?? 'n/a'}%(反趨勢) → size×0.6`);
           return { confidence, blocked: false, reason: `sell-cold-shrink: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} (n=${total.toFixed(1)}, 反趨勢)`, size: shrunkSize };
         } else {
-          log.info(`🟦 [sell-cold-shrink] ${sym}: 順勢(m4h=${m4h.toFixed(2)}%)豁免 shrink(誤傷實證——shadow WR 無預測力)`);
+          log.info(`🟦 [sell-cold-shrink] ${sym}: 順勢(m4h=${m4h?.toFixed(2) ?? 'n/a'}%)豁免 shrink(誤傷實證——shadow WR 無預測力)`);
         }
       }
       if (total >= 20 && wlb > 0.65 && (sumPnl ?? 0) > 0) {
