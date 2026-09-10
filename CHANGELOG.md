@@ -9526,3 +9526,13 @@ MAE -8.47% · MFE +2.20%
 - Missed Edge 接駁: 每次 ≥3 cycles 發現 → appendOrMerge(keyTokens=[sym, BUY-dip/SELL-rip])——**同一 asset 同一 edge 類型只會有一條**,持續更新(「連續 N cycles (cycle M 更新)」)。
 - 移除 missedEdgeReported Set(document scan 自然 dedup 取代)。
 - 測試 27(merge 取代新增 / 冇類似先 append / garbage fallback / section 覆寫)、全量 4605 pass、tsc clean。
+
+## v2.0.875-CYCLE-REVIEW-v6（2026-09-11：trade-audit + SE 整合入 investigation——主神「佢哋做緊同一件事, 但做唔好本分, 分散晒」）
+
+> 主神指出 trade-audit(LLM 審計 724 trades)同 SE 做緊同 investigation 一樣嘅事(檢討), 但分散喺唔同 log、冇整合→「搞到蝕錢同埋賺唔夠錢」。統一: investigation.md 成為檢討唯一入口。
+
+### 整合
+- **🔬 LLM 審計**(新 section): trade-audit `.then(result)` 完成後寫入——incidents(severity/type/描述)+ LLM analysis, 覆寫最新(每日更新)。
+- **🤖 SE 檢討**(新 section): `runSystemEngineer` 返回 AutoFixResult → 寫入 title/rootCause/affectedFile/changelogEntry, 覆寫最新。兩個 SE call sites(audit-driven + no-trade investigation)都接。
+- 而家 investigation.md = 統一檢討中心: 📍 當前狀態(規則式) / 🔥 Missed Edge(規則式) / 📊 績效 / 🔬 LLM 審計 / 🤖 SE 檢討。
+- 全量 4605 pass, tsc clean。

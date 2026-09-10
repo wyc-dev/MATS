@@ -3913,7 +3913,9 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       if (records.length === 0) return;
       // v2.0.181: Run the System Engineer agent (reads SystemEngineer.md + code + trades)
       // v2.0.725: Pass audit results so SE can directly fix issues detected by the audit
-      await runSystemEngineer(records, this.lastAuditResult ?? undefined);
+      const seResult = await runSystemEngineer(records, this.lastAuditResult ?? undefined);
+      // v2.0.875-v6: SE 結論整合入 investigation(🤖 section)
+      this.writeSEToInvestigation(seResult);
     } catch (err) {
       log.warn(`[system-engineer] failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -4513,7 +4515,7 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       const cyclesIdle = this.cyclesSinceLastTrade;
       this.cyclesSinceLastTrade = 0;
       log.info(`🔧 [no-trade] Starting SE investigation (${cyclesIdle} cycles idle, ${this.lastGateResults.length} gate results, ${this.recentMarketConditions.length} market snapshots)`);
-      await runSystemEngineer(
+      const seResult = await runSystemEngineer(
         records,
         this.lastAuditResult ?? undefined,
         {
@@ -4522,6 +4524,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
           marketConditions: this.recentMarketConditions,
         },
       );
+      // v2.0.875-v6: SE 結論整合入 investigation(🤖 section)
+      this.writeSEToInvestigation(seResult);
     } catch (err) {
       log.warn(`[no-trade] SE investigation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -4640,6 +4644,40 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         console.warn(`[investigation-review] failed: ${err instanceof Error ? err.message : String(err)}`);
       } catch { /* noop */ }
     }
+  }
+
+  /** v2.0.875-CYCLE-REVIEW-v6(主神 2026-09-11「trade-audit+SE 做緊同一件事, 整合入 investigation」): trade-audit LLM 發現 → 🔬 section(覆寫最新) */
+  private writeAuditToInvestigation(result: { incidents?: Array<{ severity?: string; type?: string; description?: string; detail?: string }>; analysis?: string }): void {
+    try {
+      if (typeof result !== 'object' || result === null) return;
+      const lines = [`## 🔬 LLM 審計 (${new Date().toISOString().slice(0, 16).replace('T', ' ')})`];
+      const incs = Array.isArray(result.incidents) ? result.incidents : [];
+      for (const inc of incs.slice(0, 6)) {
+        if (typeof inc !== 'object' || inc === null) continue;
+        const sev = typeof inc.severity === 'string' ? inc.severity : 'info';
+        const typ = typeof inc.type === 'string' ? inc.type : '?';
+        const desc = String(inc.description ?? inc.detail ?? '').slice(0, 140);
+        if (desc) lines.push(`  ⚠️ [${sev}] ${typ}: ${desc}`);
+      }
+      const analysis = typeof result.analysis === 'string' && result.analysis.length > 0 ? result.analysis.slice(0, 450) : '';
+      if (analysis) lines.push(`  📝 ${analysis}`);
+      if (lines.length > 1) writeCurrentInvestigationSection(this.investigationPath, '🔬 LLM 審計', lines.join('\n'));
+    } catch { /* 審計寫入唔影響 */ }
+  }
+
+  /** SE(AutoFixResult)結論 → 🤖 section(覆寫最新) */
+  private writeSEToInvestigation(result: { title?: string; severity?: string; category?: string; rootCause?: string; affectedFile?: string; changelogEntry?: string } | null): void {
+    try {
+      if (typeof result !== 'object' || result === null) return;
+      const lines = [`## 🤖 SE 檢討 (${new Date().toISOString().slice(0, 16).replace('T', ' ')})`];
+      lines.push(`  🎯 ${String(result.title ?? '未命名')}`);
+      const rc = String(result.rootCause ?? '').slice(0, 200);
+      if (rc) lines.push(`  根因: ${rc}`);
+      if (typeof result.affectedFile === 'string' && result.affectedFile) lines.push(`  檔案: ${result.affectedFile}`);
+      const ce = String(result.changelogEntry ?? '').slice(0, 200);
+      if (ce) lines.push(`  📄 ${ce}`);
+      writeCurrentInvestigationSection(this.investigationPath, '🤖 SE 檢討', lines.join('\n'));
+    } catch { /* 唔影響 */ }
   }
 
   private onPositionClosedLearning(trade: TradeRecord): void {
@@ -10061,6 +10099,8 @@ ${recentExamples}
         void auditTradeRecordsLLM(records, this.naEngine)
           .then((result: AuditResult) => {
             this.lastAuditResult = result;
+            // v2.0.875-v6: trade-audit 整合入 investigation(🔬 section)
+            this.writeAuditToInvestigation(result);
             this.auditRunning = false;
             if (result.incidents.length > 0) {
               log.info(`[audit] Cached ${result.incidents.length} incidents (${result.incidents.filter(i => i.severity === 'critical').length} critical) — will gate next decisions`);
