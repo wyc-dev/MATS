@@ -9454,3 +9454,18 @@ MAE -8.47% · MFE +2.20%
 ### 效果
 - 用戶 UI 調 10% → shrink 後最低都係 10%($10 級注碼 @~$100 account)——「用戶希望調校嘅就係咁樣」。
 - ⚠️ 需重啟 backend 生效; ⚠️ HL account 而家 $0(主神需入資金)。
+
+## v2.0.875-shrink-review（2026-09-10：shrink 鏈重審——sell-cold-shrink 對順勢單誤傷實錘, 主神「繼續跟進」）
+
+> 主神 POSITION_SIZE_FIXED 落地後續跟進: 重審 shrink 鏈 6 成員。數據實錘 **sell-cold-shrink 係 shrink 鏈唯一無分辨力+誤傷** 嘅成員。
+
+### 審計(shrink 鏈 6 成員)
+| gate | 實證 | 裁決 |
+|:--|:--|:--|
+| sell-cold-shrink(shadow WR<0.4 + n<10 → ×0.6) | 🔴 順勢 SELL 79 筆(WR 49% avg +0.88%); **shrink 觸發組 29 筆 WR 52% avg +1.40%(更好!)**——shadow WR 無預測力(P2 已證甚至反預測),順勢方向純誤傷(SNDK +20.5% 單 shadowWR 0.16 照縮) | **順勢豁免**——只縮反趨勢(m4h>0 追空) |
+| tail-watchdog / sr-size / anti-trend / calibration | 各有實證(尾部保護/SR 追價/OOS +$0.80/over-confident) | 保留 |
+
+### 落地
+- sell-cold-shrink 加 **順勢豁免**: `m4h<0`(4h 跌勢)順勢 SELL → 唔 shrink(log 🟦 標記); 反趨勢(m4h≥0 追空)→ 照 ×0.6(防追空冷啟動)。env `SELL_COLD_SHRINK=false` 全關。
+- 疊加 POSITION_SIZE_FIXED floor(用戶 10% 設定 = ground truth)——雙層保護: 用戶設定永不被 shrink 抹殺 + 反趨勢賣保留防禦。
+- 全量 4531 pass, tsc clean。

@@ -5928,9 +5928,20 @@ ${recentExamples}
         return { confidence: 0, blocked: true, reason: `shadow-gate: decayed WR ${(rawWr * 100).toFixed(0)}% <55% + EV ${(sumPnl * 100).toFixed(2)}% ≤0 (n=${total.toFixed(1)}, sell-threshold=${minSamples})`, size: 0 };
       }
       if (action === 'sell' && total < 10 && (rawWr < 0.4 || (sumPnl ?? 0) <= 0) && process.env['SELL_COLD_SHRINK'] !== 'false') {
-        const shrunkSize = Math.max(0.01, sizePct * 0.6);
-        log.info(`🟠 [sell-cold-shrink] ${sym}: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} n=${total.toFixed(1)} → size×0.6`);
-        return { confidence, blocked: false, reason: `sell-cold-shrink: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} (n=${total.toFixed(1)})`, size: shrunkSize };
+        // v2.0.875-shrink-review(2026-09-10, 主神「shrinks 對順勢單誤傷」重審):
+        // 實證(realTrades): 順勢 SELL(4h 跌勢) 79 筆 WR 49% avg +0.88%; 其中 shadow WR<0.4
+        // 觸發 shrink 嗰組 29 筆 WR 52% avg +1.40%——表現反而更好! shadow WR 無預測力(P2 已證,
+        // 甚至反預測) + SNDK 由追空蝕(−18.2%)轉順勢贏(+20.5%)而 shadow WR 一直 0.16 以下——
+        // sell-cold-shrink 喺順勢方向純誤傷。修: 順勢賣(m4h<0)豁免 shrink; 反趨勢維持 ×0.6 防追空。
+        const m4h = this.compute4hMomentumPct(sym);
+        const trendFollowingSell = m4h !== null && Number.isFinite(m4h) && m4h < 0;
+        if (!trendFollowingSell) {
+          const shrunkSize = Math.max(0.01, sizePct * 0.6);
+          log.info(`🟠 [sell-cold-shrink] ${sym}: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} n=${total.toFixed(1)} m4h=${m4h?.toFixed(2) ?? 'n/a'}%(反趨勢) → size×0.6`);
+          return { confidence, blocked: false, reason: `sell-cold-shrink: WR ${(rawWr * 100).toFixed(0)}% EV ${(sumPnl ?? 0).toFixed(3)} (n=${total.toFixed(1)}, 反趨勢)`, size: shrunkSize };
+        } else {
+          log.info(`🟦 [sell-cold-shrink] ${sym}: 順勢(m4h=${m4h.toFixed(2)}%)豁免 shrink(誤傷實證——shadow WR 無預測力)`);
+        }
       }
       if (total >= 20 && wlb > 0.65 && (sumPnl ?? 0) > 0) {
         return { confidence, blocked: false, reason: `shadow-boost: WR ${(wlb * 100).toFixed(0)}% + EV +${(sumPnl * 100).toFixed(2)}%`, size: shadowBoostSize(sizePct) };
