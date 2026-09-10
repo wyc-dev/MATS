@@ -10416,6 +10416,14 @@ ${recentExamples}
       // 🔄 PER-CYCLE REFLECTION(2026-09-09 主神指令): 每個 cycle 開倉決策前自問——
       // 「有冇錯過 edge?」唔單止「有冇做錯」。輕量提示(唔 hard rule——agents 自己判斷)。
       marketDesc += `\n🔄 REFLECTION: 開倉決策前自問——①有冇實證 edge 訊號喺手(TIP-BUY/高位 rip/sell-cold-shrink 警告等)? ②上個 cycle 有冇因 HOLD/gate 錯過本應開嘅倉? ③信心係咪被已證偽源(OLR/統計 lean 高信心)污染?——soft 動作優先, 唔好為開而開, 但亦唔好有 edge 都唔開`;
+      // v2.0.875-CYCLE-REVIEW-v8(2026-09-11, 主神「改咁多嘢都仲係空倉——有 edge 點解唔開」):
+      // Edge DIRECTIVE——空倉 + 有實證 edge 候選時, agents 唔可以無理由全 HOLD。
+      // 純 context(agents 判斷 + gates 照行), 但強制要求「hold 必須解釋」。
+      if (this.edgeHints.length > 0) {
+        marketDesc += `\n⚠️ [EDGE DIRECTIVE] 系統檢討發現以下實證 edge 候選(近 3 日正表現 + 4h 動量支持)而家冇倉——若你選擇 HOLD 呢啲資產, 必須喺 rationale 具體解釋點解唔開(信心不足?時機未到?gate 擋咗?):\n` +
+          this.edgeHints.slice(0, 6).map((h) => `    • ${h}`).join('\n') +
+          `\n— 空倉 + 有實證 edge = 優先考慮開倉(唔好無理由 hold 足全場)`;
+      }
 
       // v2.0.870-sell-decay-attack G2: Side-Balance 警告（每 20 cycle throttle）——
       // 單向失衡（如 90 單零 SELL）要 LOUD,唔可以靜靜咁持續。
