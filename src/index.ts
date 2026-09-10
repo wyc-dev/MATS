@@ -102,6 +102,7 @@ import { ClosePathRecorder } from './evolution/close-path-recorder.ts';
 import { computePersistenceScore, computePersistenceDual, classifyPersistenceDual, isStaleCache, classifyPersistence, momentumDirectionalBiasPersistence, regimeSwitchDirectionalBias, shouldSeedSell, type Persistence } from './analysis/momentum-persistence.ts';
 import { analyzeSideBalance, shouldForceSellOnImbalance } from './analysis/side-balance-monitor.ts';
 import { dipReversionSignal, dipAmplifyMultiplier } from './lib/exploration-direction.ts';
+import { findE3PlusSide, shouldCooldown, buildE3Thesis } from './analysis/e3-edge-explore.ts';
 import { shouldSkipBreakoutEntry } from './analysis/breakout-confirmation.ts';
 import { decideLightLossProtection, createLLPPConfig, computeLLPPMaxDefer } from './analysis/light-loss-protection.ts';
 import { shouldBlock5mDirection, DEFAULT_GATE_5M_KSIGMA, DEFAULT_GATE_5M_FLOOR_BPS, DEFAULT_GATE_5M_CAP_BPS, DEFAULT_GATE_5M_CANDLES } from './analysis/momentum-5m-gate.ts';
@@ -884,6 +885,8 @@ class MATSSystem {
   private lastMarketReviewTitle = '';
   /** 上週期賺錢資產追蹤: sym → { side, pnlPct, closedAt } (close pnl>0 累積, cap 6) */
   private recentWinners = new Map<string, { side: string; pnlPct: number; closedAt: number }>();
+  /** E3+ 候選數(selectExplorationTarget 更新——有 E3+ 時探索唔再等 %3) */
+  private lastE3CandidateCount = 0;
   /** close 時間表: sym → lastClosedAt(無成交診斷用) */
   private lastTradeTimes = new Map<string, number>();
   /** 每 cycle 由 reviewMarketPairs 產生嘅 edge 提示(注入 agents context——檢討→Fix 迴路, 主神 2026-09-11「唔好淨係檢討, 要 fix」) */
@@ -1306,6 +1309,38 @@ class MATSSystem {
     for (const p of this.marketAgent.getTopPairs()) {
       volMap.set(normalizeSymbol(p.symbol), p.volume24h);
     }
+    // v2.0.875-E3-EDGE-EXPLORE(2026-09-11, 主神「exploration trade 冇做到本分」+ 實驗 E3+ Δ+1.58pp):
+    // E3+ edge 候選優先(target 選擇由「最高 volume」改為「有 E3+ edge 嘅 asset 優先」——
+    // 近3日同方向 net>0 + 4h 動量支持 buy dip/sell rip)。冇 E3+ → fallback 原最高 volume。
+    try {
+      const now = Date.now();
+      const threeDays = now - 3 * 24 * 3600 * 1000;
+      const closed = this.portfolio.getClosedRealTrades?.() ?? [];
+      const recentBySym = new Map<string, Array<{ closedAt: number; side?: unknown; pnlPct?: unknown }>>();
+      for (const t of closed) {
+        const sym = normalizeSymbol(typeof t.symbol === 'string' ? t.symbol : '');
+        const ct = typeof t.closedAt === 'number' ? t.closedAt : 0;
+        if (!sym || ct < threeDays) continue;
+        if (!recentBySym.has(sym)) recentBySym.set(sym, []);
+        recentBySym.get(sym)!.push({ closedAt: ct, side: t.side, pnlPct: t.pnlPct });
+      }
+      const e3Candidates: Array<{ sym: string; side: 'buy' | 'sell' }> = [];
+      for (const sym of (this.tradingMarkets ?? [])) {
+        const n = normalizeSymbol(sym);
+        if (this.portfolio.hasPosition(n)) continue;
+        const m4 = this.compute4hMomentumPct(n);
+        const side = findE3PlusSide(recentBySym.get(n) ?? [], m4);
+        if (side) e3Candidates.push({ sym: n, side });
+      }
+      this.lastE3CandidateCount = e3Candidates.length;
+      if (e3Candidates.length > 0) {
+        // 多個 E3+ → 揀 volume 最大嗰個(E3 內比較)
+        e3Candidates.sort((a, b) => (volMap.get(b.sym) ?? 0) - (volMap.get(a.sym) ?? 0));
+        const pick = e3Candidates[0]!;
+        log.info(`🧪 [E3-edge-explore] target=${pick.sym} side=${pick.side.toUpperCase()} (${e3Candidates.length} 個 E3+ 候選, 優先於 volume-only)`);
+        return pick.sym;
+      }
+    } catch { /* E3 掃描失敗 → fallback 原邏輯 */ }
     return selectExplorationTargetPure(
       activeSymbol,
       this.tradingMarkets ?? [],
@@ -11912,7 +11947,7 @@ ${recentExamples}
       // carries forward to the next cycle for Skeptics re-validation.
       const originalMetaAction = finalDecision.action;
       const originalMetaThesis = finalDecision.entryThesis;
-      if (finalDecision.action === 'hold' && this.totalCycles > 2 && this.totalCycles % 3 === 0) {
+      if (finalDecision.action === 'hold' && this.totalCycles > 2 && (this.totalCycles % 3 === 0 || this.lastE3CandidateCount > 0)) {
         // v2.0.750: Don't override Meta-Agent's HOLD if the thesis explicitly says
         // to wait or not to enter. This prevents thesis-contradicts-action incidents.
         const metaThesisLower = (originalMetaThesis ?? '').toLowerCase();

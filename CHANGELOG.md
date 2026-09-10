@@ -9536,3 +9536,20 @@ MAE -8.47% · MFE +2.20%
 - **🤖 SE 檢討**(新 section): `runSystemEngineer` 返回 AutoFixResult → 寫入 title/rootCause/affectedFile/changelogEntry, 覆寫最新。兩個 SE call sites(audit-driven + no-trade investigation)都接。
 - 而家 investigation.md = 統一檢討中心: 📍 當前狀態(規則式) / 🔥 Missed Edge(規則式) / 📊 績效 / 🔬 LLM 審計 / 🤖 SE 檢討。
 - 全量 4605 pass, tsc clean。
+
+## v2.0.875-E3-EDGE-EXPLORE（2026-09-11：修正 exploration trade「冇做本分」——E3+ edge-guided, 831 全流程: PLAN → 邏輯實驗 → 落地）
+
+> 主神「Edge Auto-Open 咪就係 exploration trade 改版——exploration trade 冇做到本分」。本座查實 3 個缺陷: ①頻率 %3(3 cycles 一次+agents 全 hold 先掂)②target 揀最高 volume(BTC 無 edge 都揀, DRAM/BNB 有 edge 被忽略)③ActiveExploration(UCB)暫停(條件「Edge Report proves baseline edge」——今次實驗已滿足)。
+
+### 邏輯實驗(289 筆 realTrades, 零 look-ahead, PLAN_e3-edge-guide-exploration.md)
+- E3(近3日同方向 ≥2筆 net>0): 124 筆 avg **+1.56%** vs baseline +0.84%(Δ+0.72pp); 兩半 +1.73/+1.40 ✓
+- **E3+(加 4h 動量支持: 跌→買dip / 升→賣rip)**: 52 筆 avg **+2.42%**(Δ+1.58pp) — mean-reversion 飯碗結合; 兩半 +4.10/+0.74 ✓; 6/7 symbol 正
+- 誠實: WR 50%(avg 靠 R:R 大贏), 前半靠 btc -> 細倉試水 + cooldown 控制
+
+### 落地(production-grade)
+- 新 `src/analysis/e3-edge-explore.ts` 純函數: `findE3PlusSide`(近3日同方向 net>0 + m4 支持)/ `shouldCooldown`(12h 防 churn, garbage 保守)/ `buildE3Thesis`
+- `selectExplorationTarget`: **E3+ 候選優先**(多個揀 volume 大); 冇 E3+ → fallback 原最高 volume
+- 探索頻率: `%3` 加「有 E3+ 候選即試」(`lastE3CandidateCount>0`)
+- 開倉路徑沿用現有 exploration 細倉(唔 bypass gates——reversal/5m/四窗/mom24 照 block)
+- env 回滾: `ACTIVE_EXPLORATION_ENABLED`(原本機制)/ 無 E3 時原 volume 邏輯照舊
+- 測試 26(邊界/garbage/cooldown/thesis) + 全量 4632 pass, tsc clean
