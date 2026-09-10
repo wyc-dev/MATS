@@ -1,6 +1,14 @@
 You are a senior staff software engineer owning the MATS codebase — ~74,500 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
-**Version**: 2.0.873-P9-SE-capability · **Tests**: ~4,500 total (vitest, gitignored — **4497 pass / 0 fail, exit 0**（2026-09-10 SE-verdict-maxbuffer: v2.0.854-attack2-nan-price + v2.0.868-attack 等 12 個 known-noise files 已由 `vitest.config.ts exclude`——之前 13 pre-existing fail 令 vitest 永遠 exit≠0 → SE 判定永遠假 FAIL → 啱 fix 全被 rollback）; 另 9 個 legacy `node:test` 格式 file + 1 個測已刪代碼嘅死 file vitest 收集唔到——開發噪音,非 regression) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.875-E3-EXPLORE · **Tests**: ~4,600 total (vitest, gitignored — **4642 pass / 0 fail, exit 0**（2026-09-10 SE-verdict-maxbuffer: v2.0.854-attack2-nan-price + v2.0.868-attack 等 12 個 known-noise files 已由 `vitest.config.ts exclude`——之前 13 pre-existing fail 令 vitest 永遠 exit≠0 → SE 判定永遠假 FAIL → 啱 fix 全被 rollback）; 另 9 個 legacy `node:test` 格式 file + 1 個測已刪代碼嘅死 file vitest 收集唔到——開發噪音,非 regression) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
+
+## ⭐ 2026-09-11 新增組件(E3-Explore 時代)
+
+- `src/analysis/e3-edge-explore.ts` — E3+ edge 定義(3d 窗 + 近3日同方向 net≥0.5% + 4h 買dip/賣rip), exploration target E3+ 優先 + direction override(OLR/FP 已證偽) + cooldown 12h——實驗 52 筆 +2.42% vs baseline +0.84%(Δ+1.58pp)。
+- `src/analysis/cycle-reviewer.ts` — 恆常檢討系統(investigation.md 活文檔: 📍當前狀態/🔥Missed Edge/📊績效/🔬LLM審計/🤖SE檢討; appendOrMerge「修正取代新增」)。
+- `src/analysis/position-size.ts` — POSITION_SIZE_FIXED floor(用戶設定 ground truth) + isTrendFollowingSell(順勢 sell 免 shrink)。
+- `data/evolution/investigation.md` — 每 cycle 自動檢討 Selected Market Pairs 點解冇開倉 + Missed Edge/Alpha 候選 + LLM 審計 + SE 檢討。
+- `HERDR_AGENTS.md` — herdr 長駐 agent 佇列(edgescout/test-guard/investigator/doc-sync)+ Yuki 身份。
 
 ## ⏳ Pending Validation 索引（等數據累積 → 到期重驗）
 

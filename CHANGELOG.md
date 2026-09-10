@@ -4,6 +4,37 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.875-DAY-SYNC（2026-09-10/11——全日戰績總覽：SE 生態修復 + 檢討系統 + E3-Explore, 主神「update 三文檔 + commit + push」）
+
+> 今日(主神日睇多輪「wtf/still wtf/死埋/仲係空倉」)全部 major 改動總覽——詳細每項喺下方各自 entry / commit message。全量 **4642 pass / 0 fail / exit 0**、tsc clean。
+
+### ① 檢討/判斷生態(SE 判定 + investigation)
+- **SE-verdict-maxbuffer**: SE 判定三層元兇根治——`execSync` npm test 冇 maxBuffer(1MB default, full output 實測 0.94MB+ → 永遠假 FAIL)、vitest.config 冇 exclude 13 pre-existing fail files(vitest 永遠 exit≠0)、parseTestVerdict 將「output 出現過嘅 file」全當 fail(390+ pass files 誤判)→ 全修。
+- **SE-verdict-attack2**: JSON-reporter `"failed":false` 誤判、10MB/9.75M 行 3.5s 性能、`×` 乘號誤判——26 測試全綠。
+- **SE-testupdate-fix**: `findBlockMatch` 三級 fallback(exact/trim/逐行)——LLM 生成 oldCode whitespace 微差唔再 skip test update; KNOWN-GOOD 表加「追空 penalty 已 WORKING」+「SL-widen EXTINCT」。
+- **SL-widen-experiment**: SE 提議 regime-aware SL widening —— 21 筆 sl_tp 零 look-ahead counterfactual 否決（widen 1.5× Σ−216pp vs 原 −158pp 更差、76% SL 係正確止蝕）→ revert + 永久禁區。
+
+### ② 注碼/shrink 重審
+- **POSITION_SIZE_FIXED**: 用戶 UI positionSizePct = ground truth——shrinks 唔可以縮低過佢（SNDK SELL +20.5% 單 10% → $1.03 被縮 10 倍 → 修正）。
+- **shrink-review**: sell-cold-shrink 對順勢單誤傷實錘（順勢 SELL 79 筆 +0.88%, shrink 觸發組 29 筆 +1.40% 反而更好）→ 順勢豁免（m4h<0 SELL 唔 shrink）。
+- **shrink-attack**: userFloor/config 污染 sanitize 純函數 + isTrendFollowingSell——47 測試。
+
+### ③ 恆常檢討系統(investigation.md = 活調查文檔, 任何模式 dev/engineer 都行)
+- **CYCLE-REVIEW v1-v7**: 📍 當前 Cycle 檢討(每 cycle 覆寫 Selected Market Pairs 逐個資產點解冇開) / 🔥 Missed Edge(4h 強動量 ±0.5% 存在 ≥3 cycles 冇開——**同 asset 同 edge 類型 merge 取代新增**: 主神規則) / 📊 開倉績效 / 🔬 LLM 審計(trade-audit 結果) / 🤖 SE 檢討(runSystemEngineer 結果)。
+- **edge hints 注入 agents context**(EDGE-DIRECTIVE: 空倉 + 有實證 edge 唔可以無理由 hold, 要解釋)。
+- **recentWinners 追蹤**: close 賺錢 asset 累積 → 每 cycle 檢查冇倉 → missed re-open 候選。
+
+### ④ E3-EDGE-EXPLORE(修正 exploration trade 冇做本分——831 全流程)
+- **邏輯實驗**: E3(近3日同方向 ≥2筆 net>0) 124 筆 +1.56% vs baseline +0.84%; **E3+(加 4h 買dip/賣rip)** 52 筆 **+2.42%**（Δ+1.58pp）; 加值檢驗(近3日 filter 獨立加值 +2.15pp——反偽証); 窗長 sensitivity(**6h/12h 負 edge 已證偽陷阱, 3d sweet spot**); 兩半正; 6/7 symbol 正。
+- **實作**: `e3-edge-explore.ts` 純函數; selectExplorationTarget **E3+ 候選優先**(修正「target 揀最高 volume」); **E3 direction override**(OLR/FP 已證偽——方向由實證 edge 主導); cooldown 12h 防 churn; E3_WINDOW_MS=3d; 頻率有 E3 即試。
+- **E3-EXPLORE-ATTACK**: denormal 微利當 edge(`E3_MIN_NET_PCT=0.5%`)、垃圾 pnl 計樣本數、windowMs/now 垃圾——全修。
+
+### ⑤ 其他
+- **engineer-ui**: `npm run engineer` 加 concurrently 同時起 UI(:5173)。
+- **HERDR_AGENTS + Yuki 注入**: herdr 長駐 agent 佇列(edge-scout/test-guard/investigator/doc-sync)任務書 + 「🪷 身份: 你係 Yuki」。
+
+---
+
 ## v2.0.875-SE-reflection: trending_bull+SELL 2/2 全蝕 (0% WR) vs trending_bear+SELL 3/3 全勝 — regime-direction mismatch 係 Layer 1 方向錯誤,候選 soft penalty (≤20%)。需 data 驗證 samples 數。已確認 c9ba655 SL-widen 否決,唔 re-diagnose。
 
 
