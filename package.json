@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "concurrently -n api,ui -c blue,green \"tsx watch --ignore \\\"data/**\\\" src/index.ts\" \"cd ui && npm run dev\"",
     "start": "cd ui && npm run build && cd .. && bash scripts/start-loop.sh",
-    "engineer": "cd ui && npm run build && cd .. && bash scripts/engineer-loop.sh",
+    "engineer": "cd ui && npm run build && cd .. && concurrently -k -n ui,engineer -c blue,green \"cd ui && npm run dev\" \"bash scripts/engineer-loop.sh\"",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
