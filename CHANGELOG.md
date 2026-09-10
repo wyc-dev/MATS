@@ -9501,3 +9501,17 @@ MAE -8.47% · MFE +2.20%
 
 ### 用法
 - investigation.md 自動累積: 每單 close 檢討 + idle 3+ cycles 冇開倉檢討——主神隨時 `cat data/evolution/investigation.md` 睇。
+
+## v2.0.875-CYCLE-REVIEW-v2（2026-09-10：investigation.md 改為活調查文檔——每 Cycle 檢討 Selected Market Pairs, 主神澄清「似 ARCHITECTURE, 搵出當前狀況成因 + edge & alpha 改善」）
+
+> 主神修正: 唔係「每單 close 累積 log」——係**每個 Cycle 檢討 Selected Market Pairs 啲資產點解冇開到倉**, investigation.md 似 ARCHITECTURE.md 嘅**活調查文檔**(搵出點解有當前狀況 → 知道有咩 edge & alpha 可以改善)。
+
+### 重構
+- **📍 當前 Cycle 檢討**(每 cycle 覆寫): 對 Selected Market Pairs + active symbol 逐個資產——持倉狀態 / 4h 動量 / regime / 開倉屏障(gate 攔截)→「點解冇開」一目了然。
+- **🔥 Missed Edge 發現**(append, dedup): 4h 強動量(|m4h|≥0.5% → BUY-dip / SELL-rip 訊號)存在但連續 ≥3 cycles 冇開 → 寫「潛在 missed edge / Alpha 改善候選」——正正係「有乜 edge 可以改善」。
+- **📊 開倉績效**(append): close 檢討保留(賺/蝕原因)。
+- 活文檔機制: 當前檢討 section 覆寫(固定 title, body 帶 cycle N)、發現 append——似 ARCHITECTURE 持續演化。
+- 測試 24(含 section 覆寫 marker 修復: title 固定 body 帶 cycle)、全量 4602 pass、tsc clean。
+
+### 用法
+`cat data/evolution/investigation.md`——每 cycle 更新「當前檢討」+ Missed Edge 累積 + 開倉績效。

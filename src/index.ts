@@ -25,7 +25,7 @@ import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-learner.ts';
 import { applyPositionSizeFloor, isTrendFollowingSell } from './analysis/position-size.ts';
-import { buildCloseReview, buildNoOpenReview, appendInvestigation } from './analysis/cycle-reviewer.ts';
+import { buildCloseReview, buildMarketReview, buildMissedEdge, appendInvestigation, writeCurrentInvestigationSection } from './analysis/cycle-reviewer.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -878,11 +878,11 @@ class MATSSystem {
   private terminalSideGuide = '';
   /** Per-symbol previous cycle context for shadow trade opening — Map<symbol, context> */
   private lastCycleShadowContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
-  // v2.0.875-CYCLE-REVIEW(2026-09-10, 主神「npm run dev 都要有檢討——點解冇開倉/點解賺蝕, 更新去 investigation.md」):
-  private cycleReviewBuffer: Array<{ sym: string; note: string }> = [];
-  private idleCycles = 0;
-  private lastIdleReviewCycle = 0;
+  // v2.0.875-CYCLE-REVIEW(2026-09-10, 主神「每個 Cycle 檢討 Selected Market Pairs 點解冇開到倉, investigation.md 似 ARCHITECTURE——搵出當前狀況成因 + edge & alpha 改善」):
   private readonly investigationPath = 'data/evolution/investigation.md';
+  private missedEdgeCounters = new Map<string, number>();   // sym → 連續 cycles 有 edge 訊號但冇開
+  private missedEdgeReported = new Set<string>();           // 已寫過嘅 (sym|edge) — dedup
+  private lastMarketReviewTitle = '';
   /** v2.0.831: Per-cycle ATR cache — pre-fetched at cycle start so vol-gate
    *  and entry-gate don't need to make synchronous HL API calls (which timeout
    *  under rate-limiter pressure). Key = normalized symbol, value = ATR (absolute). */
@@ -4522,37 +4522,59 @@ ${currentPrompt || '(empty — this is the first input)'}`;
     }
   }
 
-  /** v2.0.875-CYCLE-REVIEW: 冇開倉檢討(任何模式 dev/engineer)——idle 3+ cycles 寫 investigation.md。
+  /** v2.0.875-CYCLE-REVIEW: 每個 Cycle 檢討 Selected Market Pairs 點解冇開倉(任何模式 dev/engineer)。
+   *  investigation.md 似 ARCHITECTURE 嘅活調查文檔:
+   *   - 📍 當前 Cycle 檢討: 每 cycle 覆寫(逐個資產: 持倉/4h動量/regime/屏障)
+   *   - 🔥 Missed Edge 發現: edge 訊號(4h 強動量 ±0.5%)存在但連續 ≥3 cycles 冇開 → append(新發現 dedup)
+   *   - 📊 開倉績效: close 時 append(onPositionClosedLearning)
    *  零決策影響: 純觀察記錄, throw 都唔影響 cycle。 */
-  private reviewNoOpenCycle(decision: { action?: string; confidence?: number; symbol?: unknown }, gates: Array<{ gate: string; passed: boolean; reason: string }>): void {
+  private reviewMarketPairs(): void {
     try {
-      // buffer: 累積 hold 原因(gate blocked + confidence)
-      const act = typeof decision?.action === 'string' ? decision.action : 'hold';
-      if (act === 'buy' || act === 'sell') {
-        this.idleCycles = 0;
-        this.cycleReviewBuffer = []; // 有開倉意圖 → reset buffer
-        return;
+      // Selected Market Pairs + active symbol, dedup
+      const list: string[] = [];
+      for (const sym of [...(this.tradingMarkets ?? []), (this.marketAgent.getConfig()?.selectedSymbol ?? '')]) {
+        if (typeof sym !== 'string' || sym.length === 0) continue;
+        const n = normalizeSymbol(sym);
+        if (!list.includes(n)) list.push(n);
       }
-      // 收集 gate 攔截(冇開倉嘅直接原因)
-      if (Array.isArray(gates)) {
-        for (const g of gates) {
-          if (!g || g.passed !== false) continue;
-          const note = `${g.gate}: ${typeof g.reason === 'string' ? g.reason.slice(0, 100) : '?'}`;
-          if (note.length > 4) this.cycleReviewBuffer.push({ sym: typeof decision?.['symbol'] === 'string' ? (decision['symbol'] as string) : '', note });
-        }
+      if (list.length === 0) return;
+
+      // 逐個資產檢討
+      const items: Array<{ symbol: string; holding: boolean; momentum4hPct: number | null; regime: string; gateBlocked: string | null }> = [];
+      for (const sym of list) {
+        let holding = false;
+        try { holding = !!this.portfolio.getPosition(sym); } catch { /* 冇倉當冇 */ }
+        let mom: number | null = null;
+        try {
+          const m = this.compute4hMomentumPct(sym);
+          if (typeof m === 'number' && Number.isFinite(m)) mom = m;
+        } catch { /* 動量唔可用 */ }
+        const regime = (this.marketState?.getState(sym)?.regime as string) ?? '?';
+        items.push({ symbol: sym, holding, momentum4hPct: mom, regime, gateBlocked: null });
       }
-      if (this.cycleReviewBuffer.length > 15) this.cycleReviewBuffer.shift();
-      this.idleCycles++;
-      if (this.idleCycles < 3) return;
-      if (this.totalCycles - this.lastIdleReviewCycle < 5) return; // throttle: 每 5 cycles 最多一次
-      this.lastIdleReviewCycle = this.totalCycles;
-      const review = buildNoOpenReview(this.totalCycles, {
-        decisions: this.cycleReviewBuffer.slice(-8).map((b) => ({
-          symbol: b.sym || 'active', action: 'hold', gateBlocked: b.note,
-        })),
-      });
-      if (review) appendInvestigation(this.investigationPath, [review]);
-      this.cycleReviewBuffer = [];
+
+      // 每 cycle 覆寫「當前 Cycle 檢討」(活文檔)——sectionTitle 固定(cycle N 喺 body 內), marker 先 match 到
+      const fullTitle = `📍 當前 Cycle 檢討 (cycle ${this.totalCycles})`;
+      const body = buildMarketReview(fullTitle, items);
+      if (body) writeCurrentInvestigationSection(this.investigationPath, '📍 當前 Cycle 檢討', body);
+      this.lastMarketReviewTitle = fullTitle;
+
+      // Missed Edge: 4h 強動量 + 冇倉 → 累積; ≥3 cycles → append(新發現 dedup)
+      const now = Date.now();
+      for (const it of items) {
+        const edgeLine = buildMissedEdge({ ...it, gateBlocked: it.gateBlocked });
+        if (!edgeLine) { this.missedEdgeCounters.delete(it.symbol); continue; }
+        const c = (this.missedEdgeCounters.get(it.symbol) ?? 0) + 1;
+        this.missedEdgeCounters.set(it.symbol, c);
+        if (c < 3) continue;
+        const key = it.symbol; // symbol 級 dedup(避免每 3 cycles 重複)
+        if (this.missedEdgeReported.has(key)) continue;
+        this.missedEdgeReported.add(key);
+        appendInvestigation(this.investigationPath, [
+          `## 🔥 Missed Edge 發現 (cycle ${this.totalCycles}, ${new Date(now).toISOString().slice(0, 16).replace('T', ' ')})`,
+          `  ${edgeLine} — 連續 ${c} cycles 訊號存在但未開倉, 列為 Alpha 改善候選`,
+        ]);
+      }
     } catch { /* 檢討失敗唔影響交易 */ }
   }
 
@@ -13677,7 +13699,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
   }
 
   // v2.0.875-CYCLE-REVIEW: 冇開倉檢討(任何模式)——idle 3+ cycles 寫 investigation.md(零決策影響)
-  this.reviewNoOpenCycle(finalDecision, activeAuditGates);
+  this.reviewMarketPairs(); // v2.0.875-CYCLE-REVIEW: 每個 Cycle 檢討 Selected Market Pairs
 
   // v2.0.765: REMOVED systematic loser hard block — OWNER DIRECTIVE: NEVER hard block.
   // The dynamic volatility gate (v2.0.764) handles the root cause — low-vol noise trading.
