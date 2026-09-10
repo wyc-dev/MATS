@@ -9440,3 +9440,17 @@ MAE -8.47% · MFE +2.20%
 - `computeChasePenalty` 純函數: SELL + thesis「above demand」→ pWin×0.8(soft ≤20%——唔 block)
 - 實錘: SNDK −4.4%(60bps above demand)/SKHX −3.8%(165bps)——2/2 全蝕 0% WR——零誤傷 signature
 - 全量 **4522 pass + 13 pre-existing**; tsc clean
+
+## v2.0.875-FIXED-POSITION（2026-09-10：Position Size 固定——用戶設定 = ground truth, 主神「明明用戶響 UI 調 10% 就應該落 10%」）
+
+> 主神貼 SNDK SELL +20.5%(09-10 20:33)單: UI Position Size set 10%, 但 investment 得 **$1.03**(~1%)——「激撚死我」→ 本座查 sizing 鏈: config `positionSizePct=0.10` 正確, 同期其他單都係 $5.89-14.06(≈10% of ~$100 account)——**真兇係 shrink 鏈將 10% 縮到 ~1%**(sell-cold-shrink ×0.6 shadow WR 15.6% + TailWatchdog ×0.5 SNDK −18.2% 史 + applyShadowGate 內部 shrink 疊加)。用戶控制被 shrink 抹殺。
+
+### 落地
+- `applyEntryConvictionGates` 返回前加 **floor**: `result.size = max(result.size, 用戶 positionSizePct)`——shrinks 唔可以縮低過用戶設定(gound truth)。**保留所有 HARD BLOCK**(shadow-gate block/mom24/chase-tail/regime-switch 逆勢/四窗/5m/OLR<35%)——風險控制靠 block 唔靠 shrink(Soft 優先 Block 最後)。
+- exploration 細倉(`skipShadowGate` 樣本生成)唔受 floor 影響——探索唔應該大注碼。
+- env `POSITION_SIZE_FIXED=false` 回滾(shrinks 照舊)。
+- 全量 4531 pass exit 0, tsc clean。
+
+### 效果
+- 用戶 UI 調 10% → shrink 後最低都係 10%($10 級注碼 @~$100 account)——「用戶希望調校嘅就係咁樣」。
+- ⚠️ 需重啟 backend 生效; ⚠️ HL account 而家 $0(主神需入資金)。

@@ -5867,6 +5867,19 @@ ${recentExamples}
           }
         } catch { /* 非致命——SR 距離不可用開倉照常 */ }
       }
+      // v2.0.875-FIXED-POSITION(2026-09-10, 主神「用戶喺 UI 調 10% 就應該落 10%——明明用戶希望調校嘅就係咁樣」):
+      // shrink gates(sell-cold / tail-watchdog / sr-size / anti-trend)唔可以將注碼縮低過用戶設定——
+      // 用戶嘅 positionSizePct 係 ground truth, shrinks 只係風險 override 但唔可以抹殺用戶控制
+      // （SNDK SELL 09-10 20:33 實例: UI 10% → 被縮到 ~1% — $1.03 注碼）。
+      // 保留所有 HARD BLOCK(風險控制靠 block 唔靠 shrink——Soft 優先 Block 最後原則)。
+      // env POSITION_SIZE_FIXED=false 回滾(shrinks 照舊)。
+      if (process.env['POSITION_SIZE_FIXED'] !== 'false' && !result.blocked && !opts?.skipShadowGate) {
+        const userFloor = this.marketAgent.getConfig().positionSizePct ?? 0.10;
+        if (Number.isFinite(result.size) && result.size < userFloor) {
+          log.info(`🟦 [pos-fixed] ${sym}: size ${(result.size * 100).toFixed(1)}% → floor ${(userFloor * 100).toFixed(0)}% (用戶設定 ground truth)`);
+          result.size = userFloor;
+        }
+      }
       return result;
     } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
   }
