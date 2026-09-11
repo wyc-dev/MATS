@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.875-E3-EXPLORE
+> **作者**: YC Wong · **版本**: 2.0.875-qrl-pool-monopoly
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-11 E3-EXPLORE）**: vitest **4642 pass / 0 fail — exit 0**（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 10 legacy node:test——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-11 qrl-pool-monopoly-attack）**: vitest **4714 pass / 0 fail — exit 0**（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 10 legacy node:test——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
@@ -27,6 +27,8 @@
 | P11 | **統計 lean 分辨力嚴格重驗(SCL 收據, 2026-09-09 新增)**: shadow WR 反指標(8/8 symbol 負 ρ) + OLR pwin 分辨力(real ρ=+0.02 已證偽)——用 SCL 收據(verdict/OLR/WR/EV, 2392 筆/日)數小時 n≥15 | 收據由 09-09 起累積(60/60 真值已驗證) | 樣本累積(數小時) → shadow-gate 方向 + lean 衝突偵測裁決(831) |
 | P14 | **clean entryShadowWinRate 樣本追蹤(shadow-gate 中立化確認, 2026-09-09 新增)**: Real clean(entry-snapshot)累積 31 筆——WR≥0.55 → −3.31%(n=5 太細)/「反向唔成立」(低 WR 側 shadow 35.3% 都差——極端信心懲罰,唔係方向反指標)——需 n≥15 確認 + shadow-gate 中立化(如批准)後 real 成效 | 31 筆 clean(n=5 高 WR 組) | 樣本累積(2-4 週) |
 | P12 | **BUY 贏單 let-run(A/B/C, 2026-09-09)**: 大 giveback 2.4pp/筆——D(shadow close-path 幾小時樣本)重放後裁決: A 動態閾值(dip=mfeP90) / B 保守(MFE>2×中位) / C edge 條件(買 tip 下 mfeP90——最貼 EDGE-FIRST) | Close-Path Recorder(real + shadow resolve 收集)——shadow 幾小時累積 | shadow 樣本≥30 → p9-let-run-replay → 831 裁決 |
+| P15 | **bet-double 倍注 Shadow 層驗證(2026-09-11 新增)**: 主神「蝕錢後 ×2, 贏咗恢復 1×」——V3(同symbol同向)邏輯實驗三關全過(296 筆, 子集EV +1.25%, 8/8 symbol, holdout +25.5pp, 實盤可達 +140.7pp)——實裝已埋但 `BET_DOUBLE_ENABLED` 預設 off | SCL 收據 `entryBetDoubleEligible` 由 09-11 起累積(shadow 開倉 snapshot——2392 筆/日) | **shadow 樣本幾小時達標（主神:每 3 分鐘 cycle, 唔使 2 週）**→ eligible 組 OOS 正 → 主神 enable |
+| P16 | **shadow pool sell 樣本回流驗證(2026-09-11, qrl-pool-monopoly)**: 修復 qrl 壟斷 60/60 buy(sell 樣本餓死 → agents 冇 lean 錯過跌勢)——A per-side 配額 30 / B evict 優先序 blind→qrl→aligned / C qrl arm 封頂 per-symbol≤3+全局≤24 | `scripts/p15-sell-recovery-verify.ts` pre-registered: sell:buy≥0.2 / qrl<40% / open sell≥1 / sell n≥10 | **修復後幾小時重跑驗證**（baseline: sell:buy=0.17, qrl=73.5%, sell EV −0.44%）|
 
 ---
 
@@ -1720,15 +1722,25 @@ Per-symbol, per-side online logistic regression 從 shadow + paper + real + back
 
 每個 cycle 為每個 trading market 開模擬 LONG + SHORT，S/R-aligned SL/TP。Intra-cycle high/low 追蹤（正確判定 TP-before-SL）。學 TP-before-SL（真實可盈利性），唔係 5 分鐘價格方向。
 
-**完整結構（v2.0.855-audit）**：
+**⛔ v2.0.875-P9-qrl-pool-monopoly（2026-09-11）：Pool 壟斷修復 + per-side 配額**——真實病例: 已證偽 Q-RL(ρ=+0.0064)arm 壟斷 shadow pool(recentResults 200 筆 qrl 佔 99.5%、open 60/60 全 qrl-buy、sell=0)→ sell 樣本餓死 → agents 冇 lean → 錯過跌勢。三層修復:
+- **A. per-side 配額**: `SHADOW_CONFIG.maxOpenPerSide=30`(buy/sell 各 30)——**樣本生成器(blind/qrl)受配額**, aligned/statistical/seeded(lean 驅動/播種)唔受。
+- **B. evict 優先序**: `evictOldestBlindForRoom()` blind(最低)→ **qrl(已證偽可犧牲)** → aligned; seeded 永不 evict; barrier-hit 保護保留。
+- **C. Q-RL arm 封頂**: `countQRLShadows(sym)` per-symbol ≤3 + `getQRLShadowCount()` 全局 ≤24(≈40% pool)。
+- **攻擊硬化**: `allPositions()` sanitize helper——所有遍歷(.find/.some/.filter ×8)經佢(null element 持久化污染唔 crash); evict 即時 `indexOf`(唔用 cache idx——splice 後 shift); `canOpenBuy/canOpenSell` 接全局配額。
+- **驗證**: `scripts/p15-sell-recovery-verify.ts`(pre-registered: sell:buy≥0.2 / qrl<40% / open sell≥1)——修復後幾小時重跑(主神「每 3 分鐘 cycle」)。
+**🎰 v2.0.875-P9-bet-double**: 同 symbol 同向上一筆 close 蝕 → 下一筆同向 size ×2(cap 0.20)——V3 邏輯實驗 296 筆三關全過(子集 EV +1.25%/筆 vs 全樣本 +0.74%、8/8 symbol、holdout +25.5pp、實盤可達 +140.7pp); `shouldBetDouble()`/`applyBetDoubleSize()` 純函數; 主神規則「贏咗恢復 1×」(prev pnl≥0 → false); env `BET_DOUBLE_ENABLED` 預設 off(等 P15 shadow 驗證先 enable)。
+
+**完整結構（v2.0.855-audit + v2.0.875 更新）**：
 
 | 元件 | 位置 | 作用 |
 |:-----|:-----|:-----|
-| `ShadowPosition` | interface | `side` / `entryPrice` / `stopLossPrice` / `takeProfitPrice` / `highSinceOpen` / `lowSinceOpen` / `mfePct` / `maePct` / `shadowType` / `factorTag` |
-| `SHADOW_CONFIG` | constant | `maxOpenPerSymbol=10` / `maxTotalOpen=60` / `maxAgeCycles=12`(60min force-resolve) / `staleLearningWeight=0.3` |
-| `openShadowTrades()` | blind | 每 cycle 為每個 trading market 開 LONG+SHORT 兩邊（cold-start prior，OLR weight 0.1×） |
+| `ShadowPosition` | interface | `side` / `entryPrice` / `stopLossPrice` / `takeProfitPrice` / `highSinceOpen` / `lowSinceOpen` / `mfePct` / `maePct` / `shadowType` / `factorTag` / `entryStats`(SCL 收據: WR/EV/verdict/OLR pwin/`entryBetDoubleEligible`) |
+| `SHADOW_CONFIG` | constant | `maxOpenPerSymbol=10` / `maxTotalOpen=60` / **`maxOpenPerSide=30`(v2.0.875)** / `maxAgeCycles=12`(60min force-resolve) / `staleLearningWeight=0.3` |
+| `openShadowTrades()` | blind | 每 cycle 為每個 trading market 開 LONG+SHORT 兩邊(cold-start prior，OLR weight 0.1×; **v2.0.875 受全局 per-side 配額**) |
 | `openAlignedShadow()` | aligned | 跟 LLM 共識方向 + factor tag（v2.0.834）。v2.0.855：real-trade cycles 都開（counterfactual） |
 | `openStatisticalShadow()` | statistical | 純統計方向（OLR+Combo WR+Causal），同 LLM 對照（v2.0.846 A/B） |
+| `openSeededShadow()` | seeded | 跌市強制播種 sell(persistent_bear + mom24h<0 + mom4h<0 雙確認)——**sell 樣本出口**(v2.0.875: 池滿可 evict qrl-buy) |
+| `openQRLShadow()` | qrl | Q-RL expectancy lean(**v2.0.875: per-symbol ≤3 + 全局 ≤24 封頂——已證偽源唔可以壟斷**) |
 | `checkPositions()` | resolution | 用 `highSinceOpen`/`lowSinceOpen` 判定 SL/TP 命中（path-based，唔係 close price）→ feed OLR |
 | `drainRecentResults()` | 學習出口 | index.ts 每次 cycle drain，feed OLR + Q-RL + MetaLearner + CausalReasoner |
 | `pruneStaleSymbols()` | 維護 | 清理已移除 symbol 嘅 stale positions |

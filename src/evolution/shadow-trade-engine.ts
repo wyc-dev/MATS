@@ -69,6 +69,8 @@ export interface ShadowPosition {
       entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral';
       /** SCL: 開倉時 OLR P(win)——記錄用嚟 Shadow 層重驗 OLR 分辨力(P9 已證偽 real ρ=+0.02——純驗證字段,喂唔入任何決策). */
       entryOlrPWinAtOpen?: number | null;
+      /** SCL(bet-double, 2026-09-11): 開倉時「最近一筆同 symbol 同 side 蝕」——主神倍注構想 V3 嘅 Shadow 層驗證收據(「蝕後重開」有冇 edge, 2392 筆/日樣本幾小時達標). 零決策——純記錄. */
+      entryBetDoubleEligible?: boolean;
     };
   /** Current status — 'open' until SL/TP hit */
   status: 'open' | 'win' | 'loss';
@@ -179,6 +181,11 @@ const SHADOW_CONFIG = {
   maxOpenPerSymbol: 10,
   /** Max total shadow positions across all symbols */
   maxTotalOpen: 60,
+  /** v2.0.875-P9-qrl-pool-monopoly: 全局 per-side 上限——buy/sell 各 30。
+   *  原 maxTotalOpen 60 俾 qrl-buy 壟斷(60/60 buy, sell=0) → sell 樣本餓死 →
+   *  agents 冇 lean 錯過跌勢。per-side 配額保證 sell 出口永遠存在
+   *  （qrl-buy 最多佔 30, sell 一定有 ≥30 位）。 */
+  maxOpenPerSide: 30,
   /** Default SL distance if S/R not available (fraction of price) */
   defaultSLDistance: 0.02,
   /** Default TP distance if S/R not available (fraction of price) */
@@ -278,41 +285,54 @@ export class ShadowTradeEngine {
    *
    *  @returns true if at least one blind was evicted (caller may open).
    */
-  /** evict 最舊 blind——preferSide 指定時只 evict 該方向（sell 讓位專用） */
+  /** evict 最舊低優先 shadow——preferSide 指定時只 evict 該方向（sell 讓位專用）。
+   *  v2.0.875-P9-qrl-pool-monopoly（方案 B）: 原只 evict blind——但 pool 俾 qrl 壟斷時
+   *  （60/60 qrl-buy）冇 blind 可 evict → sell 播種永久卡死。升級優先序:
+   *    blind(最低) → qrl(已證偽 ρ=+0.0064, 可犧牲) → aligned(LLM lean, 中優先)
+   *  seeded 永不 evict（強制樣本生成嘅目的本身就係要開出嚟）。 */
   private evictOldestBlindForRoom(preferSide?: 'buy' | 'sell'): boolean {
     if (!shadowEvictConfig.enabled) return false;
-    const openCount = this.positions.filter(p => p.status === 'open').length;
+    const openCount = this.openPositions().length;
     if (openCount < SHADOW_CONFIG.maxTotalOpen) return false;
 
-    // Candidates: open blinds that have NOT touched SL or TP yet.
-    // v2.0.873-P9-sell-unblock: preferSide='buy' → 只 evict buy blind（sell 樣本要有出口,
-    // 唔可以 evict 賣走僅餘嘅 sell 樣本）。
-    const candidates = this.positions.filter(p => {
-      if (p.status !== 'open' || p.shadowType !== 'blind') return false;
-      if (preferSide && p.side !== preferSide) return false;
-      if (p.side === 'buy') {
-        if (p.lowSinceOpen <= p.stopLossPrice) return false;
-        if (p.highSinceOpen >= p.takeProfitPrice) return false;
-      } else {
-        if (p.highSinceOpen >= p.stopLossPrice) return false;
-        if (p.lowSinceOpen <= p.takeProfitPrice) return false;
-      }
-      return true;
-    });
+    // v2.0.875: 優先序盲 → qrl → aligned（seeded 排除——樣本生成必須保留）
+    const typePriority: Record<string, number> = { blind: 0, qrl: 1, aligned: 2 };
+    const candidates = this.positions
+      .map((p, idx) => ({ p, idx }))
+      // A2★(2026-09-11 attack): null/undefined/垃圾 element（持久化污染）先 drop——
+      // 唔可以直接 access p.status
+      .filter(({ p }) => p !== null && p !== undefined && typeof p === 'object')
+      .filter(({ p }) => {
+        if (p.status !== 'open') return false;
+        const pr = typePriority[p.shadowType];
+        if (pr === undefined) return false; // seeded/statistical 唔 evict（statistical 低頻, seeded 樣本生成）
+        if (preferSide && p.side !== preferSide) return false;
+        // 防「SL/TP 已觸及但未 resolve」嘅倉被 evict——只 evict 未觸及閾値嘅
+        if (p.side === 'buy') {
+          if (p.lowSinceOpen <= p.stopLossPrice) return false;
+          if (p.highSinceOpen >= p.takeProfitPrice) return false;
+        } else {
+          if (p.highSinceOpen >= p.stopLossPrice) return false;
+          if (p.lowSinceOpen <= p.takeProfitPrice) return false;
+        }
+        return true;
+      });
     if (candidates.length === 0) return false;
 
-    // Oldest first — closest to force-resolve, lowest remaining value.
-    candidates.sort((a, b) => a.openTimestamp - b.openTimestamp);
+    // 先按優先序（blind 最優先犧牲）, 再按最舊
+    candidates.sort((a, b) => ((typePriority[a.p.shadowType] ?? 99) - (typePriority[b.p.shadowType] ?? 99)) || (a.p.openTimestamp - b.p.openTimestamp));
     const maxEvict = Math.max(1, shadowEvictConfig.maxPerCall);
     let evicted = 0;
-    for (const victim of candidates) {
+    for (const { p: victim } of candidates) {
       if (evicted >= maxEvict) break;
+      // A1★(2026-09-11 attack): 唔可以用預先緩存嘅 idx——splice 後陣列收縮,
+      // 後續 idx 全部錯位（evict 錯對象/漏 evict）。即時 indexOf 先啱。
       const idx = this.positions.indexOf(victim);
       if (idx < 0) continue;
       this.positions.splice(idx, 1);
       this.shadowEvictCount++;
       evicted++;
-      log.info(`[shadow] EVICT blind ${victim.side.toUpperCase()} ${victim.symbol} (age=${Math.round((Date.now() - victim.openTimestamp) / 60000)}min, opened cycle ${victim.openCycle}) — made room for higher-value shadow (total evicts=${this.shadowEvictCount})`);
+      log.info(`[shadow] EVICT ${victim.shadowType} ${victim.side.toUpperCase()} ${victim.symbol} (age=${Math.round((Date.now() - victim.openTimestamp) / 60000)}min, opened cycle ${victim.openCycle}) — made room for higher-value shadow (total evicts=${this.shadowEvictCount})`);
     }
     return evicted > 0;
   }
@@ -516,13 +536,43 @@ export class ShadowTradeEngine {
     };
   }
 
+  /** v2.0.875-P9-qrl-pool-monopoly-attack（2026-09-11）: 統一 sanitize 入口——
+   *  positions 可能含 null/undefined/垃圾 element（持久化污染）——所有計數/遍歷
+   *  （countOpenBySide / countOpenGlobalBySide / countQRLShadows / getQRLShadowCount /
+   *  totalOpen ×5）必須經此, 唔可以直接 filter(p => p.status）。 */
+  private openPositions(): ShadowPosition[] {
+    return this.allPositions().filter(p => p.status === 'open');
+  }
+
+  /** v2.0.875-P9-qrl-pool-monopoly-attack（2026-09-11）: 全陣列 sanitize 入口——
+   *  positions 可能含 null/undefined/垃圾 element（持久化污染）——.find/.some/.filter
+   *  遍歷必須經此（唔可以直接 p.symbol/p.status 而 crash）。 */
+  private allPositions(): ShadowPosition[] {
+    return this.positions.filter(
+      (p): p is ShadowPosition => p !== null && p !== undefined && typeof p === 'object',
+    );
+  }
+
   /**
    * v2.0.873-P9-sell-unblock: per-side open count（只計指定 symbol×side 嘅 open）。
    * 分 side 計數係 sell 樣本餓死嘅根治——舊 code 用「全 symbol 合計」上限,
    * buy 佔滿 10 位後連 seeded sell 都開唔到（死亡螺旋）;而家 buy/sell 各自 10 位。
    */
   private countOpenBySide(symbol: string, side: 'buy' | 'sell'): number {
-    return this.positions.filter(p => p.symbol === symbol && p.status === 'open' && p.side === side).length;
+    return this.openPositions().filter(p => p.symbol === symbol && p.side === side).length;
+  }
+
+  /** v2.0.875-P9-qrl-pool-monopoly: 全局 per-side open 數（跨 symbol）——
+   *  per-side 配額嘅核心計數。garbage side → 0（保守）。 */
+  private countOpenGlobalBySide(side: 'buy' | 'sell'): number {
+    if (side !== 'buy' && side !== 'sell') return 0;
+    return this.openPositions().filter(p => p.side === side).length;
+  }
+
+  /** v2.0.875-P9-qrl-pool-monopoly: 該 side 全局配額未滿？
+   *  （buy/sell 各 maxOpenPerSide——qrl-buy 壟斷 60/60 後 sell 仍有 30 位出口） */
+  private canOpenSide(side: 'buy' | 'sell'): boolean {
+    return this.countOpenGlobalBySide(side) < SHADOW_CONFIG.maxOpenPerSide;
   }
 
   /**
@@ -576,13 +626,15 @@ export class ShadowTradeEngine {
     // 而家 buy/sell 各自計——sell 永遠有自己嘅樣本出口（buy 滿 10 時照開 sell）。
     const symBuyOpen = this.countOpenBySide(sym, 'buy');
     const symSellOpen = this.countOpenBySide(sym, 'sell');
-    const wantBuy = symBuyOpen < SHADOW_CONFIG.maxOpenPerSymbol;
-    const wantSell = symSellOpen < SHADOW_CONFIG.maxOpenPerSymbol;
+    // v2.0.875-P9-qrl-pool-monopoly: blind 都要守全局 per-side 配額（buy 滿 30 唔可以再開 buy——
+    // 但 sell 照開; 防止 blind buy 自己都變成壟斷者）。
+    const wantBuy = symBuyOpen < SHADOW_CONFIG.maxOpenPerSymbol && this.canOpenSide('buy');
+    const wantSell = symSellOpen < SHADOW_CONFIG.maxOpenPerSymbol && this.canOpenSide('sell');
     if (!wantBuy && !wantSell) return;
     // v2.0.861 不變式: blind 係最低優先——池滿時直接 reject, 唔可以 self-evict。
     // sell 樣本餓死由兩層解決: ①per-side 上限（此處）——buy 滿唔再擋 sell;
     //  ②seeded/aligned/statistical/qrl sell 撞池滿時先 evict buy-blind（高優先路徑）。
-    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    const totalOpen = this.openPositions().length;
     if (totalOpen + (wantBuy ? 1 : 0) + (wantSell ? 1 : 0) > SHADOW_CONFIG.maxTotalOpen) return;
 
     const ts = Date.now();
@@ -619,8 +671,8 @@ export class ShadowTradeEngine {
     const shortSL = freshSLPriceShort && freshSLPriceShort > 0 ? freshSLPriceShort : entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance);
     const shortTP = freshTPPriceShort && freshTPPriceShort > 0 ? freshTPPriceShort : entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance);
 
-    // Open shadow LONG（buy side 有位先開——per-side 上限）
-    const canOpenBuy = this.countOpenBySide(sym, 'buy') < SHADOW_CONFIG.maxOpenPerSymbol;
+    // Open shadow LONG（buy side 有位先開——per-symbol 上限 + v2.0.875 全局 per-side 配額）
+    const canOpenBuy = this.countOpenBySide(sym, 'buy') < SHADOW_CONFIG.maxOpenPerSymbol && this.canOpenSide('buy');
     if (canOpenBuy) {
       const longId = `shadow_${++this.idCounter}`;
       this.positions.push({
@@ -647,8 +699,9 @@ export class ShadowTradeEngine {
       log.debug(`[shadow] Opened BLIND LONG ${sym} at ${entryPrice.toFixed(2)} (SL=${longSL.toFixed(2)}, TP=${longTP.toFixed(2)})`);
     }
 
-    // Open shadow SHORT（sell side 有位先開——per-side 上限;buy 滿咗照樣俾 sell 樣本流入）
-    const canOpenSell = this.countOpenBySide(sym, 'sell') < SHADOW_CONFIG.maxOpenPerSymbol;
+    // Open shadow SHORT（sell side 有位先開——per-symbol 上限 + v2.0.875 全局 per-side 配額;
+    // buy 滿咗照樣俾 sell 樣本流入）
+    const canOpenSell = this.countOpenBySide(sym, 'sell') < SHADOW_CONFIG.maxOpenPerSymbol && this.canOpenSide('sell');
     if (canOpenSell) {
       const shortId = `shadow_${++this.idCounter}`;
       this.positions.push({
@@ -728,15 +781,17 @@ export class ShadowTradeEngine {
     const sym = symbol.toLowerCase();
 
     // Don't open if we already have a statistical shadow for this symbol+side+cycle.
-    const existing = this.positions.find(
+    const existing = this.allPositions().find(
       p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'statistical' && p.openCycle === cycle,
     );
     if (existing) return;
 
     // Check limits (statistical shadows share the same pool).
     // v2.0.873-P9-sell-unblock: per-side 上限——buy/sell 各自計, buy 佔滿唔再擋 sell。
+    // v2.0.875-P9-qrl-pool-monopoly: statistical 係 lean 驅動樣本（唔係壟斷者）——
+    // 唔受全局 per-side 配額擋（池滿由 evict 騰位）。配額只守樣本生成器（blind/qrl）。
     if (this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
-    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    const totalOpen = this.openPositions().length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
       // v2.0.861: priority eviction — a true-statistical shadow outranks the
       // oldest unevicted blind cold-start prior (0.1×). Evict → open.
@@ -826,17 +881,20 @@ export class ShadowTradeEngine {
     // Frequency cap: 1 seeded per symbol per cooldownCycles（防過度播種——用 openCycle
     // 判斷而唔係 status：一個 open 嘅 seeded 唔應該永久阻止新播種）
     const cool = Number.isFinite(cooldownCycles) && cooldownCycles >= 1 ? Math.floor(cooldownCycles) : 24;
-    const recentSeeded = this.positions.some(
+    const recentSeeded = this.allPositions().some(
       p => p.symbol === sym && p.shadowType === 'seeded' && (cycle - p.openCycle) < cool,
     );
     if (recentSeeded) return;
 
     // Limits (share the same pool as other shadows)
+    // v2.0.875-P9-qrl-pool-monopoly: seeded 係強制播種（樣本生成目的本身）——
+    // 唔受全局 per-side 配額擋（配額只守 blind/qrl——防無差別壟斷）。
+    // seeded sell 即使 bypass per-symbol, 都要守全局池（total 60）+ 自己嘅 cooldown 限頻。
     // v2.0.873-P9-sell-unblock（方案 B）: seeded SELL bypass per-symbol 上限——
     // sell 樣本餓死嘅根治: 跌市強制播種嘅 sell 唔可以被 buy 佔位擋住（只受全局池+cooldown）。
     // seeded BUY 照舊 per-side 上限（buy 樣本唔缺, 唔需要 bypass）。
     if (side !== 'sell' && this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
-    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    const totalOpen = this.openPositions().length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
       // sell 需求 → 優先 evict buy-blind（sell 樣本要有出口; 唔可以 evict 走僅餘 sell）
       if (!this.evictOldestBlindForRoom(side === 'sell' ? 'buy' : undefined)) return;
@@ -913,15 +971,18 @@ export class ShadowTradeEngine {
     const sym = symbol.toLowerCase();
 
     // Don't open if we already have a Q-RL shadow for this symbol+side+cycle.
-    const existing = this.positions.find(
+    const existing = this.allPositions().find(
       p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'qrl' && p.openCycle === cycle,
     );
     if (existing) return;
 
     // Check limits (Q-RL shadows share the same pool).
     // v2.0.873-P9-sell-unblock: per-side 上限——buy/sell 各自計, buy 佔滿唔再擋 sell。
+    // v2.0.875-P9-qrl-pool-monopoly: qrl 都要守全局 per-side 配額——qrl-buy 壟斷 60/60
+    // 就係因為冇 per-side 限制; 而家 buy 最多 30, sell 30 位流出俾其他路徑。
+    if (!this.canOpenSide(side)) return;
     if (this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
-    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    const totalOpen = this.openPositions().length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
       // v2.0.861: priority eviction — the Q-RL expectancy A/B arm outranks the
       // oldest unevicted blind cold-start prior. Evict → open.
@@ -973,9 +1034,23 @@ export class ShadowTradeEngine {
   /** Dedup check for Q-RL shadows (Phase 1.5). */
   hasQRLShadow(symbol: string, side: 'buy' | 'sell', cycle: number): boolean {
     const sym = symbol.toLowerCase();
-    return this.positions.some(
+    return this.allPositions().some(
       p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'qrl' && p.openCycle === cycle,
     );
+  }
+
+  /** v2.0.875-P9-qrl-pool-monopoly（方案 C）: 該 symbol 而家 open 緊幾多個 qrl shadow。
+   *  Q-RL 已證偽(ρ=+0.0064)唔可以壟斷 pool——per-symbol 封頂 3。
+   *  garbage symbol → 0（保守）。 */
+  countQRLShadows(symbol: string): number {
+    const sym = typeof symbol === 'string' ? symbol.toLowerCase() : '';
+    if (!sym) return 0;
+    return this.openPositions().filter(p => p.symbol === sym && p.shadowType === 'qrl').length;
+  }
+
+  /** v2.0.875-P9-qrl-pool-monopoly（方案 C）: 全局 open qrl 總數（用嚟確認 qrl 唔超 40% pool）。 */
+  getQRLShadowCount(): number {
+    return this.openPositions().filter(p => p.shadowType === 'qrl').length;
   }
 
   /**
@@ -1037,13 +1112,15 @@ export class ShadowTradeEngine {
     const sym = symbol.toLowerCase();
 
     // Don't open if we already have an aligned shadow for this symbol+side+cycle
-    const existing = this.positions.find(
+    const existing = this.allPositions().find(
       p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'aligned' && p.openCycle === cycle,
     );
     if (existing) return;
 
     // Check limits (aligned shadows count toward the same pool).
     // v2.0.873-P9-sell-unblock: per-side 上限——buy/sell 各自計, buy 佔滿唔再擋 sell。
+    // v2.0.875-P9-qrl-pool-monopoly: aligned 係 LLM lean 驅動樣本（最重要嘅「要嘅樣本」）——
+    // 唔受全局 per-side 配額擋（池滿由 evict 騰位）。配額只守樣本生成器（blind/qrl）。
     if (this.countOpenBySide(sym, side) >= SHADOW_CONFIG.maxOpenPerSymbol) return;
     // v2.0.861: aligned shadows previously had NO global total cap — only
     // per-symbol. With LLM leans this rarely matters, but it is a latent
@@ -1051,7 +1128,7 @@ export class ShadowTradeEngine {
     // forever since aligned shadows never self-evict). Enforce the shared cap
     // with priority eviction: aligned (Q-RL's only live feed, v2.0.855)
     // outranks the oldest unevicted blind cold-start prior.
-    const totalOpen = this.positions.filter(p => p.status === 'open').length;
+    const totalOpen = this.openPositions().length;
     if (totalOpen >= SHADOW_CONFIG.maxTotalOpen) {
       // v2.0.873-P9-sell-unblock: sell 需求 → 優先 evict buy-blind（sell 樣本要有出口）
       if (!this.evictOldestBlindForRoom(side === 'sell' ? 'buy' : undefined)) return;
@@ -1463,7 +1540,7 @@ export class ShadowTradeEngine {
    * Build agent context string showing shadow trade results.
    */
   getContext(): ShadowTradeContext {
-    const openCount = this.positions.filter(p => p.status === 'open').length;
+    const openCount = this.openPositions().length;
     const recent = this.recentResults.slice(-SHADOW_CONFIG.contextRecentCount);
 
     const parts: string[] = [
@@ -1607,7 +1684,7 @@ export class ShadowTradeEngine {
    * (由 index.ts 傳入)——「統計 lean 光譜」收據——日後 Shadow 層嚴格驗證
    * (per-gate 分辨力,2392 筆/日,數小時達標)唔使等 real 稀疏樣本。
    */
-  private snapshotSelfStats(sym: string, side: 'buy' | 'sell', olrPwin?: number | null): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } {
+  private snapshotSelfStats(sym: string, side: 'buy' | 'sell', olrPwin?: number | null): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null; entryBetDoubleEligible?: boolean } {
     // V1(attack-round, 2026-09-09): sym garbage(Symbol/null/空/數字)唔可以入 normalizeSymbol——
     // String(Symbol) 會 TypeError crash。同 openShadowTrades 嘅 symbol guard 一致。
     if (typeof sym !== 'string' || sym.trim().length === 0) return {};
@@ -1620,14 +1697,17 @@ export class ShadowTradeEngine {
       if (olrPwin === null) return { entryOlrPWinAtOpen: null };
       return {};
     };
+    // SCL(bet-double): 「最近一筆同 symbol 同 side 蝕」係獨立 lean 收據(唔受 cell 樣本影響)——
+    // 同 OLR 一樣照記;主神規則「贏單後恢復 1×」由 recentSameSideLoss 內 pnl>=0 → false 實現。
+    const betDoubleField = (): { entryBetDoubleEligible?: boolean } => ({ entryBetDoubleEligible: this.recentSameSideLoss(sym, side) });
     const cell = this.statsBySymbolSide.get(`${normalizeSymbol(sym)}|${side}`);
     // ATTACK-round: state-injection guard — NaN/negative/infinite cell must NOT
     // produce a poisoned record (NaN WR / negative n / 1e308 EV).
-    if (!cell || !Number.isFinite(cell.wins) || !Number.isFinite(cell.losses) || cell.wins < 0 || cell.losses < 0) return olrField();
+    if (!cell || !Number.isFinite(cell.wins) || !Number.isFinite(cell.losses) || cell.wins < 0 || cell.losses < 0) return { ...olrField(), ...betDoubleField() };
     const n = cell.wins + cell.losses;
     // n 本身都要 finite: 1e308+1e308 = Infinity(Number.MAX_VALUE 爆)——cap 1e9(統計不可能超)
-    if (!Number.isFinite(n) || n < 5 || n > 1e9) return {};
-    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } = {
+    if (!Number.isFinite(n) || n < 5 || n > 1e9) return { ...betDoubleField() };
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null; entryBetDoubleEligible?: boolean } = {
       entryShadowWRAtOpen: cell.wins / n,
       entryShadowNAtOpen: Math.round(n),
     };
@@ -1650,7 +1730,31 @@ export class ShadowTradeEngine {
     } catch { /* 唔影響收據——verdict 缺省 neutral */ }
     // SCL: OLR pwin 收據(clamp [0,1],garbage 唔入)——記錄用嚟 Shadow 層重驗 OLR 分辨力(零決策)。
     Object.assign(out, olrField());
+    // SCL(bet-double): 收據合併——「蝕後重開」條件(零決策, 純記錄)。
+    Object.assign(out, betDoubleField());
     return out;
+  }
+
+  /** P9-bet-double(2026-09-11): 最近一筆 resolved 同 symbol 同 side trade 係咪蝕——
+   *  SCL 收據(「蝕後重開」Shadow 層驗證條件)。主神規則: 贏單後恢復 1×
+   *  （pnl>=0 → false）;平手 0 → false;垃圾/無樣本 → false（保守）。 */
+  private recentSameSideLoss(sym: string, side: 'buy' | 'sell'): boolean {
+    try {
+      const sN = typeof sym === 'string' ? sym.toLowerCase() : '';
+      if (!sN || (side !== 'buy' && side !== 'sell')) return false;
+      for (let i = this.recentResults.length - 1; i >= 0; i--) {
+        const r = this.recentResults[i];
+        if (!r || typeof r !== 'object') continue;
+        const rSym = typeof r.symbol === 'string' ? r.symbol.toLowerCase() : '';
+        if (rSym !== sN) continue;
+        const rSide = typeof r.side === 'string' ? r.side.toLowerCase() : '';
+        if (rSide !== side) continue;
+        const p = r.pnlPct;
+        if (typeof p !== 'number' || !Number.isFinite(p)) return false;
+        return p < 0;
+      }
+      return false;
+    } catch { return false; } // 任何異常 → 保守 false（唔倍注）
   }
 
   /**
@@ -1658,10 +1762,10 @@ export class ShadowTradeEngine {
    * 'banana'/1e308）唔可以直接 spread 入 recentResults（string spread 會產生數字 key 污染）。
    * 白名單抽 3 個 field + finite 檢查 + clamp。治本: 寫入前 sanitize。
    */
-  private safeEntryStats(s: unknown): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } {
+  private safeEntryStats(s: unknown): { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null; entryBetDoubleEligible?: boolean } {
     if (!s || typeof s !== 'object' || Array.isArray(s)) return {};
-    const e = s as { entryShadowWRAtOpen?: unknown; entryShadowNAtOpen?: unknown; entryShadowPnlSumAtOpen?: unknown; entryShadowGateVerdictAtOpen?: unknown; entryOlrPWinAtOpen?: unknown };
-    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null } = {};
+    const e = s as { entryShadowWRAtOpen?: unknown; entryShadowNAtOpen?: unknown; entryShadowPnlSumAtOpen?: unknown; entryShadowGateVerdictAtOpen?: unknown; entryOlrPWinAtOpen?: unknown; entryBetDoubleEligible?: unknown };
+    const out: { entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; entryShadowPnlSumAtOpen?: number; entryShadowGateVerdictAtOpen?: 'block' | 'boost' | 'neutral'; entryOlrPWinAtOpen?: number | null; entryBetDoubleEligible?: boolean } = {};
     if (Number.isFinite(e.entryShadowWRAtOpen) && (e.entryShadowWRAtOpen as number) >= 0 && (e.entryShadowWRAtOpen as number) <= 1) {
       out.entryShadowWRAtOpen = e.entryShadowWRAtOpen as number;
     }
@@ -1680,6 +1784,10 @@ export class ShadowTradeEngine {
       out.entryOlrPWinAtOpen = Math.min(Math.max(e.entryOlrPWinAtOpen as number, 0), 1);
     } else if (e.entryOlrPWinAtOpen === null) {
       out.entryOlrPWinAtOpen = null;
+    }
+    // SCL(bet-double): boolean 白名單——只有 true/false 真值先入(垃圾/string/1 唔准入)
+    if (typeof e.entryBetDoubleEligible === 'boolean') {
+      out.entryBetDoubleEligible = e.entryBetDoubleEligible;
     }
     return out;
   }
@@ -1988,7 +2096,7 @@ export class ShadowTradeEngine {
    */
   hasAlignedShadow(symbol: string, cycle: number): boolean {
     const sym = symbol.toLowerCase();
-    return this.positions.some(
+    return this.allPositions().some(
       p => p.symbol === sym && p.status === 'open' && p.shadowType === 'aligned' && p.openCycle === cycle,
     );
   }
@@ -1999,7 +2107,7 @@ export class ShadowTradeEngine {
    */
   hasStatisticalShadow(symbol: string, side: 'buy' | 'sell', cycle: number): boolean {
     const sym = symbol.toLowerCase();
-    return this.positions.some(
+    return this.allPositions().some(
       p => p.symbol === sym && p.status === 'open' && p.side === side && p.shadowType === 'statistical' && p.openCycle === cycle,
     );
   }

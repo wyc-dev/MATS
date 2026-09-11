@@ -4,7 +4,66 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
-## v2.0.875-DAY-SYNC（2026-09-10/11——全日戰績總覽：SE 生態修復 + 檢討系統 + E3-Explore, 主神「update 三文檔 + commit + push」）
+## v2.0.875-P9-qrl-pool-monopoly-attack（2026-09-11：主神「不擇手段攻擊啱啱修葺嘅 qrl-pool-monopoly 代碼」——紅先 4 fail → 綠後 12/12, 3 真漏洞全修）
+
+> 攻擊對象: qrl-pool-monopoly 三層修復(A per-side 配額 / B evict 優先序 / C qrl 封頂)週邊。併發/狀態注入/持久化污染/邊界向量。**3 個真漏洞全修**——其中 A2 係 CRITICAL(成個 shadow engine crash)。全量 **4714 pass / 0 fail, exit 0**, tsc clean。
+
+### 真漏洞（紅先暴露）
+| # | 漏洞 | 嚴重 | 殺傷 | 修復 |
+|:--|:--|:--|:--|:--|
+| **A1** | **evict cache-idx 錯位**——`evictOldestBlindForRoom` 用預先緩存嘅 `idx`,`splice` 後陣列收縮 → 後續 victim 嘅 idx 全部錯位(evict 錯對象/漏 evict)| 🔴 HIGH | maxPerCall>1 時第二個 victim 錯位 | 即時 `indexOf`(每次 loop 重新搵, 唔用 cache)|
+| **A2** | **null element 持久化污染 → 全 engine crash**——positions 含 `null`(state 檔損壞)時 `getQRLShadowCount`/`openPositions`/`.find`/`.some` 直接 access `p.status`/`p.symbol` → TypeError | 🔴 **CRITICAL** | crash 殺死 shadow 開倉 + OLR 學習停擺 | 統一 `allPositions()` sanitize helper(空/undefined/非 object 先 drop)——**全部** `.find`/`.some`/`.filter` 遍歷×8 處經佢 |
+| **A5** | **per-side 配額漏接**——`wantBuy` 加咗全局配額, 但實際開倉判斷 `canOpenBuy = countOpenBySide < maxOpenPerSymbol` **冇加 global check** → blind buy 喺 buy 滿 30 時照開(壟斷回歸) | 🔴 HIGH | 配額形同虛設 | `canOpenBuy`/`canOpenSell` 加 `canOpenSide()`(samples 生成器 5 路徑全守全局配額)|
+
+### 防禦驗證（綠後）
+- 併發 ×100(countOpenGlobal/countQRL/mutate/checkPositions 混合)→ 一致唔 crash · Symbol/null/undefined/banana shadowType → 保守唔 evict · NaN/Infinity/0 SL-TP-high-low → barrier 比較唔 crash 唔誤判 · null element → 全部遍歷照常 · maxPerCall=2 多 victim → 最舊 2 個正確犧牲(b_2 保留)· all-barrier-hit → 0 evict 唔 crash · openTimestamp 全 NaN/相等 → sort 穩定 · qrl counter garbage 全形態 → 0 · side 壟斷對抗(買滿 30 buy 唔開/sell 照開;sell 滿 30 鏡像)
+
+### 效果
+- shadow pool 壟斷修復(A/B/C)而家堅固: 唔會被持久化污染 crash、唔會配額漏接、唔會 evict 錯位——**sell 樣本回流管道完整通電**。P15(P16)幾小時後重跑驗證 sell 回流。
+- 測試: 新 `tests/qrl-pool-monopoly-attack.test.ts`(12)——紅先 4 fail 證實漏洞 → 綠後 12/12; 全量 **4714 pass / 0 fail, exit 0**(4702 → +12); tsc clean。
+- ⚠️ **需重啟 backend 生效**(同 qrl-pool-monopoly 主修復一齊)。
+
+---
+
+## v2.0.875-P9-qrl-pool-monopoly（2026-09-11：主神「幾個 trend 都 miss 咗食唔到」→ 根因 Q-RL 壟斷 shadow pool → sell 樣本餓死 → A/B/C 三層修復）
+
+> 背景: BTC 09-04→11 跌 3.9% 零 SELL、DRAM/BNB/SP500/SNDK sell edge(+13.1/+8.5/+4.9/+4.6%)全部空倉。根因鏈: ①Q-RL 表毒化(buy 20,738 visits vs sell 3,347, 6:1——sell Q 一直負 → lean 永遠 buy) ②qrl arm 每 cycle 開 buy → **60/60 pool 全 qrl-buy, sell=0** ③seeded sell 嘅 `evictOldestBlindForRoom` 只識 evict blind——但 pool 冇 blind → 播種永久卡死 ④sell 樣本餓死 → agents 冇 lean → 錯過跌勢。實錘: recentResults 200 筆 qrl 199(99.5%)、buy 197/sell 3;sell 樣本得 3 筆但 avg **+3.64%**(餓死嘅係正 edge 樣本);qrl-buy 197 筆 avg **−17.95%**(壟斷緊嘅係垃圾樣本)。
+
+### 三層修復（production grade, 主神批准 A+B+C 一齊）
+- **A. Pool per-side 配額**: `SHADOW_CONFIG.maxOpenPerSide: 30`(buy/sell 各 30)+ `countOpenGlobalBySide()` + `canOpenSide()`——**樣本生成器(blind/qrl)受配額**;aligned/statistical/seeded(lean 驅動/播種——「要嘅樣本」)唔受擋。
+- **B. Evict 優先序升級**: `evictOldestBlindForRoom` → blind(最低)→ **qrl(已證偽 ρ=+0.0064, 可犧牲)** → aligned;seeded 永不 evict;barrier-hit 保護保留。sell 需求 → 優先 evict buy 側。
+- **C. Q-RL arm 封頂**: `countQRLShadows(sym)` per-symbol ≤3 + `getQRLShadowCount()` 全局 ≤24(≈40% pool);sell 側樣本 <20 時 lean 唔 robust → qrl 自然停(唔會喺無 sell 證據下亂開)。
+
+### 驗證
+- **新測試 11**(`tests/qrl-pool-monopoly.test.ts`): per-side 配額 ×5(壟斷池 sell 出口 / qrl buy 擋 30 / aligned 唔受擋)/ evict 優先序 ×3(qrl 可犧牲 / blend 池先 evict blind / seeded 永不 evict)/ qrl 封頂 counter ×3 + garbage 防空。
+- **舊測試更新 5**(shadow-evict-attack ×3 + attack2 ×2): 「never evicts qrl」→「evicts qrl when sell needs room」(方案 B 核心);壟斷池場景(fillBuyMonopoly)取代平衡池(舊場景已唔反映「qrl-buy 壟斷」真實病例)。
+- **全量 4702 pass / 0 fail, exit 0**(4691 → +11);tsc clean。
+- ⚠️ **需重啟 backend 生效**。
+- ⚠️ Baseline(修復前): sell:buy = **0.170** / qrl 佔比 **73.5%** / open sell 8 / sell n=29 / **sell EV −0.44%(負!——回流初期樣本, 需幾小時後重驗)**。
+
+### 跟進(主神「每 3 分鐘 cycle, 幾個鐘就可以再驗證」)
+- `scripts/p15-sell-recovery-verify.ts` **pre-registered 門檻**: [V1] sell:buy ≥0.2 / [V2] qrl <40% / [V3] open sell ≥1 / [V4] sell n≥10——**修復後幾小時重跑**(shadow 層 2392 筆/日)。
+- ⚠️ 誠實界線: baseline sell EV 負——sell 樣本回流係第一步, 但「回流嘅 sell 有冇 edge」由幾小時後嘅樣本先答到;若回流後 sell 仍負 → 食跌勢要再查方向 lean(賣 rip 先啱, 唔係追跌)。
+
+---
+
+## v2.0.875-P9-bet-double（2026-09-11：主神「蝕錢後注碼 ×2, 贏咗恢復 1×」構想 → V3 邏輯實驗三關全過 → 實裝 + Shadow SCL 收據）
+
+> 主神構想 Martingale 單次版 → 本座 pre-registered 邏輯實驗(296 筆 realTrades, 2026-08-12→09-11): **V1 全域倍注(字面版)FAIL**——兩半不穩(後40 61.2 < baseline 93.9)、子集 EV +0.20%無分辨力; **V3 同symbol同方向上一筆蝕→下一筆×2 勝出**——子集 EV **+1.25%/筆**(vs 全樣本 +0.74%)、**8/8 symbol 乾淨**、outlier 留一穩健、threshold sweep **完美單調**(×1.25→×3.0)、**time-locked holdout**(09-05 起 51 筆)**+25.5pp ✅**。Confound 拆解: 真 edge 源於「同symbol同向 re-entry + 現行 gate 篩選」(倍注搭順風車),但「蝕後」(1.25%)vs「贏後」(0.47%)對稱 ±0.39pp——「蝕後」條件有獨立分辨力。**Phase 4 實盤可達性**(與現行防禦交互): 94 筆可達倍注(Δ+327.5pp)/ 18 筆被連蝕 cooldown 攔截(負貢獻——正確斬鏈)/ 27 筆被 tail-watchdog 中和(net ×1)——**實盤可達 Δ+140.7pp/30日 in-sample**。
+
+### 實裝（production grade——純函數 + 單一接入點 + env 回滾）
+- **`src/analysis/position-size.ts`**: `shouldBetDouble(side, prev, mult, cap)` + `applyBetDoubleSize()` 純函數——side 白名單 / own-property+try-catch(getter bomb 免疫)/ pnl garbage → false / mult clamp [1,2] / cap clamp ≤0.5 / **只放大唔收縮**(floor 高過 cap 時失效但唔誤縮)。
+- **接入點**: `index.ts` `applyEntryConvictionGates` 尾部(floor 後、return 前)——所有 shrink gate 之後;執行層 tail-watchdog/anti-trend ×0.5 與倍注疊乘中和(**倍注唔 cover 風險降注**)。新 `prevSameSideTrade()`(portfolio realTrades 反序查最近同symbol同side);倍注前 check `shouldBlockChaseCooldown`(連蝕第三筆天然斬鏈,唔製造假 log)。
+- **主神規則內建**: 贏單後恢復 1×(prev pnl>=0 → false, 每次獨立判斷——連蝕第 2 筆都係 ×2 唔係 ×4, 無狀態累積)。
+- **env 回滾**: `BET_DOUBLE_ENABLED`(預設 off——等 shadow 驗證先 enable)/ `BET_DOUBLE_MULT`(clamp 1-2)/ `BET_DOUBLE_CAP`(clamp ≤0.5, 預設 0.20——同 winner-boost cap 對稱)。
+- **Shadow SCL 收據(落 shadow)**: `shadow-trade-engine.ts` `entryStats` 加 `entryBetDoubleEligible?: boolean` + `recentSameSideLoss()`(recentResults 反序查同symbol同side蝕)+ snapshotSelfStats 獨立 lean 收據(唔受 cell 樣本影響——V5 語義同 OLR 一致)+ safeEntryStats boolean 白名單——由今日起 shadow 開倉記錄「蝕後重開」條件, 樣本幾小時達標 → P15 驗證。
+
+### 驗證
+- 新測試 60(bet-double 34 + shadow-receipt 17 + 2 舊斷言更新為新契約)+ 全量 **4691 pass / 0 fail, exit 0**; tsc clean。實驗 script `scripts/p9-bet-double-experiment.ts` read-only 可重跑(P1-P4 全 phase)。
+- ⚠️ **需重啟 backend 生效**(live 進程用舊 code——倍注 env 預設 off, 但 shadow SCL 收據要新 code 先開始記錄)。
+- ⚠️ 誠實界線: +140.7pp 係 in-sample counterfactual 上限(未計 correlation-budget 多倉再打折); 真實 edge 源於 re-entry+gate 篩選, 倍注係加速器唔係新 alpha。
+
+---
 
 > 今日(主神日睇多輪「wtf/still wtf/死埋/仲係空倉」)全部 major 改動總覽——詳細每項喺下方各自 entry / commit message。全量 **4642 pass / 0 fail / exit 0**、tsc clean。
 

@@ -24,7 +24,7 @@ import { QRLTable, qrlDirectionConfig, qrlExpectancyMultiplier, type AlphaDiscov
 import { MetaCalibrator } from './evolution/meta-calibrator.ts';
 import { SelfImprover } from './evolution/self-improver.ts';
 import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-learner.ts';
-import { applyPositionSizeFloor, isTrendFollowingSell } from './analysis/position-size.ts';
+import { applyPositionSizeFloor, isTrendFollowingSell, shouldBetDouble, applyBetDoubleSize, type PrevTradeRef } from './analysis/position-size.ts';
 import { buildCloseReview, buildMarketReview, buildMissedEdge, appendInvestigation, writeCurrentInvestigationSection, appendOrMergeInvestigation } from './analysis/cycle-reviewer.ts';
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
@@ -5917,6 +5917,25 @@ ${recentExamples}
     return classifyPersistenceDual(dual);
   }
 
+  /** P9-bet-double（2026-09-11）: 最近一筆已 close 同 symbol 同 side trade（無 → null）。
+   *  主神「做咗一口贏嘅 trade 之後恢復 1×」嘅基礎——每次新倉獨立查最近一筆,
+   *  win 即自然 reset。garbage/異常 record 保守跳過（唔可以令 prev 錯配）。 */
+  private prevSameSideTrade(sym: string, side: 'buy' | 'sell'): PrevTradeRef | null {
+    try {
+      const symN = normalizeSymbol(sym);
+      const closed = this.portfolio.getClosedRealTrades();
+      for (let i = closed.length - 1; i >= 0; i--) {
+        const t = closed[i] as { symbol?: unknown; side?: unknown; pnlPct?: unknown } | null | undefined;
+        if (!t || typeof t !== 'object') continue;
+        if (typeof t.symbol !== 'string' || normalizeSymbol(t.symbol) !== symN) continue;
+        const ts = typeof t.side === 'string' ? t.side.toLowerCase() : '';
+        if (ts !== side) continue;
+        return { side: t.side, pnlPct: t.pnlPct };
+      }
+      return null;
+    } catch { return null; } // portfolio 不可用/任何異常 → 唔倍注（保守）
+  }
+
   private applyEntryConvictionGates(
     sym: string,
     action: 'buy' | 'sell',
@@ -6113,6 +6132,38 @@ ${recentExamples}
           log.info(`🟦 [pos-fixed] ${sym}: size ${(Number.isFinite(result.size) ? (result.size * 100).toFixed(1) : '?')}% → floor ${(floored * 100).toFixed(1)}% (用戶設定 ground truth)`);
           result.size = floored;
         }
+      }
+      // v2.0.875-P9-bet-double（2026-09-11 主神批准——V3 邏輯實驗 296 筆三關全過）:
+      // 同 symbol 同方向上一筆 close 蝕 → 下一筆同向倍注 ×2（cap 0.20）。
+      // 主神規則: 做咗一口贏嘅 trade 之後恢復返 1×（prev pnl>=0 → 唔觸發）——每次
+      // 獨立判斷最近一筆，win 即自然 reset；連蝕第 2 筆都係 ×2 唔係 ×4（無狀態累積）。
+      // 實證: 子集 EV +1.25%/筆 vs 全樣本 +0.74%; 8/8 symbol 乾淨; holdout +25.5pp;
+      // 實盤可達(含 cooldown 攔截 + watchdog 中和) +140.7pp/30日。
+      // 接入位置: 所有 shrink gate 之後（floor 先——用戶 ground truth 下限確保）,
+      // 然後 return; 執行層 tail-watchdog ×0.5 / anti-trend ×0.5 與倍注疊乘中和
+      // （net ×1——倍注唔 cover 風險降注）。
+      // env: BET_DOUBLE_ENABLED=true 啟用（預設 off——等 shadow 層樣本驗證後主神先 enable）;
+      //      BET_DOUBLE_MULT（clamp 1-2, 預設 2.0）/ BET_DOUBLE_CAP（clamp ≤0.5, 預設 0.20）。
+      if (process.env['BET_DOUBLE_ENABLED'] === 'true' && !result.blocked) {
+        try {
+          // 連蝕 cooldown 已 block（同 symbol 同向連蝕 ≥N → 6h）→ 唔倍注
+          // （executeTrade 層都會 block——唔好製造「倍注 log 但開唔到」假象; 連蝕第 3 筆天然斬鏈）
+          const bdKey = `${normalizeSymbol(sym)}:${action}`;
+          const bdSt = this.cooldownTracker.get(bdKey);
+          const bdBlocked = bdSt ? shouldBlockChaseCooldown(bdSt, Date.now()).blocked : false;
+          if (!bdBlocked) {
+            const prev = this.prevSameSideTrade(sym, action);
+            const betMult = Number(process.env['BET_DOUBLE_MULT']);
+            const betCap = Number(process.env['BET_DOUBLE_CAP']);
+            if (prev && shouldBetDouble(action, prev, betMult, betCap)) {
+              const newSize = applyBetDoubleSize(result.size, betMult, betCap);
+              if (newSize > result.size + 1e-9) {
+                log.info(`🎰 [bet-double] ${sym} ${action}: 上筆同向蝕 ${(((prev as Record<string, unknown>)['pnlPct'] as number) * 100).toFixed(2)}% → size ${(result.size * 100).toFixed(1)}% → ${(newSize * 100).toFixed(1)}%（蝕後倍注, cap ${betCap > 0 && betCap <= 0.5 ? betCap : 0.2}）`);
+                result.size = newSize;
+              }
+            }
+          }
+        } catch { /* 非致命——倍注失敗照原 size */ }
       }
       return result;
     } catch { return { confidence, blocked: false, reason: null, size: sizePct }; }
@@ -9960,7 +10011,15 @@ ${recentExamples}
                 ? qrlCtx.features
                 : { ...mktFeatures, regimeOrdinal: regimeToOrdinal(mktState?.regime ?? 'unknown'), ...this.candleMomentumFeatures(mktSym) }; // P28-B: 唔再寫死 0
               const qrlLean = this.qrlTable.getDirectionLean(qrlFeatures, qrlDirectionConfig.minSamples);
-              if (qrlLean.robust && qrlLean.lean !== 'neutral' && !this.shadowEngine.hasQRLShadow(mktSym, qrlLean.lean, this.totalCycles)) {
+              // v2.0.875-P9-qrl-pool-monopoly（方案 C）: Q-RL 已證偽(ρ=+0.0064)——
+              // 唔可以壟斷 pool（之前 60/60 qrl-buy → sell 樣本餓死 → agents 冇 lean 錯過跌勢）。
+              // 封頂: per-symbol qrl open ≤ 3 + 每 cycle 最多 1 個新 qrl 倉（全部 market 攤分）
+              // + sell side 樣本 < minSamples 時 lean 已唔 robust（getDirectionLean 兩側都要 ≥20）
+              // ——即 sell 餓死時 qrl 自然停,唔會喺無 sell 證據下亂開。
+              const qrlPerSym = this.shadowEngine.countQRLShadows(mktSym);
+              const qrlGlobal = this.shadowEngine.getQRLShadowCount();
+              const qrlCapReached = qrlPerSym >= 3 || qrlGlobal >= 24; // 8 symbol × 3 ≈ 40% pool
+              if (qrlLean.robust && qrlLean.lean !== 'neutral' && !this.shadowEngine.hasQRLShadow(mktSym, qrlLean.lean, this.totalCycles) && !qrlCapReached) {
                 const qrlSlPrice = qrlLean.lean === 'buy'
                   ? mktPrice * (1 - config.risk.stopLossPct)
                   : mktPrice * (1 + config.risk.stopLossPct);
