@@ -4,6 +4,29 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.875-P9-ops（2026-09-11：Git 歷史私密清除 + Telegram Bridge 409 三源頭修復 + bet-double/qrl-pool-monopoly 驗證就緒）
+
+> 主神「唔好俾人睇到」+「TG 409 搞掂埋佢」——本 entry 記錄非交易邏輯嘅 ops 層面操作(bet-double 同 qrl-pool-monopoly 嘅詳細見各自 entry)。全量 **4714 pass / 0 fail, exit 0**, tsc clean。
+
+### ① Git 私密檔案清除（不可逆, 主神批准）
+- **HERDR_AGENTS.md**（含 Yuki 身份指引 + 主神內部流程）: 歷史 3 commits 出現——`git filter-branch --index-filter 'git rm --cached HERDR_AGENTS.md'` 全歷史重寫(1486 commits)+ reflog expire + `git gc --prune=now --aggressive` → **歷史 0 存在**; force push 覆寫 remote（`--force`, 不可逆, 主神明確下令）。
+- **AGENT_PROMPT.md**（gitignore 內「Internal documents」分類但一直 track 咗）: `git rm --cached` 解除 track（本地保留）——gitignore 對已 track 檔無效, 唔 `rm --cached` 就永遠照 commit（今次修正）。
+- **K.md**（AttnRes 技術文檔, 無主神私密）: 保留 track（技術參考）。
+- 新 .gitignore 加 `HERDR_AGENTS.md`。
+- ⚠️ Agent 紀律: AGENT_PROMPT.md / HERDR_AGENTS.md 係本地任務書——**永遠唔可以 git add 返**(gitignore + untrack 已鎖)。
+
+### ② Telegram Bridge 409 三源頭修復（`~/.pi/agent/extensions/telegram-bridge/index.ts`, pi 層）
+- **根因**: 多個 poller 同一個 bot token getUpdates。①herdr PI(26494) 9/11 claim MASTER ②主 PI(96994) 9/7 啟動時 shared-session 未建 → legacy-MASTER 唔寫 lock → 雙 MASTER 互踢 ③MATS backend discoverChatId(已排除——手動 API 唔自動)。
+- **修復**: ①kill herdr PI(herdr 無 respawn) ②extension `getTelegramRole()` 加 **HERDR_ENV=1 → 自動 slave**(herdr 開嘅 coding agent 永遠唔搶 TG——主神「只需一個 PI 應機」) ③pollLoop 收 409 → **自動 re-claim**: 唔係自己 lock holder → 停 poll 讓位; 係自己 → killExistingConnections 強制 reset 收斂。
+- **驗證**: esbuild bundle OK; 收斂後三次採樣 96994 穩定 1 條 ESTABLISHED no more 409; herdr agents=0。
+- ⚠️ 主 PI 重啟先完整 load 新 code（而家已 reload——log 見「still master — forcing connection reset」= 新分支生效）。
+
+### ③ Pending 驗證就緒（主神「每 3 分鐘 cycle, 幾個鐘就夠」）
+- `scripts/p15-sell-recovery-verify.ts` pre-registered 門檻: sell:buy≥0.2 / qrl<40% / open sell≥1 / sell n≥10——**修復後幾小時重跑**（baseline: sell:buy=0.170, qrl=73.5%, sell EV −0.44%）。
+- `scripts/p9-bet-double-experiment.ts` read-only 可重跑（V3 三關 + Phase 4 實盤可達性）。
+
+---
+
 ## v2.0.875-P9-qrl-pool-monopoly-attack（2026-09-11：主神「不擇手段攻擊啱啱修葺嘅 qrl-pool-monopoly 代碼」——紅先 4 fail → 綠後 12/12, 3 真漏洞全修）
 
 > 攻擊對象: qrl-pool-monopoly 三層修復(A per-side 配額 / B evict 優先序 / C qrl 封頂)週邊。併發/狀態注入/持久化污染/邊界向量。**3 個真漏洞全修**——其中 A2 係 CRITICAL(成個 shadow engine crash)。全量 **4714 pass / 0 fail, exit 0**, tsc clean。

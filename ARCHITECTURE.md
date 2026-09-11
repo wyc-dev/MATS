@@ -29,6 +29,7 @@
 | P12 | **BUY 贏單 let-run(A/B/C, 2026-09-09)**: 大 giveback 2.4pp/筆——D(shadow close-path 幾小時樣本)重放後裁決: A 動態閾值(dip=mfeP90) / B 保守(MFE>2×中位) / C edge 條件(買 tip 下 mfeP90——最貼 EDGE-FIRST) | Close-Path Recorder(real + shadow resolve 收集)——shadow 幾小時累積 | shadow 樣本≥30 → p9-let-run-replay → 831 裁決 |
 | P15 | **bet-double 倍注 Shadow 層驗證(2026-09-11 新增)**: 主神「蝕錢後 ×2, 贏咗恢復 1×」——V3(同symbol同向)邏輯實驗三關全過(296 筆, 子集EV +1.25%, 8/8 symbol, holdout +25.5pp, 實盤可達 +140.7pp)——實裝已埋但 `BET_DOUBLE_ENABLED` 預設 off | SCL 收據 `entryBetDoubleEligible` 由 09-11 起累積(shadow 開倉 snapshot——2392 筆/日) | **shadow 樣本幾小時達標（主神:每 3 分鐘 cycle, 唔使 2 週）**→ eligible 組 OOS 正 → 主神 enable |
 | P16 | **shadow pool sell 樣本回流驗證(2026-09-11, qrl-pool-monopoly)**: 修復 qrl 壟斷 60/60 buy(sell 樣本餓死 → agents 冇 lean 錯過跌勢)——A per-side 配額 30 / B evict 優先序 blind→qrl→aligned / C qrl arm 封頂 per-symbol≤3+全局≤24 | `scripts/p15-sell-recovery-verify.ts` pre-registered: sell:buy≥0.2 / qrl<40% / open sell≥1 / sell n≥10 | **修復後幾小時重跑驗證**（baseline: sell:buy=0.17, qrl=73.5%, sell EV −0.44%）|
+| P17 | **Git 私密檔案清除 + TG bridge 409 三源頭修復(2026-09-11 ops)**: HERDR_AGENTS.md filter-branch 全歷史清除 + force push（不可逆, 主神批）; AGENT_PROMPT.md untrack; TG 409 = herdr PI 同主 PI 雙 MASTER → HERDR_ENV=1 自動 slave + 409 自動讓位/reclaim（`~/.pi/agent/extensions/telegram-bridge/index.ts`） | 已驗證: 歷史 0 存在 / 三次採樣 96994 穩定 / herdr agents=0 | ✅ 已完成; 主 PI 重啟載入完整新 code |
 
 ---
 
