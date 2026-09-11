@@ -71,6 +71,8 @@ data/EXP.md
 # ─── Docker ───
 .docker/
 # ─── Agent instructions (private) ───
+# v2.0.875-P9（主神 2026-09-11——內部任務書含 Yuki 身份/主神流程, 唔公開）
+HERDR_AGENTS.md
 .github/instructions/PI.instructions.md
 NEWS_DECODER_PLAN.md
 # ─── Private investor materials (never commit) ───
