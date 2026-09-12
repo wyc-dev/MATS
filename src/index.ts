@@ -86,6 +86,7 @@ import { setExecutionLensProvider, prepareExecutionLens, clearExecutionLens, typ
 import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldColdStartLock, decideTrailingLockAction, computeFreshUnrealizedPnl, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
+import { shouldDeferTrendLock } from './lib/trend-defer.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
@@ -4254,6 +4255,14 @@ ${currentPrompt || '(empty — this is the first input)'}`;
               pos.side,
               pos.openedAt ?? 0,
             );
+            // v2.0.876-TREND-DEFER（主神「trend 唔識堅持唔斷 TP」）:
+            // decision==='none'（創新高）原本 fall through 到 PAEL 即鎖——trend 對齊 + 盈倉時,
+            // 刷新 peak 繼續 hold（等 L3 回吐追蹤）: 趨勢繼續升唔鎖, 回吐 ≥50% 先經 pending 確認鎖。
+            if (decision === 'none' && shouldDeferTrendLock({ isTrending, trend1h: this.lastKlineSummary?.trend1h ?? 'unknown', side: isSellSide(pos.side) ? 'sell' : 'buy', pnlPctNow })) {
+              this._pendingTrailingLocks.set(symNorm, { peakPrice, sinceCycle: this.totalCycles, side: isSellSide(pos.side) ? 'sell' : 'buy', openedAt: pos.openedAt ?? 0 });
+              log.info(`🔒 [trend-defer] ${sym} ${pos.side.toUpperCase()} trend 對齊 + 盈倉 → 創新高刷新 peak, 繼續 hold（唔鎖）`);
+              continue;
+            }
             if (decision === 'close') {
               this._pendingTrailingLocks.delete(symNorm);
               const okT = await this.closeTrade(sym, `[TRAILING LOCK] ${sym} ${pos.side.toUpperCase()}: MFE(price) ${liveMfe.toFixed(2)}% 回吐 ≥50% 確認(60min 冇新高) → 鎖利`, 'exit_price_lock');
@@ -4274,6 +4283,21 @@ ${currentPrompt || '(empty — this is the first input)'}`;
             // decision === 'none' → fall through 到 final close（PAEL Phase C 即時鎖）
           }
         } catch { /* non-fatal */ }
+
+        // v2.0.876-TREND-DEFER（PAEL final close 前最後一關）:
+        // trend 對齊 + 已盈（≥0.5%）→ 唔 PAEL 即鎖, 交 L3 回吐追蹤（峰值回吐≥50% 先鎖）。
+        // Soft: 震盪市/反向倉/未盈 → 原邏輯 100% 不變（保護 mean-reversion 正 edge）。
+        const pnlDefNow = Number.isFinite(pos.unrealizedPnlPct) ? (pos.unrealizedPnlPct ?? 0) : 0;
+        if (shouldDeferTrendLock({ isTrending, trend1h: this.lastKlineSummary?.trend1h ?? 'unknown', side: isSellSide(pos.side) ? 'sell' : 'buy', pnlPctNow: pnlDefNow })) {
+          const pk = isSellSide(pos.side)
+            ? pos.averageEntryPrice * (1 - (liveMfe ?? 0) / 100)
+            : pos.averageEntryPrice * (1 + (liveMfe ?? 0) / 100);
+          if (liveMfe !== null && !this._pendingTrailingLocks.has(normalizeSymbol(sym))) {
+            this._pendingTrailingLocks.set(normalizeSymbol(sym), { peakPrice: pk, sinceCycle: this.totalCycles, side: isSellSide(pos.side) ? 'sell' : 'buy', openedAt: pos.openedAt ?? 0 });
+          }
+          log.info(`🔒 [trend-defer] ${sym} ${pos.side.toUpperCase()} trend 對齊 + 盈倉 → PAEL defer, 交 L3 回吐追蹤（唔鎖）`);
+          continue;
+        }
 
         const exitThesis = `[EXIT-PRICE LOCK] ${sym} ${pos.side.toUpperCase()}: MFE ${(mfePricePct * 100).toFixed(2)}% ≥ ${isTrending ? 'p90' : 'p75×0.8'} (${(threshold * 100).toFixed(2)}%) in ${regime} (${profile.samples} samples). Locking profit — SL untouched.`;
         const ok = await this.closeTrade(sym, exitThesis, 'exit_price_lock');
