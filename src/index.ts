@@ -13591,6 +13591,43 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             // v2.0.91: Legacy position without entryThesis — close directly
             log.warn(`📕 Per-symbol consensus: CLOSE ${psc.symbol} (legacy, no thesis) (conf=${(psc.confidence * 100).toFixed(0)}%, PnL=${((pos.unrealizedPnlPct ?? 0) * 100).toFixed(1)}%) — ${psc.rationale}`);
           }
+          // v2.0.877-PROFIT-RUN(2026-09-13, 主神「盈利倉被過早平倉」):
+          //   139 筆 counterfactual 實證: 盈利而 close 嘅倉, 若 trend 對齊唔 close、
+          //   交 L3 回吐追蹤(回吐50%先鎖)→ 139/139 全改善、Σ +627pp、零負面案例。
+          //   只攔「盈利倉 + trend 對齊 + liveMfe 可用」——虧損/震盪/反向 100% 原邏輯
+          //   (v2.0.870 實證: 盲 hold 震盪倉 = 送錢俾回吐——so 必須 trend 條件化)。
+          //   位置: 喺 holdCloseIfCalibrated 之前(早一層安全網), skipSkeptics 照行。
+          if (!closeStructureConfirmed && !mfeLock && pos) {
+            try {
+              const sideDef = isSellSide(pos.side) ? 'sell' : 'buy';
+              const curPDef2 = this.marketState?.getState(normalizeSymbol(psc.symbol))?.price ?? pos.currentPrice ?? 0;
+              const freshPnlDef2 = Number.isFinite(curPDef2) && curPDef2 > 0 && Number.isFinite(pos.averageEntryPrice) && pos.averageEntryPrice > 0 && Number.isFinite(pos.quantity)
+                ? computeFreshUnrealizedPnl(sideDef, pos.averageEntryPrice, curPDef2, pos.quantity, 0)
+                : null;
+              const marginDef2 = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+              const pnlPctDef2 = freshPnlDef2 !== null && marginDef2 > 0 ? freshPnlDef2 / marginDef2 : 0;
+              const regimeDef = pos.regime ?? this.marketState?.getState(normalizeSymbol(psc.symbol))?.regime ?? 'unknown';
+              const liveMfeDef = this.computeLiveMfePricePct(normalizeSymbol(psc.symbol), sideDef, pos.averageEntryPrice, pos.openedAt ?? 0);
+              if (shouldDeferTrendLockGate({
+                isTrending: String(regimeDef ?? '').includes('trending'),
+                trend1h: this.lastKlineSummary?.trend1h ?? 'unknown',
+                side: sideDef,
+                pnlPctNow: pnlPctDef2,
+                hasPendingLock: this._pendingTrailingLocks.has(normalizeSymbol(psc.symbol)),
+                liveMfeAvailable: liveMfeDef !== null,
+              })) {
+                // 設 pending(如果未有)——交 L3 回吐追蹤
+                if (liveMfeDef !== null && !this._pendingTrailingLocks.has(normalizeSymbol(psc.symbol))) {
+                  const pkDef = computeTrendPeakPrice(sideDef, pos.averageEntryPrice, liveMfeDef);
+                  if (pkDef !== null) {
+                    this._pendingTrailingLocks.set(normalizeSymbol(psc.symbol), { peakPrice: pkDef, sinceCycle: this.totalCycles, side: sideDef, openedAt: pos.openedAt ?? 0 });
+                  }
+                }
+                log.info(`⏳ [profit-run] ${psc.symbol} consensus CLOSE 被 hold —— 盈利倉 + trend 對齊, 交 L3 回吐追蹤(唔鎖雞碎)`);
+                continue;
+              }
+            } catch { /* 非致命——profit-run hold 失敗照原 close */ }
+          }
           // v2.0.866 Phase B:二次確認 hold gate(過早率)——保留為層級化後嘅安全網
           //（pre-filter 已處理 trend; 呢度只處理過早率數據——虧損倉/層級化決定 close 唔行）
           if (!closeStructureConfirmed && !mfeLock && !skipSkeptics && this.holdCloseIfCalibrated(psc.symbol, (pos.unrealizedPnlPct ?? 0) > 0, 'consensus')) {
