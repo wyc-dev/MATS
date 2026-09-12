@@ -1497,10 +1497,14 @@ class MATSSystem {
       // by the old mirror bug (paperEngine.executeDecision mirror path) which
       // stored positions without thesis. They pollute the evolution system's
       // reference data and must be removed.
+      // v2.0.876-PURGE-SAFETY（2026-09-13, 主神「點解 8/7-8/13 trade 消失」）:
+      //   - real purge 加日期窗（>30 日先刪）+ 刪前必寫 backup（可還原）。
+      //   - 8 月正常 trade 永久保留; 6 月 mirror-bug phantom 照清。
       const purgedPaper = this.paperEngine.purgeTradesWithoutThesis();
-      const purgedReal = this.portfolio.purgeClosedRealTradesWithoutThesis();
-      if (purgedPaper > 0 || purgedReal > 0) {
-        log.info(`🧹 Purged ${purgedPaper} paper + ${purgedReal} real trades without entry thesis`);
+      const purgeBackupPath = path.join(process.cwd(), 'data', 'evolution', `portfolio-state.json.bak-purge-${Date.now()}`);
+      const purgeReal = this.portfolio.purgeClosedRealTradesWithoutThesis({ backupPath: purgeBackupPath });
+      if (purgedPaper > 0 || purgeReal.purged > 0) {
+        log.info(`🧹 Purged ${purgedPaper} paper + ${purgeReal.purged} real trades without entry thesis (>30日, backup=${purgeReal.backedUp ? '✅' : '❌'} @ ${purgeBackupPath})`);
         this.persistPortfolio();
       }
       log.info('✓ Trading systems ready');

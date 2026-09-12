@@ -140,14 +140,25 @@ export class PaperTradingEngine {
   }
 
   /** v2.0.158: Purge all trades without entry thesis — removes bug-generated
-   *  phantom trades from the old mirror path that had no entryThesis. */
-  purgeTradesWithoutThesis(): number {
+   *   phantom trades from the old mirror path that had no entryThesis.
+   *   v2.0.876-PURGE-SAFETY（2026-09-13）: paper trades 同樣只刪「無 thesis ∧ >30 日」——
+   *   近期 trade 永久保留, 唔好再無差別誤殺。 */
+  purgeTradesWithoutThesis(opts?: { maxAgeDays?: number; now?: number }): number {
     const before = this.trades.length;
-    this.trades = this.trades.filter(t => t.entryThesis && t.entryThesis.trim().length > 0);
-    const purged = before - this.trades.length;
+    const now = opts?.now !== undefined && opts?.now !== null && Number.isFinite(opts.now as number) ? (opts.now as number) : Date.now();
+    const rawDays = opts?.maxAgeDays;
+    const maxAgeDays = typeof rawDays === 'number' && Number.isFinite(rawDays) && rawDays > 0 ? rawDays : 30;
+    const DAY = 24 * 3600 * 1000;
+    const kept = this.trades.filter(t => {
+      if (t?.entryThesis && typeof t.entryThesis === 'string' && t.entryThesis.trim().length > 0) return true;
+      if (!Number.isFinite(t?.closedAt as number)) return true;
+      return now - (t.closedAt as number) <= maxAgeDays * DAY;
+    });
+    const purged = before - kept.length;
     if (purged > 0) {
-      log.info(`🗑️ Purged ${purged} trades without entry thesis (${before} → ${this.trades.length})`);
+      log.info(`🗑️ Purged ${purged} paper trades without entry thesis (>${maxAgeDays}日) (${before} → ${kept.length})`);
     }
+    this.trades = kept;
     return purged;
   }
 

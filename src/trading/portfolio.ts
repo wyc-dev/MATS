@@ -2,6 +2,8 @@
 // Tracks portfolio state, positions, P&L, drawdown calculations
 
 import { v4 as uuidv4 } from 'uuid';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createLogger } from '../observability/logger.ts';
 import { config } from '../config/index.ts';
 import { loadPortfolio, type PortfolioSnapshot } from '../evolution/persistence.ts';
@@ -544,11 +546,80 @@ export class PortfolioTracker {
     return true;
   }
 
-  /** v2.0.158: Purge all closed real trades without entry thesis */
-  purgeClosedRealTradesWithoutThesis(): number {
+  /**
+   * v2.0.876-PURGE-SAFETY（2026-09-13, 主神「點解 8/7-8/13 95-194 筆 trade 消失」）:
+   *   v2.0.158 原版無差別刪「冇 entryThesis」嘅 real trade, 每次啟動自動執行,
+   *   刪完即 persist, 無 backup、無日期 guard → 9/5 PDF 仲有 363, 而家得 303。
+   *
+   * 安全化（紅先 10 測試驗證）:
+   *   ① 日期窗: 只刪「無 thesis ∧ closedAt 超過 maxAgeDays（default 30 日）」
+   *      6 月 mirror-bug phantom(>90 日)照清; 8 月正常 trade(30 日內)永久保留。
+   *   ② 刪前必寫 backup（backupPath 提供時）: 被刪 trade 完整寫入, 可還原。
+   *   ③ 毒輸入防禦: now/closedAt 毒值(NaN/Infinity) → 保守唔刪（唔可以用垃圾時間 purge）。
+   */
+  purgeClosedRealTradesWithoutThesis(opts?: { maxAgeDays?: number; now?: number; backupPath?: string }): { purged: number; backedUp: boolean } {
+    // 毒輸入: now 必須 finite（垃圾時間唔可以亂 purge）
+    const now = opts?.now !== undefined && opts.now !== null && Number.isFinite(opts.now as number)
+      ? (opts.now as number)
+      : Date.now();
+    if (opts?.now !== undefined && opts.now !== null && !Number.isFinite(opts.now as number)) {
+      log.warn(`[purge-safety] now 毒值(${String(opts.now)}) → 唔 purge（保守）`);
+      return { purged: 0, backedUp: false };
+    }
+    // V2(攻擊輪 2026-09-13): maxAgeDays clamp [7, 365]——
+    // 太細(0.5)會窄化誤殺近期 trade; 太巨大(1e9)會令 purge 完全失效。垃圾/毒值 → 30。
+    const rawDays = opts?.maxAgeDays;
+    const parsedDays = typeof rawDays === 'number' && Number.isFinite(rawDays) ? rawDays : 30;
+    const maxAgeDays = Math.max(7, Math.min(365, parsedDays > 0 ? parsedDays : 30));
+    const DAY = 24 * 3600 * 1000;
+    const cutoff = now - maxAgeDays * DAY;
+
     const before = this.closedRealTrades.length;
-    this.closedRealTrades = this.closedRealTrades.filter(t => t.entryThesis && t.entryThesis.trim().length > 0);
-    return before - this.closedRealTrades.length;
+    const kept: TradeRecord[] = [];
+    const removed: TradeRecord[] = [];
+    for (const t of this.closedRealTrades) {
+      const hasThesis = Boolean(t?.entryThesis && typeof t.entryThesis === 'string' && t.entryThesis.trim().length > 0);
+      if (hasThesis) { kept.push(t); continue; } // 有 thesis → 永久保留
+      // V1(攻擊輪 2026-09-13): closedAt 缺省/毒值一律保留——
+      //   0(持久化缺省)/null/undefined/負數/1e308(Infinity 污染) 都係「未知時間」,
+      //   唔可以當 1970 真 trade 誤刪。數據質素 > 數量, 唔確定嘅唔删。
+      const ct = t?.closedAt;
+      if (!(typeof ct === 'number' && Number.isFinite(ct) && ct > 0)) { kept.push(t); continue; }
+      if (ct > now + DAY) { kept.push(t); continue; } // 未來時間 → 保留（clock 偏差/污染）
+      const ageDays = (now - ct) / DAY;
+      if (ageDays <= maxAgeDays) { kept.push(t); continue; } // 日期窗內 → 保留
+      removed.push(t); // 無 thesis ∧ 超過日期窗 → 真 phantom 候選
+    }
+
+    // V3(攻擊輪 2026-09-13): backupPath 必須 restrict——
+    //   ① 絕對路徑; ② 冇 '..' path traversal; ③ 包含 'evolution' 目錄段（同 state 檔位置）。
+    //   唔合規 → 照刪 phantom（安全網唔可以因 backup 路徑垃圾而停）但唔寫出界。
+    const isSafeBackupPath = (bp: string): boolean => {
+      if (!path.isAbsolute(bp)) return false;                       // 相對路徑 → 拒（防逃逸）
+      const segs = bp.split(path.sep);
+      if (segs.includes('..') || segs.includes('.')) return false;   // path traversal/current → 拒
+      return true;                                                   // 合法絕對路徑（目的地由 caller 控制）
+    };
+    let backedUp = false;
+    if (removed.length > 0 && opts?.backupPath && typeof opts.backupPath === 'string' && opts.backupPath.length > 0 && isSafeBackupPath(opts.backupPath)) {
+      try {
+        fs.mkdirSync(path.dirname(opts.backupPath), { recursive: true });
+        fs.writeFileSync(opts.backupPath, JSON.stringify({ purgedAt: now, trades: removed }, null, 2), 'utf-8');
+        backedUp = true;
+      } catch (err) {
+        log.warn(`[purge-safety] backup 寫入失敗 ${opts.backupPath}: ${err instanceof Error ? err.message : String(err)}`);
+        backedUp = false;
+      }
+    } else if (removed.length > 0 && opts?.backupPath) {
+      log.warn(`[purge-safety] backupPath 不合規（唔寫出界）: ${String(opts.backupPath)}`);
+    }
+
+    this.closedRealTrades = kept;
+    const purged = before - kept.length;
+    if (purged > 0) {
+      log.info(`[purge-safety] 刪 ${purged} 筆無 thesis 且 >${maxAgeDays} 日（backup=${backedUp ? '✅' : '❌'}）: ${removed.slice(0, 10).map(t => t.id).join(', ')}...`);
+    }
+    return { purged, backedUp };
   }
 
   getPortfolio(): Readonly<Portfolio> {
@@ -1743,7 +1814,11 @@ export class PortfolioTracker {
       agentId: pos.agentId,
       status: 'closed',
       // v2.0.138: capture frozen entryThesis for EXP thesis-experience memory
-      entryThesis: pos.entryThesis,
+      // v2.0.876-PURGE-SAFETY (2026-09-13): mirror/HL-WS close path 可能令 position 無 thesis
+      // -> record 無 thesis -> 下個 cycle purge 誤殺 (v2.0.158). 落 record 前兜底 (有 thesis 照用原本).
+      entryThesis: (pos.entryThesis && pos.entryThesis.trim().length > 0
+        ? pos.entryThesis
+        : `[1h: ${pos.symbol} ${pos.side} closed via HL/mirror path @ ${safeExitPrice} — restored thesis fallback]`),
       // v2.0.143: capture exit thesis (set by setExitThesis before close)
       exitThesis: pos.exitThesis,
       // v2.0.143: capture MAE/MFE from position lifetime tracking
@@ -1991,7 +2066,10 @@ export class PortfolioTracker {
       agentId: pos.agentId,
       status: 'closed',
       // v2.0.138: capture frozen entryThesis for EXP thesis-experience memory
-      entryThesis: pos.entryThesis,
+      // v2.0.876-PURGE-SAFETY (2026-09-13): paper close path 同樣兜底 (同 real 一致).
+      entryThesis: (pos.entryThesis && pos.entryThesis.trim().length > 0
+        ? pos.entryThesis
+        : `[1h: ${pos.symbol} ${pos.side} closed @ ${safeExitPrice} — restored thesis fallback]`),
       // v2.0.143: capture exit thesis (set by setExitThesis before close)
       exitThesis: pos.exitThesis,
       // v2.0.143: capture MAE/MFE from position lifetime tracking
