@@ -19,6 +19,8 @@
 //
 // 純函數單一 source of truth —— index.ts 只做 wiring。毒輸入一律 false（保守唔 defer）。
 
+import { MAX_LIVE_MFE_PCT } from './live-mfe.ts';
+
 /** 觸發門檻: 盈倉（margin %, 0.005 = +0.5%）。
  *  與 PROFIT_LOCK_MARGIN_THRESHOLD_PCT（live-mfe.ts, 預設 0.5%）對稱——
  *  連微利都未夠嘅倉唔可能係「trend 讓利」主角, 止血/正常管道優先。 */
@@ -52,4 +54,50 @@ export function shouldDeferTrendLock(i: TrendDeferInput): boolean {
   // 方向對齊: buy 倉要 trend up; sell 倉要 trend down
   if (i.side === 'buy') return t === 'up';
   return t === 'down';
+}
+
+// ─── 攻擊輪（2026-09-13, 主神「不擇手段攻擊 trend-defer 週邊」）─────────────
+// V1 🔴: 位2 喺 liveMfe===null（candle 缺失/狀態注入）時照 continue → 無 MFE 數據 =
+//        系統永遠唔鎖 → trend 反轉全數回吐（giveback 黑洞）。
+// V4 🔴: pending 已存在（L3 確認期內）但 MFE 縮細 → L3 skip → 位2 見 pending 照 continue
+//        → pending 永遠唔 close → 倉 hold 到 SL/反轉全蝕。
+// 修復: 將「位2 defer 決策」抽成單一純函數 gate —— hasPendingLock / liveMfeAvailable
+//       任一 guard 唔過 → 唔 defer（保守 fall through PAEL 原邏輯）。
+
+export interface TrendDeferGateInput extends TrendDeferInput {
+  /** 已有 L3 pending trailing lock（確認期內）——有就要交 L3 機制, 唔可以再 defer */
+  hasPendingLock: boolean;
+  /** live MFE 數據可用（candle 存在且有效）——冇數據唔可以 defer（會變永遠唔鎖） */
+  liveMfeAvailable: boolean;
+}
+
+/**
+ * 位2（PAEL final close 前）安全 defer 決策。
+ * 所有條件: base defer 判斷 ∧ 冇 pending ∧ live MFE 可用。
+ * 任一唔過 → false（fall through PAEL 原邏輯, 保守鎖利）。
+ */
+export function shouldDeferTrendLockGate(i: TrendDeferGateInput): boolean {
+  if (!i || typeof i !== 'object') return false;
+  if (i.hasPendingLock === true) return false;        // V4: 有 pending → 交 L3 確認（唔無限 defer）
+  if (i.liveMfeAvailable !== true) return false;      // V1: 冇 live MFE → 照 PAEL 鎖（唔可以盲 defer）
+  return shouldDeferTrendLock(i);
+}
+
+/**
+ * 統一 peak price 計算（V3: 位1/位2 共用, 消除 drift）。
+ * 毒輸入（side/entry/mfe 垃圾、mfe 超 cap、mfe=0）→ null（保守）。
+ */
+export function computeTrendPeakPrice(
+  side: 'buy' | 'sell',
+  entryPrice: number,
+  mfePricePct: number | null | undefined,
+): number | null {
+  if (side !== 'buy' && side !== 'sell') return null;
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) return null;
+  if (mfePricePct === null || mfePricePct === undefined) return null;
+  if (!Number.isFinite(mfePricePct)) return null;
+  if (mfePricePct <= 0 || mfePricePct > MAX_LIVE_MFE_PCT) return null; // 0/負/超 cap（1e308 假 peak）→ null
+  return side === 'sell'
+    ? entryPrice * (1 - mfePricePct / 100)
+    : entryPrice * (1 + mfePricePct / 100);
 }
