@@ -264,6 +264,13 @@ export function computeATRSLTP(
    *  When confidence is low (< 0.5), the SL is tightened to 1.2× ATR to minimize
    *  risk on uncertain entries. */
   olrConfidence?: number,
+  /** v2.0.878: Distance (in price units) from entry to the nearest S/R level
+   *  in the direction of the trade (e.g. for a SELL, the nearest support below
+   *  entry). When provided and > 0, the SL distance is widened to at least
+   *  1.2× this S/R distance so the stop sits beyond the level the thesis
+   *  expects to hold. This prevents premature stops when price briefly pierces
+   *  a nearby S/R level before the expected move plays out. */
+  srDistance?: number,
 ): { sl: number; tp: number } | null {
   if (atr <= 0 || entryPrice <= 0) return null;
 
@@ -351,6 +358,17 @@ export function computeATRSLTP(
     }
   }
 
+  // ── v2.0.878: S/R distance floor ──
+  // If the nearest S/R level in the trade direction is close (e.g. 14bps),
+  // the SL must sit beyond it (1.2×) so a brief pierce doesn't stop us out
+  // before the thesis (rejection at supply) plays out. This is a FLOOR — we
+  // never narrow below what ATR/momentum/lens suggest, only widen when the
+  // S/R level is closer than the current SL distance.
+  if (srDistance !== undefined && srDistance > 0) {
+    const srSlDist = srDistance * 1.2;
+    slDist = Math.max(slDist, srSlDist);
+  }
+
   // v2.0.210 (Fix 2): TP — ensure R:R ≥ 1.6:1 even when SL was widened.
   let tpDist = tpMult * atr;
   if (tpDist < slDist * 1.6) tpDist = slDist * 1.6;
@@ -363,14 +381,20 @@ export function computeATRSLTP(
   // to match the wider SL multiplier.
   // v2.0.832: baseline TP cap raised from 5% → 10% to accommodate R:R ≥ 1.6
   // when SL is wide (e.g. SL=4% → TP needs 6.4%, old cap=5% blocked this).
+  // v2.0.878: when srDistance is provided, raise the SL cap to 8% so the
+  // S/R floor isn't truncated by a tight cap (e.g. srDist=14bps → 1.2×=16.8bps
+  // is fine, but a wider S/R level needs headroom).
   const isHighConfidence = olrConfidence !== undefined && olrConfidence > 0.8;
+  const hasSrDistance = srDistance !== undefined && srDistance > 0;
   const finalMaxSlDist = useExecLens
     ? entryPrice * 0.06
     : isHighConfidence
       ? entryPrice * 0.08
-      : (adverseMomentum && adverseMomentum > 0)
-        ? entryPrice * 0.05
-        : entryPrice * 0.03;
+      : hasSrDistance
+        ? entryPrice * 0.08
+        : (adverseMomentum && adverseMomentum > 0)
+          ? entryPrice * 0.05
+          : entryPrice * 0.03;
   const finalMaxTpDist = useExecLens
     ? entryPrice * 0.10
     : isHighConfidence

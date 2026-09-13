@@ -47,6 +47,9 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.878: SELL xyz:GOLD premature_sl — add srDistance parameter to computeATRSLTP in atr.ts to scale SL distance by S/R distance (1.2× floor), preventing premature stops when price briefly pierces nearby support/supply levels
+
+
 ## v2.0.877: SE-direction — SELL xyz:SKHX trending_bull bear-chase (0W/2L, −$1.57): regime-direction mismatch is Layer 1 direction error. Add soft conviction penalty (≤20%) for SELL theses with weak target (<1%) — data-validated against 52 SELL SKHX losses before landing. computeChasePenalty now also penalizes '(weak)' target theses (0.15, max with above-demand/trending-bull, never blocks).
 
 ## v2.0.875-P9-ops（2026-09-11：Git 歷史私密清除 + Telegram Bridge 409 三源頭修復 + bet-double/qrl-pool-monopoly 驗證就緒）
