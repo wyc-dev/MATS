@@ -13,7 +13,8 @@ import { getActiveProvider } from '../llm/index.ts';
 import { getAgentModel } from '../agents/agent-models.ts';
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { execSync } from 'node:child_process';
+import { exec } from 'node:child_process'; // v2.0.882-P9-se-async: execSync → execAsync——SE 內部 tsc/test/git 全部 async I/O,event loop 唔再 block,HACP cycle 照行
+import { promisify } from 'node:util';
 import { extractJSON } from './evolution-utils.ts';
 import { assertBootstrappedSource, assertSelfModSafe, isSelfModFile, selfModEnabled } from './se-bootstrap-guard.ts'; // v2.0.877-P9-se-self-mod: Judge Layer（SE 改唔到佢——G10 鎖死）
 import type { ThesisExperienceRecord } from '../types/index.ts';
@@ -22,6 +23,20 @@ const log = createLogger({ phase: 'system-engineer' });
 
 const PROJECT_ROOT = process.cwd();
 const RECOMMENDATIONS_FILE = join(PROJECT_ROOT, 'data/evolution/audit-recommendations.jsonl');
+
+// ── v2.0.882-P9-se-async（主神 2026-09-13「SE 流程可以 async,否則卡住 HACP」）──
+/** SE 完成修復後 set 呢個旗——exit 42 延至「cycle 之間」先執行（由 index.ts check）,避免 async SE 完成時斬半個進行中 trade cycle。engineer-loop 偵測 exit 42 照舊 restart。 */
+export let seRestartRequested = false;
+export function requestSeRestart(): void { seRestartRequested = true; }
+
+const execAsync = promisify(exec);
+
+/** execSync → async exec（同語義: non-zero exit throw、err.stdout/stderr 保留、timeout kill）。
+ * SE 內部所有長任務（tsc/test/git）由阻塞變成 async——HACP cycle 唔使再等成個 npm test（3-4min）。 */
+async function runCmd(cmd: string, timeoutMs: number, maxBuffer = 1 * 1024 * 1024): Promise<string> {
+  const { stdout } = await execAsync(cmd, { cwd: PROJECT_ROOT, timeout: timeoutMs, maxBuffer, encoding: 'utf-8' });
+  return stdout;
+}
 
 // Files the agent is ALLOWED to modify (learning + decision logic + orchestrator)
 // v2.0.873（主神 2026-09-02「解放 harness 約束,演化對 edge 嘅觸覺」）: 加 scripts/
@@ -464,7 +479,7 @@ export async function runSystemEngineer(
   // 3 separate commits because it didn't check git history.
   let recentGitCommits = '(git log unavailable)';
   try {
-    const gitOutput = execSync('git log --oneline -15', { cwd: PROJECT_ROOT, timeout: 5_000, stdio: 'pipe', encoding: 'utf-8' });
+    const gitOutput = await runCmd('git log --oneline -15', 5_000);
     recentGitCommits = gitOutput.trim();
   } catch {
     // non-critical — SE can still run without git history
@@ -768,7 +783,7 @@ If you find NO issues worth fixing, respond with:
   // v2.0.737: Duplicate diagnosis check
   let isDuplicate = false;
   try {
-    const gitLog = execSync('git log --oneline -15 --format=%s', { cwd: PROJECT_ROOT, timeout: 5_000, stdio: 'pipe', encoding: 'utf-8' });
+    const gitLog = await runCmd('git log --oneline -15 --format=%s', 5_000);
     const commitMessages = gitLog.trim().split('\n').map(m => m.toLowerCase());
     const diagTitleLower = (diagnosis.title as string).toLowerCase();
     const diagWords = diagTitleLower.split(/\s+/).filter((w: string) => w.length > 4 && !['thesis', 'experience', 'direction', 'filtered', 'without', 'instead'].includes(w));
@@ -1066,7 +1081,7 @@ Respond with EXACTLY ONE JSON object:
     let experimentRanOk = true;
     let experimentOutput = '';
     try {
-      const tscOutput = execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
+      const tscOutput = await runCmd('npx tsc --noEmit 2>&1', 30_000);
       tscPassed = true;
       log.info(`✅ [system-engineer] tsc passed`);
 
@@ -1074,7 +1089,7 @@ Respond with EXACTLY ONE JSON object:
       if (creatingNewFile && targetFile.startsWith('scripts/')) {
         try {
           log.info(`🔧 [system-engineer] Executing experiment script: npx tsx ${targetFile}...`);
-          experimentOutput = execSync(`npx tsx ${targetFile} 2>&1`, { cwd: PROJECT_ROOT, timeout: 120_000, stdio: 'pipe', encoding: 'utf-8' });
+          experimentOutput = await runCmd(`npx tsx ${targetFile} 2>&1`, 120_000);
           experimentRanOk = true;
           // 將實驗輸出頭 800 字符記入 log（唔可以全部——可能好長）
           log.info(`🔧 [system-engineer] Experiment output (head):\n${experimentOutput.slice(0, 800)}`);
@@ -1145,7 +1160,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
 
             // Re-run tsc
             try {
-              execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
+              await runCmd('npx tsc --noEmit 2>&1', 30_000);
               tscPassed = true;
               log.info(`✅ [system-engineer] tsc passed (retry)`);
               // Update proposal for the test/changelog steps
@@ -1173,7 +1188,7 @@ Respond with EXACTLY ONE JSON object with the CORRECTED fix:
     if (tscPassed) {
       log.info(`🔧 [system-engineer] Running npm test...`);
       try {
-        const output = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 300_000, maxBuffer: 128 * 1024 * 1024, stdio: 'pipe', encoding: 'utf-8' }); // P9-SE-verdict: 全量測試 3-4min——90s 必然 timeout→永遠 FAIL; P9-SE-maxbuffer(2026-09-10): 全量 vitest output 實測 >10MB(25s 已 4.4MB)——1MB 默認 maxBuffer 令 execSync 中途 throw → 永遠假 FAIL → 啱 fix 全被 rollback
+        const output = await runCmd('npm test 2>&1', 300_000, 128 * 1024 * 1024); // P9-SE-verdict: 全量測試 3-4min——90s 必然 timeout→永遠 FAIL; P9-SE-maxbuffer(2026-09-10): 全量 vitest output 實測 >10MB(25s 已 4.4MB)——1MB 默認 maxBuffer 令 execSync 中途 throw → 永遠假 FAIL → 啱 fix 全被 rollback
         // v2.0.201: Parse the vitest summary line, not the entire output.
         const testSummaryLine = output.split('\n').find(l => /^\s*Tests\s+/.test(l));
         // P9-SE-verdict: 統一純函數判定(排除 legacy no-suite + 2 pre-existing——唔會再永遠 FAIL)
@@ -1312,7 +1327,7 @@ Respond with EXACTLY ONE JSON object:
 
           // Re-run tsc + tests
           try {
-            execSync('npx tsc --noEmit 2>&1', { cwd: PROJECT_ROOT, timeout: 30_000, stdio: 'pipe', encoding: 'utf-8' });
+            await runCmd('npx tsc --noEmit 2>&1', 30_000);
             log.info(`✅ [system-engineer] tsc passed (test retry ${testRetryNum})`);
           } catch (retryTscErr: any) {
             log.warn(`❌ [system-engineer] tsc FAILED (test retry ${testRetryNum}): ${String(retryTscErr?.stdout ?? retryTscErr?.message ?? String(retryTscErr)).slice(0, 300)}`);
@@ -1326,7 +1341,7 @@ Respond with EXACTLY ONE JSON object:
           }
 
           try {
-            const retryTestOutput = execSync('npm test 2>&1', { cwd: PROJECT_ROOT, timeout: 300_000, maxBuffer: 128 * 1024 * 1024, stdio: 'pipe', encoding: 'utf-8' }); // P9-SE-maxbuffer: 同主判定——128MB
+            const retryTestOutput = await runCmd('npm test 2>&1', 300_000, 128 * 1024 * 1024); // P9-SE-maxbuffer: 同主判定——128MB
             const retrySummary = retryTestOutput.split('\n').find(l => /^\s*Tests\s+/.test(l));
             testsPassed = parseTestVerdict(retryTestOutput).passed;
             if (testsPassed) {
@@ -1440,9 +1455,7 @@ Respond with EXACTLY ONE JSON object:
 
       // Git commit
       try {
-        execSync(`git add -A && git commit -m "${proposal.changelogEntry.replace(/"/g, '\\"')}"`, {
-          cwd: PROJECT_ROOT, timeout: 15_000, stdio: 'pipe',
-        });
+        await runCmd(`git add -A && git commit -m "${proposal.changelogEntry.replace(/"/g, '\\"')}"`, 15_000);
         log.info(`✅ [system-engineer] Git committed: ${proposal.changelogEntry}`);
       } catch (err) {
         log.warn(`⚠️ [system-engineer] Git commit failed: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`);
@@ -1457,14 +1470,13 @@ Respond with EXACTLY ONE JSON object:
       appendRecommendation(result, true);
       log.info(`✅ [system-engineer] Fix applied successfully: ${proposal.title}`);
       logFeedback('Phase 2', 'SUCCESS', proposal.title, targetFile, `tsc=${tscPassed} tests=${testsPassed} | ${proposal.proposedFix.reason.slice(0, 200)}`);
-      log.info(`✅ [system-engineer] Triggering restart to load new code (exit code 42)...`);
-      // v2.0.187: Exit with code 42 so engineer-loop.sh restarts the process
-      // with the new code. Only do this if running under SYSTEM_ENGINEER_ENABLED
-      // (i.e. via npm run engineer). Under npm start, the process just continues
-      // with old code in memory — the fix takes effect on next manual restart.
+      log.info(`✅ [system-engineer] Fix applied — restart pending (async SE; exit 42 at next cycle boundary)...`);
+      // v2.0.187: Exit code 42 = engineer-loop.sh restarts with the new code.
+      // v2.0.882-P9-se-async（主神 2026-09-13「SE 卡住 HACP」）: SE 改完行 async,唔再直接
+      // process.exit(42)——set 旗,由 index.ts 喺「cycle 之間」先 exit,避免斬半個進行中
+      // trade cycle。engineer-loop 偵測 exit 42 照舊 restart。npm start 下照舊唔 exit。
       if (process.env['SYSTEM_ENGINEER_ENABLED'] === 'true') {
-        // Give the log time to flush before exiting
-        setTimeout(() => process.exit(42), 1000);
+        requestSeRestart();
       }
       return result;
     } else {

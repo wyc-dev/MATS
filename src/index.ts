@@ -163,7 +163,7 @@ import { backfillOLRFromCandles, type HLCandle, type CandleFetcher } from './evo
 import { wilsonScore } from './evolution/evolution-utils.ts';
 import { ComboWinRateTracker, type ComboGateResult } from './evolution/combo-win-rate-tracker.ts';
 import { auditTradeRecordsLLM, type AuditResult, type AuditIncident } from './evolution/direction-audit.ts';
-import { runSystemEngineer } from './evolution/system-engineer.ts';
+import { runSystemEngineer, seRestartRequested } from './evolution/system-engineer.ts';
 import { getOptionsDataManager, formatOptionsForAgent, formatPlaybookForAgent } from './analysis/options-data.ts';
 import { fetchNewsSentiment, formatNewsForAgent, fetchNewsForSymbols, formatNewsForAgentMulti, fetchGlobalBreakingNews, formatGlobalNewsForMetaAgent, computePriceNewsTiming, normalizeBaseAsset, type TimingCandle } from './analysis/news-sentiment.ts';
 import type { ConsensusResult, Ticker, AgentThought, AgentStatus, DebateRound, CycleProgress, TradingDecision, MarketAgentConfig, TopVolumePair, MultiSymbolDecision, AgentRole, ExchangeAccountInfo, TradeRecord, CycleSummary } from './types/index.ts';
@@ -9279,6 +9279,12 @@ ${recentExamples}
       log.info(`[CYCLE-REVIEW] runDecisionCycle 開頭 call reviewMarketPairs (edgeHints=${this.edgeHints.length})`);
     } catch { /* 雙保險失敗唔影響 */ }
     if (isShuttingDown()) return;
+    // v2.0.882-P9-se-async: SE async 完成後,restart 延至「cycle 之間」執行——避免 exit 42
+    // 斬半個進行中 trade cycle。呢個位 = 上 cycle 完 + 下 cycle 未開始,完美邊界。
+    if (seRestartRequested && !this.cycleInProgress) {
+      log.info(`🔧 [system-engineer] Fix applied earlier — exiting at cycle boundary to load new code (exit 42)`);
+      process.exit(42);
+    }
     if (this.cycleInProgress) {
       log.warn('Previous decision cycle still running. Skipping this tick.');
       return;
@@ -16223,24 +16229,19 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // slot starvation when SE competes with 8 trading agents for Ollama slots.
         const shouldRunSE = this.auditTriggeredSE && (this.totalCycles - this.lastSECycle) >= MATSSystem.SE_MIN_CYCLE_GAP;
         if (shouldRunNoTrade) {
-          log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation (blocking next cycle)`);
+          log.warn(`🔧 [no-trade] ${this.cyclesSinceLastTrade} cycles since last trade — triggering SE investigation (async: HACP cycle continues)`);
           this.lastSECycle = this.totalCycles;
-          this.cycleInProgress = true;
-          try {
-            await this.runNoTradeInvestigation();
-          } finally {
-            this.cycleInProgress = false;
-          }
+          // v2.0.882-P9-se-async（主神「SE 卡住 HACP」）: SE 唔再 await——fire-and-forget;
+          // SE 內部 I/O 已 async（event loop 照行）;修復完成後 set seRestartRequested,
+          // 喺下個 cycle 邊界先 exit 42（唔斬半個進行中 trade cycle）。
+          void this.runNoTradeInvestigation().catch((err) =>
+            log.warn(`[system-engineer] async no-trade investigation failed: ${err instanceof Error ? err.message : String(err)}`));
         } else if (shouldRunSE) {
           this.auditTriggeredSE = false; // consume the trigger
           this.lastSECycle = this.totalCycles;
-          log.info(`🔧 [system-engineer] Audit triggered SE — starting fix cycle (blocking next cycle)`);
-          this.cycleInProgress = true;
-          try {
-            await this.runDirectionAudit();
-          } finally {
-            this.cycleInProgress = false;
-          }
+          log.info(`🔧 [system-engineer] Audit triggered SE — starting fix cycle (async: HACP cycle continues)`);
+          void this.runDirectionAudit().catch((err) =>
+            log.warn(`[system-engineer] async SE cycle failed: ${err instanceof Error ? err.message : String(err)}`));
         }
       }
 
