@@ -1674,7 +1674,17 @@ function sleep(ms: number): Promise<void> {
  *  自己判斷緊 bull regime,再開 SELL = 方向矛盾。soft penalty 0.15(≤20% 上限)。
  *  如果 thesis 同時有「above demand」+「trending_bull」,取較大 penalty(0.2)。
  *  注意: 呢個係 soft gate,唔 block——trending_bull SELL 仍然可以開,只係 pWin 打折。
- *  樣本 <3 時 penalty 上限 0.15,避免過度干預。 */
+ *  樣本 <3 時 penalty 上限 0.15,避免過度干預。
+ *
+ *  v2.0.877-SE-reflection(2026-09-09, 主神「先搵贏嘅 pattern」): 除咗「above demand」同
+ *  「trending_bull」之外,再補一個獨立嘅弱入場 signature——「weak target」(<1% 目標距離)。
+ *  實錘: SKHX #9「target $1350 (weak)」= 165bps 目標(1.65%),SNDK #10「target $1350 (weak)」
+ *  = 60bps 目標(0.6%)——兩個都係「weak」字眼 + 細目標。trending_bull 追空 + weak target
+ *  = 方向錯誤 + 期望值極低(贏都贏得少,輸就輸得大)。
+ *  呢個 signature 同「above demand」/「trending_bull」獨立——一個 thesis 可以只有 weak target
+ *  而冇 above demand(例如「SELL at $1373, target $1350 (weak)」冇提 demand)。
+ *  但樣本只有 2 個 (< 3)——按五絕對規則 #2,只可以 soft penalty 0.15(≤20% 上限)。
+ *  三個 signature 取最大(唔疊加,避免超過 20% 上限)。 */
 export function computeChasePenalty(side: unknown, thesis: unknown): number {
   if (side !== 'sell') return 0;
   if (typeof thesis !== 'string' || thesis.length === 0) return 0;
@@ -1683,6 +1693,9 @@ export function computeChasePenalty(side: unknown, thesis: unknown): number {
   // v2.0.875-SE-reflection: trending_bull + SELL = regime-direction mismatch(2/2 全蝕實錘)
   // 但樣本 <3,soft penalty 上限 0.15(唔可以過度干預)
   const trendingBullSellPenalty = /trending\s*bull/i.test(thesis) ? 0.15 : 0;
-  // 取較大者——兩個 signature 都係弱入場,但唔疊加(避免超過 20% 上限)
-  return Math.max(aboveDemandPenalty, trendingBullSellPenalty);
+  // v2.0.877-SE-reflection: weak target(<1% 目標距離)——trending_bull 追空 + weak target
+  // = 方向錯誤 + 期望值極低(2/2 全蝕實錘)。樣本 <3,soft penalty 上限 0.15。
+  const weakTargetPenalty = /\(weak\)/i.test(thesis) ? 0.15 : 0;
+  // 取最大者——三個 signature 都係弱入場,但唔疊加(避免超過 20% 上限)
+  return Math.max(aboveDemandPenalty, trendingBullSellPenalty, weakTargetPenalty);
 }

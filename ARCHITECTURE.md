@@ -2,7 +2,7 @@
 
 > **作者**: YC Wong · **版本**: 2.0.876-P9-EXIT-ENTRY-OVERHAUL
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-13 exit/entry overhaul）**: vitest **4784 pass / 0 fail — exit 0**（09-11 4714 → +70; TREND-DEFER/PURGE-SAFETY/PROFIT-RUN/churn/breakeven/reconcile 全入）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 10 legacy node:test——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-13 exit/entry overhaul）**: vitest **4784 pass / 0 fail — exit 0**（09-11 4714 → +70; TREND-DEFER/PURGE-SAFETY/PROFIT-RUN/churn/breakeven/reconcile 全入）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
@@ -31,12 +31,12 @@
 | P5 | 6 soft gate 誤傷 counterfactual（mfe-expose-attack） | gate 系統性過度保守裁決 | 每 gate 10-19 樣本（269 單標準） | 2-4 週 |
 | P6 | 候選 C: persistent_bear + m4h<−0.5% block BUY（tool-integrity） | 正確算法重驗（−11.93%→+6.75% 反轉後） | n=6（門檻 n≥15） | n 累積 |
 | P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
-| P8 | time-window 候選 1/2/3 接駁（time-window）
-| P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
-| P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 / cycle 粒度)——潛在 +86.8 margin% | 86 筆 exit_price_lock(17 誤標已修復) | candle 級重放 + entry-quality 閾值對照 |
+| P8 | time-window 候選 1/2/3 接駁（time-window） | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+| P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 |
+| P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09 新增)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 閾值 / cycle 粒度 / PAEL threshold 高於細 MFE)──潛在 +86.8 margin%(等權) | 86 筆 exit_price_lock(17 誤標已修復由今日起乾淨累積) | candle 級重放 + entry-quality per-symbol 閾值對照 |
 | P11 | **統計 lean 分辨力嚴格重驗(SCL 收據, 2026-09-09 新增)**: shadow WR 反指標(8/8 symbol 負 ρ) + OLR pwin 分辨力(real ρ=+0.02 已證偽)——用 SCL 收據(verdict/OLR/WR/EV, 2392 筆/日)數小時 n≥15 | 收據由 09-09 起累積(60/60 真值已驗證) | 樣本累積(數小時) → shadow-gate 方向 + lean 衝突偵測裁決(831) |
 | P14 | **clean entryShadowWinRate 樣本追蹤(shadow-gate 中立化確認, 2026-09-09 新增)**: Real clean(entry-snapshot)累積 31 筆——WR≥0.55 → −3.31%(n=5 太細)/「反向唔成立」(低 WR 側 shadow 35.3% 都差——極端信心懲罰,唔係方向反指標)——需 n≥15 確認 + shadow-gate 中立化(如批准)後 real 成效 | 31 筆 clean(n=5 高 WR 組) | 樣本累積(2-4 週) |
-| P12 | **BUY 贏單 let-run(A/B/C, 2026-09-09)**: 大 giveback 2.4pp/筆——D(shadow close-path 幾小時樣本)重放後裁決: A 動態閾值(dip=mfeP90) / B 保守(MFE>2×中位) / C edge 條件(買 tip 下 mfeP90——最貼 EDGE-FIRST) | Close-Path Recorder(real + shadow resolve 收集)——shadow 幾小時累積 | shadow 樣本≥30 → p9-let-run-replay → 831 裁決 |
+| P12 | **BUY 贏單 let-run(A/B/C, 2026-09-09 新增)**: 大 giveback 2.4pp/筆——D(close-path 重放)樣本≥30 後裁決落地方式: A 動態閾值(分方向 dip=mfeP90) / B 保守版(MFE>2×per-symbol 中位) / C edge 條件(買 tip 訊號下 PAEL 閾值→mfeP90——最貼 EDGE-FIRST) | Close-Path Recorder 由 09-09 起收集(close 後 24h price path——sample 0) | 樣本≥30(2-4 週) → p9-let-run-replay → 831 裁決 |
 | P15 | **bet-double 倍注 Shadow 層驗證(2026-09-11 新增)**: 主神「蝕錢後 ×2, 贏咗恢復 1×」——V3(同symbol同向)邏輯實驗三關全過(296 筆, 子集EV +1.25%, 8/8 symbol, holdout +25.5pp, 實盤可達 +140.7pp)——實裝已埋但 `BET_DOUBLE_ENABLED` 預設 off | SCL 收據 `entryBetDoubleEligible` 由 09-11 起累積(shadow 開倉 snapshot——2392 筆/日) | **shadow 樣本幾小時達標（主神:每 3 分鐘 cycle, 唔使 2 週）**→ eligible 組 OOS 正 → 主神 enable |
 | P16 | **shadow pool sell 樣本回流驗證(2026-09-11, qrl-pool-monopoly)**: 修復 qrl 壟斷 60/60 buy(sell 樣本餓死 → agents 冇 lean 錯過跌勢)——A per-side 配額 30 / B evict 優先序 blind→qrl→aligned / C qrl arm 封頂 per-symbol≤3+全局≤24 | `scripts/p15-sell-recovery-verify.ts` pre-registered: sell:buy≥0.2 / qrl<40% / open sell≥1 / sell n≥10 | **修復後幾小時重跑驗證**（baseline: sell:buy=0.17, qrl=73.5%, sell EV −0.44%）|
 | P17 | **Git 私密檔案清除 + TG bridge 409 三源頭修復(2026-09-11 ops)**: HERDR_AGENTS.md filter-branch 全歷史清除 + force push（不可逆, 主神批）; AGENT_PROMPT.md untrack; TG 409 = herdr PI 同主 PI 雙 MASTER → HERDR_ENV=1 自動 slave + 409 自動讓位/reclaim（`~/.pi/agent/extensions/telegram-bridge/index.ts`） | 已驗證: 歷史 0 存在 / 三次採樣 96994 穩定 / herdr agents=0 | ✅ 已完成; 主 PI 重啟載入完整新 code |

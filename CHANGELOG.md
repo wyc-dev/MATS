@@ -46,6 +46,9 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - 所有攻擊輪紅先→綠後: TREND-DEFER 4 漏洞 / PURGE-SAFETY 3 漏洞 / ENTRY 2 漏洞 / RECONCILE 8 測試 / BREAKEVEN 7 測試。
 
 ---
+
+## v2.0.877: SE-direction — SELL xyz:SKHX trending_bull bear-chase (0W/2L, −$1.57): regime-direction mismatch is Layer 1 direction error. Add soft conviction penalty (≤20%) for SELL theses with weak target (<1%) — data-validated against 52 SELL SKHX losses before landing. computeChasePenalty now also penalizes '(weak)' target theses (0.15, max with above-demand/trending-bull, never blocks).
+
 ## v2.0.875-P9-ops（2026-09-11：Git 歷史私密清除 + Telegram Bridge 409 三源頭修復 + bet-double/qrl-pool-monopoly 驗證就緒）
 
 > 主神「唔好俾人睇到」+「TG 409 搞掂埋佢」——本 entry 記錄非交易邏輯嘅 ops 層面操作(bet-double 同 qrl-pool-monopoly 嘅詳細見各自 entry)。全量 **4714 pass / 0 fail, exit 0**, tsc clean。
@@ -242,14 +245,14 @@ SKHX 類「trending_bull 追空」兩連敗 = 方向 lean 問題（非 SL）。�
 | # | 項目（版本） | 驗證內容 | 樣本現況（2026-09-08） | 驗證觸發 |
 |:--|:---|:---|:---|:---|
 | P1 | convLedger 消融重播（multiplier-ablation-fix）——⚠️ **前哨裁決 + 減法落地(2026-09-09)** | §27 六誤傷候選真偽——attribution hit-miss 375 records 誤傷率 causal 78%/eq-ev 63%/reversal-point 60%/success-pattern+convexity 55%/mae-pattern 53%（出手組 avg 全 > 全場）→ **減法重播**(scripts/p9-softgate-ablation.ts): 停用 4 個樣本充足(n≥15)誤傷 gate（success-pattern/reversal-point/convexity/mae-pattern, env `P9_SOFTGATE_DISABLE` 回滾）;causal/eq-ev 樣本不足保留;有效對照 shape/trend-alignment/four-window 保留——停用期望 +40.4/29.5/23.3/22.2pp(中性檔) | 減法已落地(env 可即時回滾);**SCL 樣本(verdict/OLR 收據 2392 筆/日)數小時達標 → 嚴格重驗 + 2-4 週後確認停用成效** | SCL 樣本 + 主神複審 |
-| P2 | **shadow WR ρ 重驗（2026-09-09 完成）**: ρ 預測力——E1 fallback 假象 vs symbol 效應 | **三層重驗一致——entryShadowWinRate 冇正預測力,真 snapshot 係反預測**: Real clean(entry-snapshot,n=29)ρ=−0.17 / Real fallback(n=99)ρ=**+0.14**(正 ρ=假象源,E1 確認) / **Shadow 2070 筆 ρ=−0.03,8/8 symbol 全負**(btc −0.05 ~ silver −0.40)——**唔係 bnb 效應,係系統性反預測**(WR 高→結果差,mean-reversion 結構)——shadow-gate「WR 高 boost」方向存疑,**SCL 收據數小時後可嚴格裁決** | 重驗完成——E1 假象確認 + symbol 效應排除——**P2 結案**;shadow-gate 方向留 SCL 嚴格重驗(2-4 週) | SCL 樣本 |
+| P2 | shadow WR ρ 重驗（attack-round6/7）——✅ **2026-09-09 結案** | 三層重驗一致——entryShadowWinRate 冇正預測力,真 snapshot 係反預測: Real clean(entry-snapshot,n=29)ρ=−0.17 / Real fallback(n=99)ρ=**+0.14**(正 ρ=假象源,E1 確認) / **Shadow 2070 筆 ρ=−0.03,8/8 symbol 全負**(btc −0.05 ~ silver −0.40)——唔係 bnb 效應,係系統性反預測 | 重驗完成——E1 假象確認 + symbol 效應排除——**P2 結案**;shadow-gate 方向留 SCL 嚴格重驗 | SCL 樣本 |
 | P3 | regime + persistence 組合（persistence-entry） | 解 SNDK counterexample（persistent_bear 唔應該買 dip） | entryPersistence 分類累積中 | 2-4 週 |
 | P4 | GOT per-gate hit rate（got-observe） | 低 hit rate gate → deadweight 停用流程 | per-gate 歸因收集中 | 2-4 週 |
 | P5 | 6 soft gate 誤傷 counterfactual（mfe-expose-attack） | gate 系統性過度保守裁決 | 每 gate 10-19 樣本（269 單標準） | 2-4 週 |
 | P6 | 候選 C: persistent_bear + m4h<−0.5% block BUY（tool-integrity） | 正確算法重驗（−11.93%→+6.75% 反轉後） | n=6（門檻 n≥15） | n 累積 |
 | P7 | roll 重跑 fetch 覆蓋率（tool-integrity） | 覆蓋率 39/79 改善後重跑 | HL 30 日前 candle 限制 | infra（本地 candle cache） |
-| P8 | time-window 候選 1/2/3 接駁（time-window）
-| P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 | | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+| P8 | time-window 候選 1/2/3 接駁（time-window） | 「last T hours WR」ρ > 累積 WR 先接駁 shadow-gate | 未接駁（code 註解候選） | ρ 驗證後 |
+| P9 | **sizing 驗證(2026-09-08, 新增)**: conviction 分級 + entry-feature adaptive | 327 筆 OOS 實證: 分級 −0.52% vs 現狀 +0.29% → **FAIL**; 注碼>2% 桶 −0.50%(n=20) | 現有特徵無穩定預測力(唯一候選 entryOlrPWin ρ 0.08/0.06) | 唔做; 等 P2 樣本重驗 |
 | P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09 新增)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 閾值 / cycle 粒度 / PAEL threshold 高於細 MFE)──潛在 +86.8 margin%(等權) | 86 筆 exit_price_lock(17 誤標已修復由今日起乾淨累積) | candle 級重放 + entry-quality per-symbol 閾值對照 |
 | P11 | **統計 lean 分辨力嚴格重驗(SCL 收據, 2026-09-09 新增)**: shadow WR 反指標(8/8 symbol 負 ρ) + OLR pwin 分辨力(real ρ=+0.02 已證偽)——用 SCL 收據(verdict/OLR/WR/EV, 2392 筆/日)數小時 n≥15 | 收據由 09-09 起累積(60/60 真值已驗證) | 樣本累積(數小時) → shadow-gate 方向 + lean 衝突偵測裁決(831) |
 | P14 | **clean entryShadowWinRate 樣本追蹤(shadow-gate 中立化確認, 2026-09-09 新增)**: Real clean(entry-snapshot)累積 31 筆——WR≥0.55 → −3.31%(n=5 太細)/「反向唔成立」(低 WR 側 shadow 35.3% 都差——極端信心懲罰,唔係方向反指標)——需 n≥15 確認 + shadow-gate 中立化(如批准)後 real 成效 | 31 筆 clean(n=5 高 WR 組) | 樣本累積(2-4 週) |
