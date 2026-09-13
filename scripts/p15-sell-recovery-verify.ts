@@ -36,6 +36,8 @@ for (const r of rr) {
   if (r.side === 'sell') { bySide.sell++; sells.push({ pnl: r.pnlPct ?? 0, win: r.outcome === 'win' }); }
   else if (r.side === 'buy') { bySide.buy++; buys.push({ pnl: r.pnlPct ?? 0, win: r.outcome === 'win' }); }
 }
+// recentResults.pnlPct 語義 =「百分比數值」(2.0 = +2%, 唔係小數——shadow-trade-engine L1384 已 ×100)。
+// v2.0.883-P15-unit-fix(主神 2026-09-13): 舊版 avg(sells)*100 再放大 100 倍 → 顯示 -28.46% 實為 -0.28%。
 const avg = (a: { pnl: number }[]) => (a.length ? a.reduce((s, x) => s + x.pnl, 0) / a.length : 0);
 const wins = (a: { win: boolean }[]) => (a.length ? a.filter(x => x.win).length / a.length : 0);
 
@@ -45,8 +47,8 @@ const qrlShare = rr.length ? (byType.qrl ?? 0) / rr.length : 0;
 console.log('═══ P15 sell-recovery 驗證（v2.0.875-P9-qrl-pool-monopoly 修復後）═══\n');
 console.log(`[open] total=${open.length}  byType=${JSON.stringify(openType)}  bySide=${JSON.stringify(openSide)}`);
 console.log(`[recentResults] n=${rr.length}  qrl佔比=${(qrlShare * 100).toFixed(1)}%  sell:buy=${bySide.sell}:${bySide.buy} (ratio=${ratio.toFixed(3)})`);
-console.log(`[sell edge] n=${sells.length} avg=${(avg(sells) * 100).toFixed(2)}% WR=${Math.round(wins(sells) * 100)}%`);
-console.log(`[buy edge]  n=${buys.length} avg=${(avg(buys) * 100).toFixed(2)}% WR=${Math.round(wins(buys) * 100)}%`);
+console.log(`[sell edge] n=${sells.length} avg=${avg(sells).toFixed(2)}% WR=${Math.round(wins(sells) * 100)}%`);
+console.log(`[buy edge]  n=${buys.length} avg=${avg(buys).toFixed(2)}% WR=${Math.round(wins(buys) * 100)}%`);
 console.log('');
 
 const v1 = ratio >= 0.2;
