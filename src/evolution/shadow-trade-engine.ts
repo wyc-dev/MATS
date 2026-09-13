@@ -20,9 +20,28 @@
 // symbol) to ensure we have real per-cycle price observations.
 
 import { createLogger } from '../observability/logger.ts';
+import fs from 'node:fs'; // v2.0.885-shadow-archive: resolve archive append
 import { OLREngine, FEATURE_NAMES } from './olr-engine.ts';
 import { wilsonScore } from './evolution-utils.ts';
 import { normalizeSymbol } from '../trading/portfolio.ts';
+
+// ── v2.0.885-shadow-archive（主神 2026-09-13 P17「sell/buy shadow 時機」數據基建）──
+// append-only resolve 檔案——research 專用（唔入 getStats/OLR/learning,同 TradeHistoryArchive 先例）。
+// 目標: 捕「跨跌勢時段」嘅 shadow resolve 完整樣本（recentResults ring 200 ≈ 30min 太短）+ 精確 openedAt。
+// openedAt = pos.openTimestamp（開倉戳,零估算誤差）。env SHADOW_RESOLVE_ARCHIVE=false 可關。
+export const SHADOW_ARCHIVE_PATH = 'data/evolution/shadow-resolve-archive.jsonl';
+export interface ShadowResolveArchiveEntry {
+  id: string; symbol: string; side: string; shadowType?: string;
+  outcome: string; exitReason?: string; openedAt?: number; resolvedAt: number;
+  holdCycles: number; pnlPct?: number; mfePct?: number; maePct?: number; entryOlrPWinAtOpen?: number;
+}
+export function archiveShadowResolve(entry: ShadowResolveArchiveEntry, filePath: string = SHADOW_ARCHIVE_PATH): void {
+  try {
+    if (process.env['SHADOW_RESOLVE_ARCHIVE'] === 'false') return;
+    const line = JSON.stringify(entry) + '\n';
+    fs.appendFileSync(filePath, line, 'utf-8'); // O_APPEND single-write——研究檔可容忍 crash cut 尾 line
+  } catch { /* archive 絕唔可以影響 resolve 主流程 */ }
+}
 
 const log = createLogger({ phase: 'shadow-trade' });
 
@@ -360,7 +379,7 @@ export class ShadowTradeEngine {
    *          and short WR，兩邊都 <50% → 震蕩市 → mean-reversion（唔係
    *          trend-following）。呢個係「雙向確認」嘅 regime signal。
    *  ═══════════════════════════════════════════════════════════════════ */
-  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; resolvedAt: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number;
+  private recentResults: Array<{ id: string; symbol: string; side: 'buy' | 'sell'; outcome: 'win' | 'loss'; holdCycles: number; cycle: number; openedAt?: number; resolvedAt: number; mfePct?: number; maePct?: number; shadowType?: 'blind' | 'aligned' | 'statistical' | 'qrl' | 'seeded'; exitReason?: 'sl_tp' | 'force_resolve' | 'evicted'; pnlPct?: number; volumeState?: 'thin' | 'normal' | 'strong' | 'unknown'; volumeRatio5m?: number;
     /** v2.0.873-P9-shadow-entry-snapshot: entry-time rationale snapshot (off-chain validation only — no decision reads these). */
     sentimentAtEntry?: number; sentimentConvictionAtEntry?: number; fundingRateAtEntry?: number; volatilityAtEntry?: number; srDistanceBpsAtEntry?: number; obImbalanceAtEntry?: number; volumeRatioAtEntry?: number; /** self-referential rationale at open */ entryShadowWRAtOpen?: number; entryShadowNAtOpen?: number; /** decayed cumulative margin-sum(唔係 per-trade EV)——研究用 n+sum 自行折算 */ entryShadowPnlSumAtOpen?: number; }> = [];
 
@@ -1323,10 +1342,12 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade (stale) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome: pos.status, holdCycles, cycle, openedAt: pos.openTimestamp, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'force_resolve', pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
         // P9-let-run(2026-09-09): shadow resolve 通知(ClosePathRecorder 收集 post-close path——幾小時裁決)
         this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: pos.stopLossPrice ?? pos.entryPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(pnl) ? pnl : 0);
         this.capRecentResults(200);
+        // v2.0.885-shadow-archive: 研究檔捕樣本（openedAt 精確）
+        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome: pos.status, exitReason: 'force_resolve', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(pnl) ? pnl : 0, mfePct: pos.mfePct, maePct: pos.maePct });
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
         resolved++;
@@ -1381,10 +1402,12 @@ export class ShadowTradeEngine {
           log.warn(`[shadow] OLR feedTrade failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
+        this.recentResults.push({ id: pos.id, symbol: sym, side: pos.side, outcome, holdCycles, cycle, openedAt: pos.openTimestamp, resolvedAt: Date.now(), mfePct: pos.mfePct, maePct: pos.maePct, shadowType: pos.shadowType, exitReason: 'sl_tp', pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, ...this.volumeTagsFromFeatures(pos.features), ...this.snapshotEntryFeatures(pos.features), ...this.safeEntryStats(pos.entryStats) });
         // P9-let-run(2026-09-09): shadow resolve 通知(ClosePathRecorder 收集 post-close path——幾小時裁決)
         this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: exitPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
         this.capRecentResults(200);
+        // v2.0.885-shadow-archive: 研究檔捕樣本（openedAt 精確）
+        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome, exitReason: 'sl_tp', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0, mfePct: pos.mfePct, maePct: pos.maePct });
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
 
