@@ -92,6 +92,7 @@ import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
 import { isLockProfitCloseReason } from './lib/close-reason-utils.ts';
+import { resolveReconcileFill } from './lib/reconcile-fill.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
@@ -11250,29 +11251,38 @@ ${recentExamples}
 
         // v2.0.868-fix:系統自己驗證 reconciliation close——HL fills 確認有 closing fill
         // 先 close;冇 closing fill(唔確定)→ 系統 hold——唔製造幻影 trade
-        let closingFillsForReconcile: Array<{ symbol: string; side: string; timestamp: number }> = [];
+        let closingFillsForReconcile: Array<{ symbol: string; side: string; timestamp: number; price: number; closedPnl: number }> = [];
         try {
           if (this.tradingManager.getTradeMode() === 'real' && this.hyperliquidWs) {
-            const engine = (this.tradingManager as unknown as { getActiveEngine(): { getRecentFills(n: number): Promise<Array<{ symbol: string; side: string; timestamp: number }>> } | null }).getActiveEngine?.();
+            const engine = (this.tradingManager as unknown as { getActiveEngine(): { getRecentFills(n: number): Promise<Array<{ symbol: string; side: string; timestamp: number; price: number; closedPnl: number }>> } | null }).getActiveEngine?.();
             if (engine) {
               const fills = await engine.getRecentFills(50);
-              closingFillsForReconcile = fills.filter(f => !String(f.side).toLowerCase().startsWith('open'));
+              closingFillsForReconcile = fills.filter(f => !String(f.side).toLowerCase().startsWith('open'))
+                .map(f => ({
+                  symbol: String(f.symbol ?? ''),
+                  side: String(f.side ?? ''),
+                  timestamp: Number(f.timestamp ?? 0),
+                  price: Number(f.price ?? 0),
+                  closedPnl: Number(f.closedPnl ?? 0),
+                }));
             }
           }
         } catch { /* 非致命——冇 fills 就全部唔確定 → 唔 close(保守) */ }
         const reconciled = this.portfolio.reconcilePositions(externalSymbols, (localSym) => {
           // v2.0.868-attack7:callback 內部防禦——垃圾 fills(undefined/非 string)
           // 唔 crash(String()/Number() 防護)——throw → false(唔確定 → 系統 hold)
+          // v2.0.876-FIX-RC: 用純函數 resolveReconcileFill——揾 HL 實際成交 fill,
+          //   close 用實價/realizedPnl, 唔再靠本地估價(`一度 +6.5% → close 成 −16.9%`)。
           try {
             const pos = this.portfolio.getPosition(localSym);
             if (!pos) return true;
-            // v2.0.868-attack7:side 大小寫——HL position side 可能 'BUY'/'SELL'
-            const expectedCloseSide = isBuySide(pos.side) ? 'sell' : 'buy';
-            return closingFillsForReconcile.some(f =>
-              String(f?.symbol ?? '').toLowerCase() === String(localSym).toLowerCase() &&
-              String(f?.side ?? '').toLowerCase() === String(expectedCloseSide).toLowerCase() &&
-              Number(f?.timestamp ?? 0) >= (pos.openedAt ?? 0),
-            );
+            const fillRes = resolveReconcileFill(closingFillsForReconcile, {
+              symbol: localSym,
+              side: String(pos?.side ?? ''),
+              openedAt: Number(pos?.openedAt ?? 0),
+            });
+            if (!fillRes.confirmed) return false;
+            return fillRes as unknown as boolean;
           } catch { return false; }
         });
         if (reconciled.length > 0) {

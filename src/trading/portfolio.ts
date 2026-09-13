@@ -1578,7 +1578,14 @@ export class PortfolioTracker {
    *   有 closing fill(HL 實際成交)→ confirmClosed=true → 真 close
    *   冇 closing fill(唔確定)→ skip(系統自己 hold——唔製造幻影 trade)
    */
-  reconcilePositions(externalOpenSymbols: string[], confirmClosed?: (symbol: string) => boolean): string[] {
+  /**
+   * v2.0.876-FIX-RC（2026-09-13, 主神「reconciliation close 錯價」）:
+   *   原 confirmClosed 只回 boolean——close 用 pos.currentPrice（本地估價）,
+   *   唔用 HL 實際成交價 → 「一度 +6.5% 被 reconciliation close 成 −16.9%」
+   *   （24 筆 giveback Σ194pp 實錘）。擴展: callback 可回 fill 實價,
+   *   close 用 fill 價 → 同交易所真數據一致。
+   */
+  reconcilePositions(externalOpenSymbols: string[], resolveFill?: (symbol: string) => { confirmed: boolean; price?: number; realizedPnl?: number } | boolean): string[] {
     const reconciled: string[] = [];
     // v2.0.868-attack:比較用「全小寫」——normalizeSymbol 只 lower prefix
     // (asset name 保留原樣)——HL 用 'xyz:GOLD'(大寫 asset)vs local
@@ -1623,11 +1630,22 @@ export class PortfolioTracker {
         // v2.0.868-attack7 (O2):callback 可能 throw(caller bug/垃圾 fills)→
         // 包 try/catch——throw = 唔確定 → 唔 close(保守——唔崩潰拖垮 reconciliation)
         let confirmed = true;
-        if (confirmClosed) {
+        let fillPrice: number | undefined;
+        let fillRealizedPnl: number | undefined;
+        if (resolveFill) {
           try {
-            confirmed = confirmClosed(localSymbol);
+            const res = resolveFill(localSymbol);
+            if (typeof res === 'boolean') {
+              confirmed = res;
+            } else if (res && typeof res === 'object') {
+              confirmed = res.confirmed !== false;
+              fillPrice = res.price;
+              fillRealizedPnl = res.realizedPnl;
+            } else {
+              confirmed = false;
+            }
           } catch {
-            log.warn(`🔍 Reconciliation: ${localSymbol} confirmClosed callback threw — treating as NOT confirmed (system holds)`);
+            log.warn(`🔍 Reconciliation: ${localSymbol} resolveFill callback threw — treating as NOT confirmed (system holds)`);
             confirmed = false;
           }
         }
@@ -1635,7 +1653,13 @@ export class PortfolioTracker {
           log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} syncs but NO closing fill found on HL — NOT closing (system holds — verify failure means position likely still open)`);
           continue;
         }
-        log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} consecutive syncs — closing local mirror @ $${safeNum(pos.currentPrice, 0).toFixed(2)}`);
+        // v2.0.876-FIX-RC: close 用 HL 實際成交價（如有）——唔可以用本地估價
+        // close 成錯嘅 pnl。冇 fill 實價 → fallback 本地 currentPrice（保守）。
+        const closePrice = Number.isFinite(fillPrice) && (fillPrice as number) > 0 ? (fillPrice as number) : safeNum(pos.currentPrice, 0);
+        // v2.0.876-FIX-RC: 若 fill 有 realizedPnl（HL 已結算）→ 直接傳比 closeExchangePosition
+        // （佢已有 hlRealizedPnl 參數）——唔再用本地推測 pnl。
+        const realizedOverride = Number.isFinite(fillRealizedPnl) ? (fillRealizedPnl as number) : undefined;
+        log.warn(`🔍 Reconciliation: ${localSymbol} missing ${missingCount} consecutive syncs — closing local mirror @ $${closePrice.toFixed(2)}${realizedOverride !== undefined ? ` (HL realizedPnl=$${realizedOverride.toFixed(2)})` : ''}`);
         // v2.0.32: Use closeExchangePosition() for exchange-imported positions
         // (doesn't add margin back to balance — importExchangePosition didn't deduct it).
         // Use closePosition() for paper positions (margin was deducted at open).
@@ -1646,8 +1670,8 @@ export class PortfolioTracker {
         const paelPending = typeof pos.exitThesis === 'string' && pos.exitThesis.includes('EXIT-PRICE LOCK');
         const closeReason = paelPending ? 'exit_price_lock' : 'reconciliation';
         const trade = pos.agentId === 'hyperliquid-real'
-          ? this.closeExchangePosition(localSymbol, pos.currentPrice, undefined, closeReason)
-          : this.closePosition(localSymbol, pos.currentPrice, closeReason);
+          ? this.closeExchangePosition(localSymbol, closePrice, realizedOverride, closeReason)
+          : this.closePosition(localSymbol, closePrice, closeReason);
         if (trade) {
           reconciled.push(localSymbol);
           this.reconciliationMissingCounts.delete(localSymbol);
