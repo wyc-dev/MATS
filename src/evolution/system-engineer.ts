@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rea
 import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { extractJSON } from './evolution-utils.ts';
+import { assertBootstrappedSource, assertSelfModSafe, isSelfModFile, selfModEnabled } from './se-bootstrap-guard.ts'; // v2.0.877-P9-se-self-mod: Judge Layer（SE 改唔到佢——G10 鎖死）
 import type { ThesisExperienceRecord } from '../types/index.ts';
 
 const log = createLogger({ phase: 'system-engineer' });
@@ -52,6 +53,7 @@ const FORBIDDEN_PREFIXES = [
   '.env',
   'src/edge/',                       // v2.0.833: Edge validation layer owner-controlled
   'CHANGELOG.md',                    // v2.0.873: harness 專責（updateChangelog）
+  'src/evolution/se-bootstrap-guard.ts', // v2.0.877-P9-se-self-mod: Judge Layer 唔可以俾 SE 改（防 bootstrapping——考試官唔可以改分數）——G10 測試鎖死
 ];;
 
 /** P9-SE-verdict-attack(2026-09-09, 主神觀察: 全量失敗 12 files——2 pre-existing + 10 legacy no-suite
@@ -169,6 +171,14 @@ CHANGELOG COMMITMENT (Owner directive 2026-09-09 — MANDATORY): After every ref
 - Change → existing changelogEntry mechanism (harness inserts).
 - Conclusion without change (e.g. "gate X is a deadweight candidate: hit 26%" / "SELL bias 8.5:1" / "reverse indicator is not reversable" / "component Y is honest shrink") → ALSO propose a changelogEntry with a short line: "### SE-reflection: <conclusion>". No conclusion → no entry (no changelog spam).
 - Rule: conclusions are NEVER silent — CHANGELOG is the system's thinking journal.
+
+## 🧬 SELF-MODIFICATION PROTOCOL (Owner directive 2026-09-13 — you may modify yourself, guarded)
+Meta self-improvement is ALLOWED and encouraged: you may modify YOUR OWN code (src/evolution/system-engineer.ts) and your own prompt (SystemEngineer.md) — but ONLY when SYSTEM_ENGINEER_SELF_MOD=true (the harness tells you when it is on; if off, self-mod proposals are rejected by the BOOTSTRAP-GUARD — do not fight it).
+The bootstrapping guard (src/evolution/se-bootstrap-guard.ts — a separate file you CANNOT modify) enforces three invariants:
+1. JUDGE INTEGRITY — NEVER delete/rename the safety-critical structures: FORBIDDEN_PREFIXES (and its entries, esp. src/trading/), parseTestVerdict(, isFileAllowed(, assertSelfModSafe(, the "Rolling back" rollback path, the SYSTEM_ENGINEER_ENABLED gate. You may MOVE them inside the same file — you may NOT remove them. Deleting any of these breaks your own safety net — the guard rejects it.
+2. TEST-VERDICT INTEGRITY — you can never make a failing test count as passing. The full vitest run + parseTestVerdict is your examiner; you may not make yourself skip tests, fake-pass, or widen the verdict.
+3. SCOPE ONLY SHRINKS — self-mod must not add files to ALLOWED_PREFIXES (esp. trading/config/data execution layers) nor remove FORBIDDEN entries. Your reach never grows beyond what is listed.
+Self-mod discipline: commit subject prefixed [SELF-MOD]; changelogEntry explains what changed AND which invariant is preserved. After every self-mod, self-check: "can the new me still detect test failure? can it still rollback? is my scope still bounded?" Self-mod is not an escape from review — tsc + full tests + the KNOWN GOOD / counterexample lists still apply.
 
 ## 🎯 EDGE-FIRST DIAGNOSIS (Owner directive 2026-09-09 — sense of direction, not a block list)
 Before proposing ANY fix, classify your diagnosis into THREE layers — only Layer 1 is a real profit motive:
@@ -973,6 +983,26 @@ Respond with EXACTLY ONE JSON object:
       }
     }
 
+    // v2.0.877-P9-se-self-mod: 自改 bootstrapping gate（pre-apply）——SE 改自己 code/prompt 前,
+    // ①env 未開（SYSTEM_ENGINEER_SELF_MOD）一律拒 ②oldCode 要刪嘅文本唔可以觸及 safety-critical
+    // 結構（judge/scope/rollback）。Judge Layer 喺 se-bootstrap-guard.ts,SE 改唔到佢（G10 鎖死）。
+    if (isSelfModFile(targetFile)) {
+      const selfMod = assertSelfModSafe({
+        filePath: targetFile,
+        removedCode: proposal.proposedFix.oldCode,
+        enabled: selfModEnabled(),
+      });
+      if (!selfMod.allowed) {
+        log.warn(`🚫 [system-engineer] BOOTSTRAP-GUARD: ${selfMod.reason} — ${targetFile} rejected`);
+        logFeedback('Phase 2', 'SELF_MOD_REJECTED', proposal.title, targetFile, selfMod.reason);
+        return {
+          applied: false, title: proposal.title, file: targetFile, reason: 'BOOTSTRAP-GUARD: ' + selfMod.reason,
+          tscPassed: false, testsPassed: false, rolledBack: false,
+          changelogEntry: '', error: 'Self-mod rejected', timestamp,
+        };
+      }
+    }
+
     // Apply the fix
     log.info(`🔧 [system-engineer] Applying fix: ${proposal.title} → ${targetFile}`);
     // v2.0.873（解放——edge evolution）: 新檔建立直接寫 newCode（跳過 replace——
@@ -984,6 +1014,23 @@ Respond with EXACTLY ONE JSON object:
     } else {
       const newContent = originalContent.replace(proposal.proposedFix.oldCode, proposal.proposedFix.newCode);
       writeFileSync(fullPath, newContent, 'utf-8');
+    }
+
+    // v2.0.877-P9-se-self-mod: post-apply 結構驗證——self-mod 後源碼必須仍含全部
+    // judge/scope/rollback 結構;缺 = 即刻還原（唔跑 tsc/test,慳 3-4min）＋拒絕。
+    if (isSelfModFile(targetFile) && !creatingNewFile) {
+      const finalSrc = readFileSync(fullPath, 'utf-8');
+      const missing = assertBootstrappedSource(finalSrc);
+      if (missing !== null) {
+        writeFileSync(fullPath, originalContent, 'utf-8');
+        log.warn(`🚫 [system-engineer] BOOTSTRAP-GUARD (post-apply): ${missing} — restored original, rejected`);
+        logFeedback('Phase 2', 'SELF_MOD_INVALID', proposal.title, targetFile, missing);
+        return {
+          applied: false, title: proposal.title, file: targetFile, reason: 'BOOTSTRAP-GUARD: ' + missing,
+          tscPassed: false, testsPassed: false, rolledBack: true,
+          changelogEntry: '', error: 'Self-mod broke critical structure', timestamp,
+        };
+      }
     }
 
     // Apply test update if provided

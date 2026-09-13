@@ -358,14 +358,28 @@ export function computeATRSLTP(
     }
   }
 
-  // ── v2.0.878: S/R distance floor ──
+  // ── v2.0.878 + v2.0.880: S/R distance floor ──
   // If the nearest S/R level in the trade direction is close (e.g. 14bps),
-  // the SL must sit beyond it (1.2×) so a brief pierce doesn't stop us out
-  // before the thesis (rejection at supply) plays out. This is a FLOOR — we
-  // never narrow below what ATR/momentum/lens suggest, only widen when the
-  // S/R level is closer than the current SL distance.
+  // the SL must sit beyond it so a brief pierce doesn't stop us out before
+  // the thesis (rejection at supply) plays out. This is a FLOOR — we never
+  // narrow below what ATR/momentum/lens suggest, only widen when the S/R
+  // level is closer than the current SL distance.
+  //
+  // v2.0.880: When srDist is extremely tight (<20bps), the 1.2× floor is
+  // insufficient — a 14bps S/R distance gives only 16.8bps of SL headroom,
+  // which is still within normal noise for a mean-reverting regime. Use a
+  // progressive floor: 1.5× for srDist < 20bps, 1.3× for 20-40bps, 1.2×
+  // otherwise. This keeps the stop beyond the S/R level while avoiding
+  // over-widening on already-wide S/R distances.
   if (srDistance !== undefined && srDistance > 0) {
-    const srSlDist = srDistance * 1.2;
+    const srBps = (srDistance / entryPrice) * 10000;
+    let srFloorMult = 1.2;
+    if (srBps < 20) {
+      srFloorMult = 1.5;
+    } else if (srBps < 40) {
+      srFloorMult = 1.3;
+    }
+    const srSlDist = srDistance * srFloorMult;
     slDist = Math.max(slDist, srSlDist);
   }
 
