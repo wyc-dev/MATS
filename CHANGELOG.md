@@ -22,6 +22,40 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.882-885-P9（2026-09-13——SE async + investigation 修復 + 攻擊輪×3 + 寫入統一 + shadow archive 數據基建）
+
+> 主神一連串：why proxy error → SE 卡住 HACP → investigation 兩日冇寫 → 功能重複審計 → 不擇手段攻擊×3 → 深挖 sell/buy shadow 時機 → 四波交付。全量 **4844 pass / 0 fail, exit 0**（4798 → +46）， tsc clean。
+
+### ① SE-ASYNC（v2.0.882, a27dd34——主神「SE 流程可以 async,否則卡住 HACP」）
+- system-engineer.ts 9 處 execSync → execAsync（tsc/test/git 唔再 block event loop——HACP cycle 喺 SE 跑 4 分鐘全量測試期間照行）
+- index.ts 兩條 SE 路徑 fire-and-forget（void,唔再 await + hold cycleInProgress）
+- exit 42 改 `seRestartRequested` 旗 → index.ts 喺「cycle 之間」先 exit（防 async SE 完成時斬半個進行中 trade cycle）
+- 測試 A1-A5 鎖死（唔准 execSync 復活 / 唔准 await call site / 唔准 SE 內直接 exit 42）
+
+### ② INVESTIGATION-ROOTCAUSE（v2.0.883, 2227c2b——investigation.md 兩日冇寫）
+- **root cause**: cycle-reviewer.ts 3 處 `require('node:fs')` 喺 ESM（type=module）下爆 ReferenceError → reviewMarketPairs 每 cycle throw 被 catch 吞 → investigation 由 09-11 零寫入（📍/Missed Edge/績效全死）
+- fix: require → ESM import + reviewMarketPairs lifecycle LOUD（file trace + rootLogger）——live 下個 cycle 即見 WROTE
+- 順帶: scripts/p15 單位修復（cb2c518）——recentResults.pnlPct 已係 % 數值（2.0=+2%）,avg 再 ×100 = 假 100× 讀數（−28.46% 實為 −0.28%）
+
+### ③ ATTACK ROUNDS ×3（5c894b6 / a235258 / 7da6d29+0cb19c6）
+- cycle-reviewer 攻擊輪（紅先 3 真漏洞）: path traversal / mergedLine 注入 / body 垃圾寫入 / sectionTitle header 注入 / per-item getter bomb → 全修
+- **atomic-unify**（功能重複審計）: atomicWriteSync 升級（unique tmp `pid-ts-rand` 根治 fixed .tmp race + dir ensure + finally cleanup）;cycle-reviewer×3 手寫 tmp+rename + system-engineer CHANGELOG tmp-pid 版收斂統一（單一寫入 source of truth,少 ~25 行重複）
+- **edge-label-fix**: buildMissedEdge「|4h|≥0.5%=edge」概念錯位 → 「4h 強動量未開倉檢討候選」（0.5% 係 regime 分界,唔係實證 edge;零決策邏輯）
+- shadow-archive 攻擊輪（紅先 2 真漏洞）: path traversal guard + 無限增長 → 3 代滑動 rotate（keep 最近 3 批,唔可以覆蓋丟 data——測試捉到單代覆蓋缺陷）
+
+### ④ SHADOW-ARCHIVE（v2.0.885, 0202b3d——P17「sell/buy shadow 時機」數據基建,主神批准）
+- recentResults 加 `openedAt`（pos.openTimestamp 精確,零估算誤差——取代 resolvedAt−holdCycles×180s）
+- append-only `data/evolution/shadow-resolve-archive.jsonl`（research 專用,唔入 getStats/OLR/learning——ring 200≈30min 太短,捕唔到跌勢時段樣本）
+- scripts/p17-shadow-entry-timing.ts 升級（讀 archive 優先,精確 openedAt → m4hAtOpen 分桶驗證 H1-H4）
+- env `SHADOW_RESOLVE_ARCHIVE`（回滾）/ `SHADOW_ARCHIVE_MAX_BYTES`（cap,default 100MB）
+- **Phase 2（等樣本,唔 while 等）**: 跌勢桶 n≥10 → 重跑 P17 → 驗證「sell 追跌尾=負 EV / buy 買dip vs 追升」→ sell/buy 時機 gate 候選（831 裁決）
+
+### 驗證
+- 新測試 46（se-async 5 + cycle-reviewer-attack 11 + atomic-write-attack 15 + shadow-archive 15）;全量 **4844 pass / 0 fail, exit 0**, tsc clean
+- live: investigation 通電（每 cycle WROTE）+ archive 持續累積（openedAt 精確）
+
+---
+
 ## v2.0.881: SE-direction — SELL xyz:SKHX #7 opened despite thesis '(weak)' target + trending_bull + ob=0.30. Data-validate weak-target and ob>0 SELL penalties are actually firing; if firing but insufficient, strengthen soft penalty (≤20% cap) for SELL-in-trending_bull + weak target + positive ob combination. Fixed regexes in computeChasePenalty to match actual thesis format ('target $1350 (weak) ~1.7% move', 'ob=0.30').
 
 
@@ -288,6 +322,10 @@ SKHX 類「trending_bull 追空」兩連敗 = 方向 lean 問題（非 SL）。�
 | P10 | **full-retrace 細 MFE 鎖利窗口分析(exit-lock-label-fix, 2026-09-09 新增)**: 17 筆誤標單(MFE median 2.97% vs 真鎖利 4.85%)——細 MFE 倉係回吐重災區, retraced 30% 鎖利窗口被 miss(perSymbolMfeP50 閾值 / cycle 粒度 / PAEL threshold 高於細 MFE)──潛在 +86.8 margin%(等權) | 86 筆 exit_price_lock(17 誤標已修復由今日起乾淨累積) | candle 級重放 + entry-quality per-symbol 閾值對照 |
 | P11 | **統計 lean 分辨力嚴格重驗(SCL 收據, 2026-09-09 新增)**: shadow WR 反指標(8/8 symbol 負 ρ) + OLR pwin 分辨力(real ρ=+0.02 已證偽)——用 SCL 收據(verdict/OLR/WR/EV, 2392 筆/日)數小時 n≥15 | 收據由 09-09 起累積(60/60 真值已驗證) | 樣本累積(數小時) → shadow-gate 方向 + lean 衝突偵測裁決(831) |
 | P14 | **clean entryShadowWinRate 樣本追蹤(shadow-gate 中立化確認, 2026-09-09 新增)**: Real clean(entry-snapshot)累積 31 筆——WR≥0.55 → −3.31%(n=5 太細)/「反向唔成立」(低 WR 側 shadow 35.3% 都差——極端信心懲罰,唔係方向反指標)——需 n≥15 確認 + shadow-gate 中立化(如批准)後 real 成效 | 31 筆 clean(n=5 高 WR 組) | 樣本累積(2-4 週) |
+| P15 | **bet-double 倍注 Shadow 層驗證(2026-09-11 新增)**: 主神「蝕錢後 ×2, 贏咗恢復 1×」——V3(同symbol同向)邏輯實驗三關全過(296 筆, 子集EV +1.25%, 8/8 symbol, holdout +25.5pp, 實盤可達 +140.7pp)——實裝已埋但 `BET_DOUBLE_ENABLED` 預設 off | SCL 收據 `entryBetDoubleEligible` 由 09-11 起累積(shadow 開倉 snapshot——2392 筆/日) | **shadow 樣本幾小時達標（主神:每 3 分鐘 cycle, 唔使 2 週）**→ eligible 組 OOS 正 → 主神 enable |
+| P16 | **shadow pool sell 樣本回流驗證(2026-09-11, qrl-pool-monopoly)**: 修復 qrl 壟斷 60/60 buy(sell 樣本餓死 → agents 冇 lean 錯過跌勢)——A per-side 配額 30 / B evict 優先序 blind→qrl→aligned / C qrl arm 封頂 per-symbol≤3+全局≤24 | `scripts/p15-sell-recovery-verify.ts` pre-registered: sell:buy≥0.2 / qrl<40% / open sell≥1 / sell n≥10 | **修復後幾小時重跑驗證**（baseline: sell:buy=0.17, qrl=73.5%, sell EV −0.44%）|
+| P17 | **Git 私密檔案清除 + TG bridge 409 三源頭修復(2026-09-11 ops)**: HERDR_AGENTS.md filter-branch 全歷史清除 + force push（不可逆, 主神批）; AGENT_PROMPT.md untrack; TG 409 = herdr PI 同主 PI 雙 MASTER → HERDR_ENV=1 自動 slave + 409 自動讓位/reclaim（`~/.pi/agent/extensions/telegram-bridge/index.ts`） | 已驗證: 歷史 0 存在 / 三次採樣 96994 穩定 / herdr agents=0 | ✅ 已完成; 主 PI 重啟載入完整新 code |
+| P18 | **shadow 開倉時機驗證（shadow-archive, 2026-09-13 新增）**: H1-H4——sell「追跌尾」（m4hAtOpen≤−0.5% 開 sell=負 EV）/ buy「買dip vs 追升」時機分野。shadow-resolve-archive.jsonl（append-only, openedAt 精確）累積後重跑 `scripts/p17-shadow-entry-timing.ts` 分桶驗證（每桶 n≥10, avg 差≥0.5pp + WR 差≥10pp 先 PASS） | archive 已由 09-13 live 累積（每小時數百條;跌勢桶要等跌勢時段先有樣本） | 跌勢桶樣本 n≥10 → P17 重跑 → 831 裁決（sell/buy 時機 gate 候選 S1-S4,env 回滾） |
 | P12 | **BUY 贏單 let-run(A/B/C, 2026-09-09 新增)**: 大 giveback 2.4pp/筆——D(close-path 重放)樣本≥30 後裁決落地方式: A 動態閾值(分方向 dip=mfeP90) / B 保守版(MFE>2×per-symbol 中位) / C edge 條件(買 tip 訊號下 PAEL 閾值→mfeP90——最貼 EDGE-FIRST) | Close-Path Recorder 由 09-09 起收集(close 後 24h price path——sample 0) | 樣本≥30(2-4 週) → p9-let-run-replay → 831 裁決 |
 
 ---

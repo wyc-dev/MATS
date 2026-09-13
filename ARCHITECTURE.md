@@ -1,10 +1,19 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.877-P9-se-self-mod
+> **作者**: YC Wong · **版本**: 2.0.885-P9-shadow-archive
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-13 se-self-mod + engineer-boot）**: vitest **4798 pass / 0 fail — exit 0**（4784 → +14: se-bootstrap-guard 14 新測試——SE 自改 Judge Layer）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-13 shadow-archive / SE-async 時代）**: vitest **4844 pass / 0 fail — exit 0**（4798 → +46: v2.0.882 SE-async / v2.0.883 investigation-rootcause+p15+attack / v2.0.884 atomic-unify+edge-label / v2.0.885 shadow-archive+attack 系列）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## 🏗️ v2.0.882-885 新組件（2026-09-13, SE-Async + Investigation-Fix + Atomic-Unify + Shadow-Archive）
+
+- **SE-ASYNC**（v2.0.882, `src/evolution/system-engineer.ts`）: execSync→execAsync ×9（SE 跑全量測試期間 HACP cycle 照行）;call site fire-and-forget + exit 42 延至 cycle 邊界（`seRestartRequested` 旗,唔斬半個 trade cycle）。
+- **INVESTIGATION-FIX**（v2.0.883, `src/analysis/cycle-reviewer.ts`）: root cause = ESM 下 `require('node:fs')` 爆 → 3 處改 ESM import;reviewMarketPairs lifecycle LOUD（file trace + rootLogger）。
+- **ATOMIC-UNIFY**（v2.0.884, `src/evolution/persistence.ts`）: `atomicWriteSync` 升級（unique tmp + dir ensure + cleanup）——cycle-reviewer×3 + system-engineer CHANGELOG 手寫版收斂統一（單一寫入 source of truth）;buildMissedEdge 字面修正（強動量≠edge）。
+- **SHADOW-ARCHIVE**（v2.0.885, `src/evolution/shadow-trade-engine.ts`）: resolve 記錄加精確 `openedAt` + append-only `shadow-resolve-archive.jsonl`（research 專用,3 代 rotate）——P17 sell/buy 時機分析數據基建（Phase 2 等樣本重跑）;scripts/p17-shadow-entry-timing.ts（archive 優先→m4hAtOpen 分桶驗證 H1-H4）。
 
 ---
 
@@ -47,6 +56,7 @@
 | P15 | **bet-double 倍注 Shadow 層驗證(2026-09-11 新增)**: 主神「蝕錢後 ×2, 贏咗恢復 1×」——V3(同symbol同向)邏輯實驗三關全過(296 筆, 子集EV +1.25%, 8/8 symbol, holdout +25.5pp, 實盤可達 +140.7pp)——實裝已埋但 `BET_DOUBLE_ENABLED` 預設 off | SCL 收據 `entryBetDoubleEligible` 由 09-11 起累積(shadow 開倉 snapshot——2392 筆/日) | **shadow 樣本幾小時達標（主神:每 3 分鐘 cycle, 唔使 2 週）**→ eligible 組 OOS 正 → 主神 enable |
 | P16 | **shadow pool sell 樣本回流驗證(2026-09-11, qrl-pool-monopoly)**: 修復 qrl 壟斷 60/60 buy(sell 樣本餓死 → agents 冇 lean 錯過跌勢)——A per-side 配額 30 / B evict 優先序 blind→qrl→aligned / C qrl arm 封頂 per-symbol≤3+全局≤24 | `scripts/p15-sell-recovery-verify.ts` pre-registered: sell:buy≥0.2 / qrl<40% / open sell≥1 / sell n≥10 | **修復後幾小時重跑驗證**（baseline: sell:buy=0.17, qrl=73.5%, sell EV −0.44%）|
 | P17 | **Git 私密檔案清除 + TG bridge 409 三源頭修復(2026-09-11 ops)**: HERDR_AGENTS.md filter-branch 全歷史清除 + force push（不可逆, 主神批）; AGENT_PROMPT.md untrack; TG 409 = herdr PI 同主 PI 雙 MASTER → HERDR_ENV=1 自動 slave + 409 自動讓位/reclaim（`~/.pi/agent/extensions/telegram-bridge/index.ts`） | 已驗證: 歷史 0 存在 / 三次採樣 96994 穩定 / herdr agents=0 | ✅ 已完成; 主 PI 重啟載入完整新 code |
+| P18 | **shadow 開倉時機驗證（shadow-archive, 2026-09-13 新增）**: H1-H4——sell「追跌尾」（m4hAtOpen≤−0.5% 開 sell=負 EV）/ buy「買dip vs 追升」時機分野。shadow-resolve-archive.jsonl（append-only, openedAt 精確）累積後重跑 `scripts/p17-shadow-entry-timing.ts` 分桶驗證（每桶 n≥10, avg 差≥0.5pp + WR 差≥10pp 先 PASS） | archive 已由 09-13 live 累積（每小時數百條;跌勢桶要等跌勢時段先有樣本） | 跌勢桶樣本 n≥10 → P17 重跑 → 831 裁決（sell/buy 時機 gate 候選 S1-S4,env 回滾） |
 
 ---
 
