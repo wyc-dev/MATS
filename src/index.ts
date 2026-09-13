@@ -1670,7 +1670,7 @@ class MATSSystem {
                 if (!line.trim()) continue;
                 try { const r = JSON.parse(line); if (r && typeof r.id === 'string') ev.push(r); } catch { /* skip */ }
               }
-              const cand = evaluateShadowCandidate(ev, ['sentimentAtEntry','sentimentConvictionAtEntry','fundingRateAtEntry','volatilityAtEntry','srDistanceBpsAtEntry','obImbalanceAtEntry','volumeRatioAtEntry','entryShadowWRAtOpen','entryShadowPnlSumAtOpen'], { startedAt: Date.now() - 5 * 86_400_000 });
+              const cand = evaluateShadowCandidate(ev, ['sentimentAtEntry','sentimentConvictionAtEntry','fundingRateAtEntry','volatilityAtEntry','srDistanceBpsAtEntry','obImbalanceAtEntry','volumeRatioAtEntry','entryShadowWRAtOpen','entryShadowPnlSumAtOpen']);
               if (cand.verdict === 'PASS') log.warn(`🚀 [shadow-candidate] ${cand.reason}`);
               else if (cand.verdict === 'FAIL') log.info(`📝 [shadow-candidate] ${cand.reason}`);
               else log.info(`⏳ [shadow-candidate] ${cand.reason}`);
