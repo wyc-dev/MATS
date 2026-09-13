@@ -91,6 +91,7 @@ import { shouldBlockChurn } from './lib/churn-guard.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
+import { isLockProfitCloseReason } from './lib/close-reason-utils.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
@@ -8175,19 +8176,23 @@ ${recentExamples}
     //   2/5 個 exit_price_lock 入口手動 set(4274/4325), PAEL-FALLBACK(4150)/
     //   Reversal-point lock(13272)/Reversal-point exit(13284) 全部漏咗 →
     //   「鎖完即追」20 分鐘照開同方向(09-12 BNB 12 筆雞碎循環 = E1 實錘)。
-    //   只有 exit_price_lock / profit_lock(鎖利)close 先觸發 cooldown——
-    //   止血(SL/consensus 蝕)/手動唔會 block re-entry。
-    const lockReason = closeReason === 'exit_price_lock' || closeReason === 'profit_lock';
-    if (lockReason && process.env['REENTRY_COOLDOWN_MIN'] !== '0') {
+    //   ATTACK-A1(2026-09-13): cooldown 必須喺 close **成功後**先 set——
+    //   HL close 失敗(斷網/timeout)照 set = 假 cooldown = 系統自我 DoS。
+    //   用純函數 isLockProfitCloseReason 統一判定(只有鎖利類 close 觸發)。
+    const maybeSetLockCooldown = (): void => {
+      if (!isLockProfitCloseReason(closeReason)) return;
+      if (process.env['REENTRY_COOLDOWN_MIN'] === '0') return;
       try {
         const rcUnified = buildCooldownEntry(pos.side, Date.now(), Number(process.env['REENTRY_COOLDOWN_MIN'] ?? '60') * 60_000);
         if (rcUnified) this.lockReentryCooldowns.set(sym, rcUnified);
       } catch { /* 非致命——cooldown 失敗唔 block close */ }
-    }
+    };
 
     if (pos.agentId === 'hyperliquid-real') {
       // Real position: close on HL first, then locally
       const closed = await this.tradingManager.closePosition(sym, closeReason);
+      // A1: 只喺 close 成功後先 set cooldown（HL close 失敗 → 唔鎖 re-entry）
+      if (closed) maybeSetLockCooldown();
       // v2.0.870-P80: bStocks 交易機制已全面隱藏——移除 maybeSwapBStock 呼叫
       return closed;
     } else {
@@ -8208,6 +8213,8 @@ ${recentExamples}
         }
       } catch { /* non-fatal */ }
       // v2.0.870-P80: bStocks 交易機制已全面隱藏——移除 maybeSwapBStock 呼叫
+      // A1: paper close 成功先 set cooldown（trade 存在 = close 成功）
+      if (trade) maybeSetLockCooldown();
       return !!trade;
     }
   }
@@ -12971,9 +12978,38 @@ ${recentExamples}
             // 每個 symbol 第一公民（股票/黃金各自 24h 動量獨立判斷）——F1 動量方向
             // 偏置 gate 由共用 helper 管,任何 symbol 開倉都行同一個（冇「multi-symbol
             // path」概念）。極端反勢（|mom|≥8%）hard block;順勢 boost。env 回滾。
+            // v2.0.876-ENTRY-ATTACK-A2(2026-09-13): per-symbol path 都要行 Churn Guard——
+            //   原嚟得 HACP 主路徑(14795)有, 呢度 bypass → exploration/per-symbol 照樣
+            //   churn（09-12 BNB 26h 13 注）。同 f2 一齊行, 斬斷每個 symbol 嘅追單循環。
             try {
               if (psc.action === 'buy' || psc.action === 'sell') {
                 const f2Sym = normalizeSymbol(psc.symbol);
+                // ── Churn Guard（A2: per-symbol 都要行）──
+                let f2ChurnBlocked = false;
+                try {
+                  const f2WindowStart = Date.now() - 6 * 3600_000;
+                  const f2Trades = (this.portfolio?.getClosedRealTrades?.() ?? []) as unknown as Array<Record<string, unknown>>;
+                  let f2Same = 0;
+                  let f2Opp = 0;
+                  const f2Side = psc.action as 'buy' | 'sell';
+                  for (const ct of f2Trades) {
+                    const cts = ct['closedAt'];
+                    if (!(typeof cts === 'number' && Number.isFinite(cts) && cts >= f2WindowStart)) continue;
+                    if (String(ct['symbol']).toLowerCase() !== f2Sym) continue;
+                    const cs2 = ct['side'];
+                    if (cs2 === 'buy' || cs2 === 'sell') { if (cs2 === f2Side) f2Same++; else f2Opp++; }
+                  }
+                  const f2Churn = shouldBlockChurn({ side: f2Side, confidence: psc.confidence, sameSideCount6h: f2Same, oppSideCount6h: f2Opp });
+                  if (f2Churn.blocked) {
+                    log.warn(`📍 [churn-guard] ${psc.action.toUpperCase()} ${f2Sym} SKIPPED —— ${f2Churn.reason}`);
+                    auditGates.push({ gate: 'churn-guard', passed: false, reason: f2Churn.reason ?? 'churn' });
+                    f2ChurnBlocked = true;
+                  }
+                } catch { /* 非致命 */ }
+                if (f2ChurnBlocked) {
+                  this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);
+                  continue;
+                }
                 const f2 = this.applyEntryConvictionGates(f2Sym, psc.action as 'buy' | 'sell', psc.confidence, psc.positionSizePct ?? 0);
                 if (f2.blocked) {
                   log.warn(`🛑 [entry-gate] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
