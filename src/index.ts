@@ -87,6 +87,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldColdStartLock, decideTrailingLockAction, computeFreshUnrealizedPnl, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldDeferTrendLock, shouldDeferTrendLockGate, computeTrendPeakPrice } from './lib/trend-defer.ts';
+import { shouldBlockChurn } from './lib/churn-guard.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
@@ -8169,6 +8170,21 @@ ${recentExamples}
     const closeRegime = this.marketState?.getState(sym)?.regime;
     if (closeRegime) this.portfolio.setCloseRegime(sym, closeRegime);
 
+    // v2.0.876-FIX-H1(2026-09-13, 主神「HACP/exploration 落單流程荒謬」):
+    //   reentry-cooldown 統一喺 closeTrade 處理(單一 source of truth)——原嚟只喺
+    //   2/5 個 exit_price_lock 入口手動 set(4274/4325), PAEL-FALLBACK(4150)/
+    //   Reversal-point lock(13272)/Reversal-point exit(13284) 全部漏咗 →
+    //   「鎖完即追」20 分鐘照開同方向(09-12 BNB 12 筆雞碎循環 = E1 實錘)。
+    //   只有 exit_price_lock / profit_lock(鎖利)close 先觸發 cooldown——
+    //   止血(SL/consensus 蝕)/手動唔會 block re-entry。
+    const lockReason = closeReason === 'exit_price_lock' || closeReason === 'profit_lock';
+    if (lockReason && process.env['REENTRY_COOLDOWN_MIN'] !== '0') {
+      try {
+        const rcUnified = buildCooldownEntry(pos.side, Date.now(), Number(process.env['REENTRY_COOLDOWN_MIN'] ?? '60') * 60_000);
+        if (rcUnified) this.lockReentryCooldowns.set(sym, rcUnified);
+      } catch { /* 非致命——cooldown 失敗唔 block close */ }
+    }
+
     if (pos.agentId === 'hyperliquid-real') {
       // Real position: close on HL first, then locally
       const closed = await this.tradingManager.closePosition(sym, closeReason);
@@ -12554,6 +12570,15 @@ ${recentExamples}
             log.info(`🧪 All signals neutral — skipping exploration (no edge detected)`);
             finalDecision = result.consensus.decision; // keep HOLD
           } else {
+            // v2.0.876-FIX-H2(2026-09-13, 主神「exploration 無視 veto」):
+            //   Risk Auditor veto 咗 → exploration 唔可以開 real 湊數據（用真銀換數據
+            //   = 結構性送錢, 22 筆 WR 32% 實證）。veto 時 skip real exploration——
+            //   shadow 層照常有數據, 唔使靠 real 湊。
+            if ((result as { riskVetoed?: boolean } | null)?.riskVetoed === true) {
+              log.warn(`🧪 [veto-guard] Exploration ${direction!.toUpperCase()} ${exploreTarget} SKIPPED —— Risk Auditor veto（唔可以用真銀湊數據）`);
+              finalDecision = result.consensus.decision; // keep HOLD
+              direction = null;
+            } else {
             // v2.0.872-P8（DRAM 案修復）: exploration 接入統一 conviction gates。
             // 原窿:exploration 繞過 applyEntryConvictionGates（四窗/F1/OLR<35%
             // /reentry-cooldown/shadow-gate 全部冇行）→ 4h -3.47% 跌市開 BUY
@@ -12580,6 +12605,7 @@ ${recentExamples}
               );
               direction = null;
               finalDecision = result.consensus.decision; // keep HOLD
+            }
             }
           }
           if (direction) {
@@ -14762,6 +14788,40 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           }
         } catch { /* non-fatal */ }
 
+        // ── v2.0.876-FIX-H3(2026-09-13, 主神「HACP/exploration 落單流程荒謬」): Churn Guard ──
+        // 09-12 BNB 26h 13 注 BUY 實錘: 6h 內同方向 N 注先係 churn 根治量度
+        // （FIX-H1 cooldown 只擋 60min; 呢個擋「6h 同方向 ≥3 注 / 低信心重複」）。
+        // 同 applyEntryConvictionGates 互補——放行高信心新方向, 只在明確 churn 先 block。
+        let churnBlocked = false;
+        if (gateAction === 'buy' || gateAction === 'sell') {
+          try {
+            const churnSym = normalizeSymbol(finalDecision.symbol || activeSymbol);
+            const churnWindowStart = Date.now() - 6 * 3600_000;
+            const churnTrades = (this.portfolio?.getClosedRealTrades?.() ?? []) as unknown as Array<Record<string, unknown>>;
+            let sameSide6h = 0;
+            let oppSide6h = 0;
+            const churnSide: 'buy' | 'sell' = gateAction;
+            for (const ct of churnTrades) {
+              const cts = ct['closedAt'];
+              const csym = ct['symbol'];
+              const cside = ct['side'];
+              if (!(typeof cts === 'number' && Number.isFinite(cts) && cts >= churnWindowStart)) continue;
+              if (String(csym).toLowerCase() !== churnSym) continue;
+              if ((cside === 'buy' || cside === 'sell')) {
+                if (cside === churnSide) sameSide6h++;
+                else oppSide6h++;
+              }
+            }
+            const churnR = shouldBlockChurn({ side: churnSide, confidence: effectiveConfidence, sameSideCount6h: sameSide6h, oppSideCount6h: oppSide6h });
+            if (churnR.blocked) {
+              log.warn(`📍 [churn-guard] ${gateAction.toUpperCase()} ${churnSym} SKIPPED —— ${churnR.reason}`);
+              churnBlocked = true;
+            }
+          } catch { /* 非致命——churn guard 失敗照原邏輯 */ }
+        }
+        if (churnBlocked) {
+          finalDecision = { ...finalDecision, action: 'hold' as const };
+        }
         // ── v2.0.870-momentum-direction + v2.0.870-sell-seed-accel: 統一執行路徑──
         // active symbol 同所有 trading market 都行同一套完整 conviction gates
         // （F1 動量方向偏置 + shadow-gate WR+EV）——冇「active 先有防禦」雙重標準。

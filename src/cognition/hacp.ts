@@ -52,6 +52,9 @@ export interface HACPResult {
   allThoughts: AgentThought[];
   debateRounds: DebateRound[];
   durationMs: number;
+  /** v2.0.876-FIX-H2(2026-09-13, 主神「exploration 無視 veto」): Risk Auditor veto flag——
+   *  透傳到 index.ts(exploration 開倉前檢查, veto 唔可以開 real 湊數據)。 */
+  riskVetoed: boolean;
   /** Position adjustments (TP/SL) for existing positions, if any */
   positionAdjustments?: PositionAdjustment[];
   /** E-step: Meta-Agent's distilled summary for EM loop (if built) */
@@ -1721,6 +1724,8 @@ export class HACPEngine {
       return {
         consensus,
         allThoughts,
+        riskVetoed: false, // 全體 HOLD early-exit——冇行 Risk Auditor, 視為無 veto
+
         debateRounds: [],
         durationMs: Math.round(performance.now() - startTime),
         positionAdjustments: adjustments,
@@ -2185,6 +2190,7 @@ export class HACPEngine {
       allThoughts,
       debateRounds,
       durationMs,
+      riskVetoed: riskAudit.veto,
       positionAdjustments,
       thesisInvalidatedSymbols: Array.from(thesisInvalidatedSymbols),
       expActions: this.expActions,
