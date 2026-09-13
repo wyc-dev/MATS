@@ -10,6 +10,8 @@
  */
 
 /** close 檢討 —— 攞 TradeRecord 生成一行「賺/蝕原因」。garbage 輸入 → null(唔寫)。 */
+import fs from 'node:fs'; // v2.0.883-investigation-fix: require → ESM import——type=module(ESM) 下 require 爆 ReferenceError → reviewMarketPairs 每 cycle throw → investigation.md 由 09-11 零寫入(根因)
+
 export function buildCloseReview(t: {
   symbol?: unknown; side?: unknown; pnlPct?: unknown; closeReason?: unknown;
   mfePct?: unknown; maePct?: unknown;
@@ -90,7 +92,6 @@ export function buildMissedEdge(item: MarketReviewItem): string | null {
 /** append 去 file(atomic temp+rename)。非 string line → String() 兜底; \n 摺疊防結構注入。 */
 export function appendInvestigation(filePath: string, lines: string[]): void {
   if (!Array.isArray(lines) || lines.length === 0) return;
-  const fs = require('node:fs');
   const header = lines.map((l) => String(l ?? '').replace(/\r?\n/g, ' ').slice(0, 300));
   const block = `\n${header.join('\n')}\n`;
   try {
@@ -116,7 +117,6 @@ export function appendOrMergeInvestigation(
   mergedLine: string,
   appendBlock: string[],
 ): 'merged' | 'appended' {
-  const fs = require('node:fs');
   try {
     const dir = filePath.slice(0, filePath.lastIndexOf('/'));
     if (dir) fs.mkdirSync(dir, { recursive: true });
@@ -146,7 +146,6 @@ export function appendOrMergeInvestigation(
   }
 }
 export function writeCurrentInvestigationSection(filePath: string, sectionTitle: string, body: string | null): void {
-  const fs = require('node:fs');
   try {
     if (body === null || body.length === 0) return;
     const dir = filePath.slice(0, filePath.lastIndexOf('/'));

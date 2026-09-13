@@ -4664,6 +4664,8 @@ ${currentPrompt || '(empty — this is the first input)'}`;
    *  零決策影響: 純觀察記錄, throw 都唔影響 cycle。 */
   private reviewMarketPairs(): void {
     try {
+      // v2.0.883-investigation-fix trace: 檔案系統 heartbeat（每 cycle 一行——證明函數喺 live 真係執行,唔靠肉眼 log）
+      try { fs.appendFileSync('data/evolution/.review-trace.log', `${Date.now()} entry list=0+ cycles=${this.totalCycles ?? '?'}\n`); } catch { /* trace 唔可以影響主流程 */ }
       // Selected Market Pairs + active symbol, dedup
       const list: string[] = [];
       for (const sym of [...(this.tradingMarkets ?? []), (this.marketAgent.getConfig()?.selectedSymbol ?? '')]) {
@@ -4671,11 +4673,18 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const n = normalizeSymbol(sym);
         if (!list.includes(n)) list.push(n);
       }
+      // v2.0.883-investigation-fix trace: 填返真實 list 長度（entry 嗰行係佔位,唔好誤導）
+      try { fs.appendFileSync('data/evolution/.review-trace.log', `${Date.now()} list=${list.length} tradingMarkets=${(this.tradingMarkets ?? []).length} selected=${this.marketAgent.getConfig()?.selectedSymbol ?? 'none'} edgeHints=${this.edgeHints.length}\n`); } catch { /* noop */ }
       // v2.0.875-v7 debug: 有市場先確認寫入(唔再靜默)
       try {
         log.info(`[CYCLE-REVIEW] reviewMarketPairs: ${list.length} 個市場檢討 (cycle ${this.totalCycles})`);
       } catch { /* noop */ }
-      if (list.length === 0) return;
+      if (list.length === 0) {
+        // v2.0.883-investigation-fix（主神「investigation兩日冇寫」診斷）: list 空唔再靜默——
+        // log 原因（vs「有市場但寫唔到」呢類隱性死因——debug 見得到邊度斷）
+        try { log.warn('[CYCLE-REVIEW] reviewMarketPairs: 市場 list 空（tradingMarkets + selectedSymbol 都無）——無法寫 investigation'); } catch { /* noop */ }
+        return;
+      }
 
       // 逐個資產檢討
       const items: Array<{ symbol: string; holding: boolean; momentum4hPct: number | null; regime: string; gateBlocked: string | null }> = [];
@@ -4694,7 +4703,15 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       // 每 cycle 覆寫「當前 Cycle 檢討」(活文檔)——sectionTitle 固定(cycle N 喺 body 內), marker 先 match 到
       const fullTitle = `📍 當前 Cycle 檢討 (cycle ${this.totalCycles})`;
       const body = buildMarketReview(fullTitle, items);
-      if (body) writeCurrentInvestigationSection(this.investigationPath, '📍 當前 Cycle 檢討', body);
+      // v2.0.883-investigation-fix: 寫入結果 LOUD——證明「接到 live」（每 cycle 一句,診斷「兩日冇寫」係邊步斷）
+      if (body) {
+        writeCurrentInvestigationSection(this.investigationPath, '📍 當前 Cycle 檢討', body);
+        try { fs.appendFileSync('data/evolution/.review-trace.log', `${Date.now()} WROTE bodyLines=${body.split('\n').length}\n`); } catch { /* noop */ }
+        try { log.info(`[CYCLE-REVIEW] investigation.md 📍 已更新 (cycle ${this.totalCycles}, ${body.split('\n').length} 行 — ${items.length} 個市場)`); } catch { /* noop */ }
+      } else {
+        try { fs.appendFileSync('data/evolution/.review-trace.log', `${Date.now()} SKIPPED body-null items=${items.length}\n`); } catch { /* noop */ }
+        try { log.warn(`[CYCLE-REVIEW] investigation.md 寫入 skipped: body 為空 (items=${items.length})`); } catch { /* noop */ }
+      }
       this.lastMarketReviewTitle = fullTitle;
 
       // Missed Edge: 4h 強動量 + 冇倉 → 累積; ≥3 cycles → 寫入。
@@ -4768,9 +4785,10 @@ ${currentPrompt || '(empty — this is the first input)'}`;
       if (this.edgeHints.length > 10) this.edgeHints = this.edgeHints.slice(0, 10);
     } catch (err) {
       // v2.0.875-CYCLE-REVIEW-v4: 唔再靜默——log 原因(debug 系統自動寫唔到 investigation)
+      // v2.0.883-investigation-fix: console.warn(淨 terminal) → rootLogger.warn(統一 observability) + file trace
+      try { fs.appendFileSync('data/evolution/.review-trace.log', `${Date.now()} FAILED: ${err instanceof Error ? err.message : String(err)}\n`); } catch { /* noop */ }
       try {
-        // eslint-disable-next-line no-console
-        console.warn(`[investigation-review] failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`[CYCLE-REVIEW] reviewMarketPairs FAILED: ${err instanceof Error ? err.message : String(err)}`);
       } catch { /* noop */ }
     }
   }
