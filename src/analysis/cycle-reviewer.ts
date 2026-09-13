@@ -12,6 +12,12 @@
 /** close 檢討 —— 攞 TradeRecord 生成一行「賺/蝕原因」。garbage 輸入 → null(唔寫)。 */
 import fs from 'node:fs'; // v2.0.883-investigation-fix: require → ESM import——type=module(ESM) 下 require 爆 ReferenceError → reviewMarketPairs 每 cycle throw → investigation.md 由 09-11 零寫入(根因)
 
+/** v2.0.883-attack fix (A2): path traversal 防禦——拒絕含 '..' 嘅 path（出界寫入）;
+ * 注意唔可以同時拒絕絕對路徑（測試/外部用絕對 path 係合法）——caller(index.ts)自負相對路徑 */
+function isSafeTargetPath(filePath: string): boolean {
+  return typeof filePath === 'string' && filePath.length > 0 && !filePath.includes('..');
+}
+
 export function buildCloseReview(t: {
   symbol?: unknown; side?: unknown; pnlPct?: unknown; closeReason?: unknown;
   mfePct?: unknown; maePct?: unknown;
@@ -56,21 +62,24 @@ export function buildMarketReview(title: string, items: MarketReviewItem[]): str
   const lines: string[] = [];
   for (const it of items) {
     if (typeof it !== 'object' || it === null) continue;
-    const sym = typeof it.symbol === 'string' ? it.symbol.split(':').pop() : '?';
-    const mom = typeof it.momentum4hPct === 'number' && Number.isFinite(it.momentum4hPct) ? it.momentum4hPct : null;
-    const momStr = mom === null ? 'n/a' : `${mom >= 0 ? '+' : ''}${mom.toFixed(2)}%`;
-    const regime = typeof it.regime === 'string' ? it.regime : '?';
-    const gate = typeof it.gateBlocked === 'string' && it.gateBlocked.length > 0 ? it.gateBlocked : null;
-    if (it.holding) {
-      lines.push(`  📉 ${sym}: 持倉中(close 時檢討), 4h=${momStr}, regime=${regime}`);
-    } else if (gate) {
-      lines.push(`  🔒 ${sym}: 冇開倉 — gate 攔截: ${gate} | 4h=${momStr}, regime=${regime}`);
-    } else {
-      const conf = typeof it.confidence === 'number' ? it.confidence : null;
-      const th = typeof it.threshold === 'number' ? it.threshold : null;
-      const confStr = conf !== null ? (th !== null ? ` confidence ${(conf * 100).toFixed(0)}% vs th ${(th * 100).toFixed(1)}%` : ` confidence ${(conf * 100).toFixed(0)}%`) : '';
-      lines.push(`  🔍 ${sym}: 冇開倉 — 無明確 barrier${confStr} | 4h=${momStr}, regime=${regime}`);
-    }
+    // v2.0.883-attack fix (A6): per-item try/catch——單一垃圾 item（getter bomb / proxy）skip,唔 kill 成個 review
+    try {
+      const sym = typeof it.symbol === 'string' ? it.symbol.split(':').pop() : '?';
+      const mom = typeof it.momentum4hPct === 'number' && Number.isFinite(it.momentum4hPct) ? it.momentum4hPct : null;
+      const momStr = mom === null ? 'n/a' : `${mom >= 0 ? '+' : ''}${mom.toFixed(2)}%`;
+      const regime = typeof it.regime === 'string' ? it.regime : '?';
+      const gate = typeof it.gateBlocked === 'string' && it.gateBlocked.length > 0 ? it.gateBlocked : null;
+      if (it.holding) {
+        lines.push(`  📉 ${sym}: 持倉中(close 時檢討), 4h=${momStr}, regime=${regime}`);
+      } else if (gate) {
+        lines.push(`  🔒 ${sym}: 冇開倉 — gate 攔截: ${gate} | 4h=${momStr}, regime=${regime}`);
+      } else {
+        const conf = typeof it.confidence === 'number' ? it.confidence : null;
+        const th = typeof it.threshold === 'number' ? it.threshold : null;
+        const confStr = conf !== null ? (th !== null ? ` confidence ${(conf * 100).toFixed(0)}% vs th ${(th * 100).toFixed(1)}%` : ` confidence ${(conf * 100).toFixed(0)}%`) : '';
+        lines.push(`  🔍 ${sym}: 冇開倉 — 無明確 barrier${confStr} | 4h=${momStr}, regime=${regime}`);
+      }
+    } catch { /* garbage item——skip,唔影響其他 item */ }
   }
   if (lines.length === 0) return null;
   return `## ${title}\n${lines.join('\n')}`;
@@ -91,6 +100,7 @@ export function buildMissedEdge(item: MarketReviewItem): string | null {
 
 /** append 去 file(atomic temp+rename)。非 string line → String() 兜底; \n 摺疊防結構注入。 */
 export function appendInvestigation(filePath: string, lines: string[]): void {
+  if (!isSafeTargetPath(filePath)) return; // v2.0.883-attack fix (A2)
   if (!Array.isArray(lines) || lines.length === 0) return;
   const header = lines.map((l) => String(l ?? '').replace(/\r?\n/g, ' ').slice(0, 300));
   const block = `\n${header.join('\n')}\n`;
@@ -117,6 +127,7 @@ export function appendOrMergeInvestigation(
   mergedLine: string,
   appendBlock: string[],
 ): 'merged' | 'appended' {
+  if (!isSafeTargetPath(filePath)) return 'appended'; // v2.0.883-attack fix (A2)
   try {
     const dir = filePath.slice(0, filePath.lastIndexOf('/'));
     if (dir) fs.mkdirSync(dir, { recursive: true });
@@ -131,8 +142,8 @@ export function appendOrMergeInvestigation(
       if (!l.includes(tokens[0]!)) continue;
       const all = tokens.every((t) => l.includes(t));
       if (!all) continue;
-      // 類似觀點 -> 修正取代新增(保留原行尾註解部分?——直接換成 mergedLine)
-      lines[i] = mergedLine;
+      // v2.0.883-attack fix (A3): mergedLine sanitize——同 append 一致,摺疊 \n + cap 300（防 header/Markdown 注入）
+      lines[i] = String(mergedLine ?? '').replace(/\r?\n/g, ' ').slice(0, 300);
       const tmp = filePath + '.tmp';
       fs.writeFileSync(tmp, lines.join('\n'), 'utf-8');
       fs.renameSync(tmp, filePath);
@@ -146,6 +157,10 @@ export function appendOrMergeInvestigation(
   }
 }
 export function writeCurrentInvestigationSection(filePath: string, sectionTitle: string, body: string | null): void {
+  // v2.0.883-attack fix (A4/A5): type guard——body/sectionTitle 唔係 string、空、或含 header 注入(\n) → 唔寫
+  if (!isSafeTargetPath(filePath)) return;
+  if (typeof body !== 'string' || body.length === 0) return;
+  if (typeof sectionTitle !== 'string' || sectionTitle.length === 0 || sectionTitle.includes('\n')) return;
   try {
     if (body === null || body.length === 0) return;
     const dir = filePath.slice(0, filePath.lastIndexOf('/'));
