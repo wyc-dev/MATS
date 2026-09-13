@@ -104,7 +104,9 @@ wait_for_backend() {
 }
 
 start_backend() {
-  SYSTEM_ENGINEER_ENABLED=true npx tsx src/index.ts &
+  # v2.0.877-P9-se-self-mod: SE 自改能力（主神 2026-09-13 指令）——engineer mode 預設開,
+  # 可環境變數回滾: SYSTEM_ENGINEER_SELF_MOD=false。Judge Layer 喺 se-bootstrap-guard.ts 守。
+  SYSTEM_ENGINEER_ENABLED=true SYSTEM_ENGINEER_SELF_MOD="${SYSTEM_ENGINEER_SELF_MOD:-true}" npx tsx src/index.ts &
   BACKEND_PID=$!
   echo "[engineer-loop] Backend started (pid $BACKEND_PID)."
 }

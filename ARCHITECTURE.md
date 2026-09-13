@@ -1,10 +1,17 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.876-P9-EXIT-ENTRY-OVERHAUL
+> **作者**: YC Wong · **版本**: 2.0.877-P9-se-self-mod
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-13 exit/entry overhaul）**: vitest **4784 pass / 0 fail — exit 0**（09-11 4714 → +70; TREND-DEFER/PURGE-SAFETY/PROFIT-RUN/churn/breakeven/reconcile 全入）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-13 se-self-mod + engineer-boot）**: vitest **4798 pass / 0 fail — exit 0**（4784 → +14: se-bootstrap-guard 14 新測試——SE 自改 Judge Layer）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## 🏗️ v2.0.877 新組件（2026-09-13, Engineer Boot + SE Self-Mod）
+
+- **ENGINEER-BOOT**（`scripts/engineer-loop.sh`）: 單一 Boot Orchestrator——backend 先起 → real-HTTP readiness gate → UI 先起（開機零 ECONNREFUSED）。readiness = curl -m2 roundtrip（唔係 port-open——掛死照 listen 但唔應答）。git auto-update 動態解析 remote default branch（修「couldn't find remote ref main」）。
+- **SE-SELF-MOD**（`src/evolution/se-bootstrap-guard.ts` Judge Layer）: SE 可改自己 code + SystemEngineer.md（`SYSTEM_ENGINEER_SELF_MOD`,engineer mode 預設 true,主神指令——可 env 關）——但 Judge Layer 喺 FORBIDDEN（SE 改唔到,G10 鎖死）。pre-apply fingerprint reject + post-apply 結構驗證即時還原。三不變式: Judge 完整性 / 測試判定完整性 / Scope 只縮唔擴。
 
 ---
 

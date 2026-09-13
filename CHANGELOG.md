@@ -2,6 +2,26 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.877-P9-engineer-boot + se-self-mod（2026-09-13：engineer 開機 race 根治 + SE 自己改自己——meta self-improvement + Judge Layer 防 bootstrapping）
+
+> 主神「why proxy error?」→ engineer 模式開機 race（UI 比 backend 早 poll）→ Boot Orchestrator 根治;接住「我想 System Engineer 甚至可以自己改自己」→ 調査發現 SE scope 早已包含 src/evolution/（可改自己 code + SystemEngineer.md）但零自改 guard = bootstrapping 危機（考試官自己改分數）→ Judge Layer 分離。全量 **4798 pass / 0 fail, exit 0**（4784 → +14）, tsc clean。
+
+### ① ENGINEER-BOOT（scripts/engineer-loop.sh 重寫 = 單一 Boot Orchestrator,取代 concurrently）
+- **開機 race 根治**: 實證 13:09:53 error / 13:09:54 backend ready 差 1 秒。新序 = backend 先起 → real-HTTP readiness gate → UI 先起（開機零 ECONNREFUSED）。
+- **readiness = real-HTTP roundtrip 唔係 port-open**: E1 實錘 backend 掛死時照 listen :3456 但 3s 零響應——curl -m2（1s interval / 180s timeout, env 可覆寫）。
+- **fail-fast**: UI build 唔過 abort,唔 boot 交易 backend。trap 統一清理；SE exit-42/crash → backend 自動 restart + 再 gate,UI 靠 SSE 指數退避（v2.0.853-fix5）自癒。
+- **auto-update branch 動態解析**: git ls-remote --symref origin HEAD 取代 hardcode main（repo 冇 main——MATS_Backend/MATS_Terminal）——「couldn't find remote ref main」fatal 根治。
+
+### ② SE-SELF-MOD（SE 可改自己 code + SystemEngineer.md——有 guard）
+- **核心不變式**: 評判標準永遠唔可以由被評判者自己改。新檔 `src/evolution/se-bootstrap-guard.ts`（Judge Layer）加落 FORBIDDEN——SE 改唔到佢（G10 鎖死）。
+  - pre-apply: 自改 oldCode（要刪嘅文本）含 safety-critical fingerprint（FORBIDDEN_PREFIXES / src:trading: / parseTestVerdict( / isFileAllowed( / assertSelfModSafe( / "Rolling back" / SYSTEM_ENGINEER_ENABLED）→ reject
+  - post-apply: 改動後源碼缺 judge/scope/rollback 結構 → 即刻還原（唔跑 tsc/test）→ reject
+  - env gate: `SYSTEM_ENGINEER_SELF_MOD`（engineer mode 預設 true,主神指令;可 env 關）
+- **三不變式（SYSTEM_PROMPT + SystemEngineer.md）**: ①Judge 完整性（judge 結構唔可以 delete/rename——可以同一檔內搬位）②測試判定完整性（唔可以令 fail 變 pass/skip）③Scope 只縮唔擴（唔可以加 ALLOWED / 刪 FORBIDDEN 條目）。自改 commit 標記 `[SELF-MOD]`。
+- **驗證（紅先→綠後）**: 新測試 14——紅先 3 fail → 綠後 14/14;TDD 中途捉到 guard 自身 bug（isSelfModFile startsWith over-match .bak → 改 exact match）。全量 **4798 pass / 0 fail, exit 0**, tsc clean。
+
+---
+
 ## v2.0.876-P9-EXIT-ENTRY-OVERHAUL（2026-09-13：exit 管道 5 引擎 + entry 入口 3 收緊 + purge/對帳數據真實性——主神由「PNL 頁 303」一句掘出成日結構性檢修）
 
 > 主神起點:「363 vs 303 trade 消失」→ 掘出: ①purge 誤殺 ②exit 鎖雞碎 ③entry 無限重開 ④reconciliation 錯價 ⑤一度浮盈倒蝕。全量 **4784 pass / 0 fail, exit 0**, tsc clean。9 commits, 全由主神逐個批准/指示。
