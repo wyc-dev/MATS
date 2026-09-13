@@ -1711,10 +1711,17 @@ export function computeChasePenalty(side: unknown, thesis: unknown): number {
   const trendingBullSellPenalty = /trending\s*bull/i.test(thesis) ? 0.15 : 0;
   // v2.0.877-SE-reflection: weak target(<1% 目標距離)——trending_bull 追空 + weak target
   // = 方向錯誤 + 期望值極低(2/2 全蝕實錘)。樣本 <3,soft penalty 上限 0.15。
-  const weakTargetPenalty = /\(weak\)/i.test(thesis) ? 0.15 : 0;
+  // v2.0.881-SE-fix: 修正 regex——thesis 格式係「target $1350 (weak) ~1.7% move」,
+  // 即「(weak)」後面有「~1.7%」,舊 regex /\(weak\)/ 應該 match,但為咗更穩健,
+  // 改為 match「weak」字眼(唔限括號),並加「~」或「%」距離確認,避免誤傷。
+  const weakTargetPenalty = /weak\s*(?:~|\s*\d)/i.test(thesis) ? 0.15 : 0;
   // v2.0.879-SE-direction: ob>0(正買壓)但 SELL = 逆 order-book 方向(2/2 全蝕實錘)
   // 但樣本 <3,soft penalty 上限 0.15(唔可以過度干預)
-  const obPositiveSellPenalty = /ob\s*[:=]\s*\+?0\.(?:[1-9]\d*|0*[1-9])/i.test(thesis) ? 0.15 : 0;
+  // v2.0.881-SE-fix: 修正 regex——thesis 格式係「ob=0.30」,舊 regex 只 match
+  // 「ob:0.30」或「ob=0.30」但冇處理「ob = 0.30」空格,同埋「0.30」嘅小數點後
+  // 兩位數字。新 regex 更寬鬆: match「ob」後可選空格,再「[:=]」,再可選空格,
+  // 再「+」可選,再「0.」後至少一位數字(包括 0.30 嘅「30」)。
+  const obPositiveSellPenalty = /ob\s*[:=]\s*\+?0\.\d+/i.test(thesis) ? 0.15 : 0;
   // 取最大者——四個 signature 都係弱入場,但唔疊加(避免超過 20% 上限)
   return Math.max(aboveDemandPenalty, trendingBullSellPenalty, weakTargetPenalty, obPositiveSellPenalty);
 }

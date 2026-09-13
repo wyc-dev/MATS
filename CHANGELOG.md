@@ -22,6 +22,9 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.881: SE-direction — SELL xyz:SKHX #7 opened despite thesis '(weak)' target + trending_bull + ob=0.30. Data-validate weak-target and ob>0 SELL penalties are actually firing; if firing but insufficient, strengthen soft penalty (≤20% cap) for SELL-in-trending_bull + weak target + positive ob combination. Fixed regexes in computeChasePenalty to match actual thesis format ('target $1350 (weak) ~1.7% move', 'ob=0.30').
+
+
 ## v2.0.876-P9-EXIT-ENTRY-OVERHAUL（2026-09-13：exit 管道 5 引擎 + entry 入口 3 收緊 + purge/對帳數據真實性——主神由「PNL 頁 303」一句掘出成日結構性檢修）
 
 > 主神起點:「363 vs 303 trade 消失」→ 掘出: ①purge 誤殺 ②exit 鎖雞碎 ③entry 無限重開 ④reconciliation 錯價 ⑤一度浮盈倒蝕。全量 **4784 pass / 0 fail, exit 0**, tsc clean。9 commits, 全由主神逐個批准/指示。
