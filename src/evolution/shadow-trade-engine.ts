@@ -42,9 +42,16 @@ export function archiveShadowResolve(entry: ShadowResolveArchiveEntry, filePath:
     if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('..')) return;
     const line = JSON.stringify(entry) + '\n';
     // v2.0.885-attack-fix (A4): 無限增長 rotate——size cap（SHADOW_ARCHIVE_MAX_BYTES, default 100MB）
+    // 3 代滑動 rotate(.2→.3, .1→.2, main→.1)——研究檔 keep 最近 3 批,唔可以覆蓋丟 data
     const maxBytes = Number(process.env['SHADOW_ARCHIVE_MAX_BYTES'] ?? 100 * 1024 * 1024);
     if (Number.isFinite(maxBytes) && maxBytes > 0) {
-      try { if (fs.existsSync(filePath) && fs.statSync(filePath).size > maxBytes) fs.renameSync(filePath, filePath + '.1'); } catch { /* rotate fail 唔影響 append */ }
+      try {
+        if (fs.existsSync(filePath) && fs.statSync(filePath).size > maxBytes) {
+          try { if (fs.existsSync(filePath + '.2')) fs.renameSync(filePath + '.2', filePath + '.3'); } catch { /* noop */ }
+          try { if (fs.existsSync(filePath + '.1')) fs.renameSync(filePath + '.1', filePath + '.2'); } catch { /* noop */ }
+          fs.renameSync(filePath, filePath + '.1');
+        }
+      } catch { /* rotate fail 唔影響 append */ }
     }
     fs.appendFileSync(filePath, line, 'utf-8'); // O_APPEND single-write——研究檔可容忍 crash cut 尾 line
   } catch { /* archive 絕唔可以影響 resolve 主流程 */ }
