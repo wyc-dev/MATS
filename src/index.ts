@@ -87,6 +87,7 @@ import { summarizeKlines } from './analysis/kline-structure.ts';
 import { candleCache } from './data/candle-cache.ts';
 import { computeLiveMfePricePct as computeLiveMfePricePctFn, shouldColdStartLock, decideTrailingLockAction, computeFreshUnrealizedPnl, PROFIT_LOCK_MARGIN_THRESHOLD_PCT, type PendingTrailingLock } from './lib/live-mfe.ts';
 import { shouldDeferTrendLock, shouldDeferTrendLockGate, computeTrendPeakPrice } from './lib/trend-defer.ts';
+import { shouldApplyBreakeven } from './lib/breakeven-protection.ts';
 import { shouldBlockChurn } from './lib/churn-guard.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
@@ -4128,6 +4129,39 @@ ${currentPrompt || '(empty — this is the first input)'}`;
         const pos = this.portfolio.getPosition(sym);
         if (!pos) continue; // getOpenSymbols() only returns open positions
         const side = isSellSide(pos.side) ? 'sell' : 'buy';
+
+        // ── v2.0.876-BREAKEVEN(2026-09-13, 主神批准 PLAN_breakeven): 保本網 ──
+        // 問題實錘: 143 筆 giveback Σ1114.8pp（一度+3.4% 倒蝕 −4.4%; bnb +19.8%→−8.2%）。
+        // 策略: 浮盈≥門檻 ∧ 非 trend 對齊 → SL 移至入場（保本防倒蝕）;
+        //   trend 對齊 → 交 PROFIT-RUN（唔斬復原倉）。HL-FIRST adjustPosition(v2.0.852)。
+        try {
+          const beRegime = pos.regime ?? this.marketState?.getState(sym)?.regime ?? 'unknown';
+          const beTrend = this.lastKlineSummary?.trend1h ?? 'unknown';
+          const beTrendAligned =
+            String(beRegime ?? '').includes('trending') ||
+            (isSellSide(pos.side) ? beTrend === 'down' : beTrend === 'up');
+          const beCur = this.marketState?.getState(sym)?.price ?? pos.currentPrice ?? 0;
+          const beFresh = Number.isFinite(beCur) && beCur > 0 && Number.isFinite(pos.averageEntryPrice) && pos.averageEntryPrice > 0 && Number.isFinite(pos.quantity)
+            ? computeFreshUnrealizedPnl(side, pos.averageEntryPrice, beCur, pos.quantity, 0)
+            : null;
+          const beMargin = (pos.averageEntryPrice * pos.quantity) / safeLeverage(pos.leverage);
+          const beProfit = beFresh !== null && beMargin > 0 ? beFresh / beMargin : 0;
+          const bePeak = beMargin > 0 && Number.isFinite(pos.maxValueReached) ? ((pos.maxValueReached as number) - beMargin) / beMargin : 0;
+          const beR = shouldApplyBreakeven({
+            side: isSellSide(pos.side) ? 'sell' : 'buy',
+            profitMarginPct: beProfit,
+            peakMarginPct: bePeak,
+            isTrendAligned: beTrendAligned,
+            currentStopLoss: pos.stopLossPrice,
+            entryPrice: pos.averageEntryPrice,
+          });
+          if (beR.shouldMove && beR.newStopLoss !== null) {
+            log.info(`🔒 [breakeven] ${sym} ${side.toUpperCase()} profit=${(beProfit * 100).toFixed(1)}% peak=${(bePeak * 100).toFixed(1)}% → SL 移至入場 $${beR.newStopLoss.toFixed(4)}（保本防倒蝕）`);
+            await this.tradingManager.adjustPosition(pos.id ?? sym, beR.newStopLoss, undefined).catch((e: unknown) =>
+              log.warn(`[breakeven] adjustPosition 失敗 ${sym}: ${e instanceof Error ? e.message : String(e)}`));
+          }
+        } catch { /* 非致命——breakeven 失敗照原邏輯 */ }
+
         const profile = this.exitPriceLearner.getExitProfile(normalizeSymbol(sym), side);
         // L1 (v2.0.870-exit-price-lock): PAEL profile 冷啟動 → 唔 skip——用 universal
         // margin-basis 0.5% fallback threshold（P9-lock-pipeline 驗證——舊 price-basis
