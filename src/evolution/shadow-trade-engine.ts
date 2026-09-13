@@ -38,7 +38,14 @@ export interface ShadowResolveArchiveEntry {
 export function archiveShadowResolve(entry: ShadowResolveArchiveEntry, filePath: string = SHADOW_ARCHIVE_PATH): void {
   try {
     if (process.env['SHADOW_RESOLVE_ARCHIVE'] === 'false') return;
+    // v2.0.885-attack-fix (A3): path traversal guard——同上層 cycle-reviewer 一致（含 '..' → 唔寫）
+    if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('..')) return;
     const line = JSON.stringify(entry) + '\n';
+    // v2.0.885-attack-fix (A4): 無限增長 rotate——size cap（SHADOW_ARCHIVE_MAX_BYTES, default 100MB）
+    const maxBytes = Number(process.env['SHADOW_ARCHIVE_MAX_BYTES'] ?? 100 * 1024 * 1024);
+    if (Number.isFinite(maxBytes) && maxBytes > 0) {
+      try { if (fs.existsSync(filePath) && fs.statSync(filePath).size > maxBytes) fs.renameSync(filePath, filePath + '.1'); } catch { /* rotate fail 唔影響 append */ }
+    }
     fs.appendFileSync(filePath, line, 'utf-8'); // O_APPEND single-write——研究檔可容忍 crash cut 尾 line
   } catch { /* archive 絕唔可以影響 resolve 主流程 */ }
 }
