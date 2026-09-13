@@ -2,8 +2,50 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
----
+## v2.0.876-P9-EXIT-ENTRY-OVERHAUL（2026-09-13：exit 管道 5 引擎 + entry 入口 3 收緊 + purge/對帳數據真實性——主神由「PNL 頁 303」一句掘出成日結構性檢修）
 
+> 主神起點:「363 vs 303 trade 消失」→ 掘出: ①purge 誤殺 ②exit 鎖雞碎 ③entry 無限重開 ④reconciliation 錯價 ⑤一度浮盈倒蝕。全量 **4784 pass / 0 fail, exit 0**, tsc clean。9 commits, 全由主神逐個批准/指示。
+
+### ① TREND-DEFER（`6df912a`, 主神「trend 唔識堅持唔斷 TP」）
+- 問題實錘: BNB 09-12 12 筆全 exit_price_lock(+0.19%~+5.25%, 全 CLOSED)——trend 中鎖雞碎、食唔到大段; 09-12 16:44 entry=733.93 exit=734.26 實收 +0.04% 但 maxValueReached=11.87(價格其實升到 745.80 +1.62%)→ 鎖喺 MFE 嘅 3%, 放走 97%。
+- 修復: `src/lib/trend-defer.ts`(純函數 `shouldDeferTrendLock` / `shouldDeferTrendLockGate` / `computeTrendPeakPrice`)——4h trending + 方向對齊 + 盈倉(≥0.5%)時 PAEL 唔即鎖, 交 L3 峰值回吐≥50% 先鎖, 創新高刷新 peak 繼續 hold。soft 唔 block, 震盪市/反向/未盈 100% 原邏輯。
+- 驗證: close-path-archive 509 條 counterfactual(lock80%: Σ69pp vs 唔lock: Σ81pp, let-run 有真 alpha 831 已過) + BNB 12 筆實錘。
+- 攻擊輪(`52a67a6`): **4 真漏洞全修**——V1 CRITICAL liveMfe null 照 defer(無 candle=永遠唔鎖→回吐黑洞); V2 stale unrealizedPnlPct 誤判盈倉(HL API ≤5min 滯後→已回吐照 defer); V4 CRITICAL pending 存在但 MFE 縮細→L3 skip→位2 照 continue→pending 永不 close→hold 到 SL。抽 gate + peak 純函數, 毒輸入→null。
+
+### ② PURGE-SAFETY（`ca505f2`, 主神「點解 8/7-8/13 trade 消失」）
+- 問題實錘: 8/7-8/13 約 95-194 筆 real trade 完全消失(realTrades 最早變 08-14)——PDF snapshot(9/5)363 vs 而家 303。
+- 根因: v2.0.158 `purgeClosedRealTradesWithoutThesis()` 無差別刪「冇 entryThesis」嘅 real trade, 每次啟動自動執行, 刪完即 persist, 無 backup/無日期 guard → 9/5 之後某次啟動誤殺 8 月正常 trade(mirror path thesis 缺失)。
+- 修復: ①刪前必寫 backup(`.bak-purge-<ts>`); ②日期窗>30 日先可刪(clamp[7,365]); ③backupPath 防 traversal; ④mirror/paper close path entryThesis 兜底(唔可以再有無 thesis record——purge 誤殺根源)。paper-engine 同步日期窗。
+- 攻擊輪: **3 真漏洞全修**——V1 CRITICAL closedAt=0/毒值(持久化缺省/污染)被當 1970 phantom 誤刪→一律保留; V2 maxAgeDays 無下限(0.5 注入→窄化誤殺)→ clamp; V3 backupPath path traversal 可寫出界→防 traversal。
+- ⚠️ 8/7-8/13 歷史恢復: PDF 有 95 筆完整 record(entry/exit/lev/hold 100% 合理), archive 194 筆但 94% exitPrice 有毒(不可直接恢復)——`scripts/restore-lost-trades.py` 已寫(read-only, 暫存檔 ready), **恢復需主神另行拍板**(count vs 金額 trade-off)。
+
+### ③ PROFIT-RUN（`ec09026`, 主神「盈利倉被過早平倉」）
+- 驗證: close-path-archive **139 筆盈利倉 counterfactual**——hold 到極值回吐 50% 先鎖 = Σ+680pp vs 實際+53pp(**13 倍**), **139/139 全改善、零負面案例、兩半皆升**。
+- 修復: consensus CLOSE 盈利倉 + trend 對齊 → 唔 close, 交 L3 回吐追蹤(回吐 50% 先鎖)。只攔「盈利+trend 對齊+liveMfe 可用」——虧損/震盪/反向 100% 原邏輯(v2.0.870 實證盲 hold 震盪=送錢, 必須 trend 條件化)。
+
+### ④ HACP-EXPLORATION-ENTRY（`b931553`, 主神「HACP+exploration 落單流程荒謬」）
+- 問題實錘: ①09-12 BNB 26h 13 注 BUY, close→reopen 間隔 0.0-0.4h(20 分鐘照開)——reentry-cooldown 形同虛設; ②exploration「fires even after Risk Auditor veto」用真銀湊數據(22 筆 WR 32%); ③conf 0.4/oLR 0.23 都照開。
+- 修復三刀: **FIX-H1** reentry-cooldown 統一搬入 closeTrade(原得 2/5 個 exit_price_lock 入口手動 set——cold-start/reversal-point 漏咗, E1 實錘); **FIX-H2** exploration 尊重 Risk Auditor veto(HACPResult 透傳 vetoed, veto→唔開 real 湊數據); **FIX-H3** churn-guard 純函數(6h 同方向≥3 注/低信心重複→soft block)。
+- 攻擊輪(`5dab6cd`): **2 真漏洞**——V1 cooldown 喺 HL close 成功前 set(close 失敗照 set=假 cooldown=系統自我 DoS)→ 移至 close 成功後; V2 per-symbol path 完全 bypass churn-guard→per-symbol 開倉前加同款 guard。
+
+### ⑤ RECONCILE-FILL（`bf10948`, 主神「reconciliation close 錯價」）
+- 問題實錘: reconcilePositions() 用 pos.currentPrice(本地估價) close, 唔用 HL 實際成交 fill → 「一度 +6.5%(真 MFE)被 close 成 −16.9%」, 24 筆 giveback Σ194pp 直接蒸發。
+- 修復: `src/lib/reconcile-fill.ts`(純函數 `resolveReconcileFill`)——resolveFill callback 擴展回 fill 實價+realizedPnl, close 用 HL 實價/已結算 pnl(唔再估); 冇 match/毒值→保守唔 close 防幻影。
+
+### ⑥ BREAKEVEN（`0f7343b`, 主神批准 PLAN_breakeven）
+- 問題實錘: **143 筆「一度浮盈≥0.3% margin 最後倒蝕」giveback, Σ1114.8pp**——平均 peak MFE +3.4% → 最終 −4.4%(7.8pp/筆蒸發); Top: bnb 一度 +19.8% → −8.2%(27.98pp)。
+- 修復: `src/lib/breakeven-protection.ts`(純函數 `shouldApplyBreakeven`)——浮盈≥1% ∧ peak≥1.5% ∧ **非** trend 對齊 → SL 移至入場(保本); trend 對齊交 PROFIT-RUN(唔斬復原倉)。HL-FIRST adjustPosition(v2.0.852 rollback)同步 exchange 原生 SL。毒值保守唔盲 overwrite。
+- 分工: breakeven = 保本防倒蝕; PROFIT-RUN/TREND-DEFER = 鎖利食大魚——互補。
+
+### ⑦ SHADOW-CANDIDATE-STARTEDAT（`ce67921`, 主神「shadow-candidate 日數唔夠」）
+- 根因: call site 硬編碼 `startedAt=Date.now()-5日`, 但 minAgeDays=10 → 5<10 **永遠 INSUFFICIENT**——shadow-candidate 機制落地至今從未 PASS 過。
+- 修: 移除硬編碼, 函數自動用 events 真實最早 resolvedAt(09-08 → 4.7 日 → 09-18 過關)。純 bug, 門檻本身正確(live events 需 entry features, exp 唔可以 backfill)。
+
+### 驗證
+- 全量 **4784 pass / 0 fail, exit 0**（09-11 4714 → +70）, tsc clean。
+- 所有攻擊輪紅先→綠後: TREND-DEFER 4 漏洞 / PURGE-SAFETY 3 漏洞 / ENTRY 2 漏洞 / RECONCILE 8 測試 / BREAKEVEN 7 測試。
+
+---
 ## v2.0.875-P9-ops（2026-09-11：Git 歷史私密清除 + Telegram Bridge 409 三源頭修復 + bet-double/qrl-pool-monopoly 驗證就緒）
 
 > 主神「唔好俾人睇到」+「TG 409 搞掂埋佢」——本 entry 記錄非交易邏輯嘅 ops 層面操作(bet-double 同 qrl-pool-monopoly 嘅詳細見各自 entry)。全量 **4714 pass / 0 fail, exit 0**, tsc clean。

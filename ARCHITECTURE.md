@@ -1,12 +1,22 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.875-qrl-pool-monopoly
+> **作者**: YC Wong · **版本**: 2.0.876-P9-EXIT-ENTRY-OVERHAUL
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-11 qrl-pool-monopoly-attack）**: vitest **4714 pass / 0 fail — exit 0**（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 10 legacy node:test——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-13 exit/entry overhaul）**: vitest **4784 pass / 0 fail — exit 0**（09-11 4714 → +70; TREND-DEFER/PURGE-SAFETY/PROFIT-RUN/churn/breakeven/reconcile 全入）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 10 legacy node:test——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
+
+## 🏗️ v2.0.876 新組件（2026-09-13, Exit/Entry 管道檢修）
+
+- **TREND-DEFER**（`src/lib/trend-defer.ts`）: 4h trending + 方向對齊 + 盈倉時 PAEL 唔即鎖——交 L3 峰值回吐≥50% 先鎖, 創新高 refresh peak。解 BNB 09-12 12 筆鎖雞碎。soft, 震盪/反向/未盈原邏輯。
+- **PROFIT-RUN**（index.ts consensus close 前）: 盈利倉 + trend 對齊 → 唔 close, 交 L3。139 筆 counterfactual Σ+680pp vs +53pp(13 倍), 零負面案例。
+- **BREAKEVEN**（`src/lib/breakeven-protection.ts`）: 浮盈≥1% + peak≥1.5% + 非 trend → SL 移至入場(保本)。143 筆 giveback Σ1114.8pp 實錘。HL-FIRST 同步。
+- **CHURN-GUARD**（`src/lib/churn-guard.ts`）: 6h 同方向≥3 注 / 低信心重複 → soft block。per-symbol + HACP 主路徑雙接入。
+- **RECONCILE-FILL**（`src/lib/reconcile-fill.ts`）: reconciliation close 用 HL fill 實價, 唔再本地估價(24 筆 giveback Σ194pp)。
+- **PURGE-SAFETY**（portfolio.ts）: purge 日期窗[7,365] + backup + traversal 防禦 + thesis 兜底——v2.0.158 誤殺 8/7-8/13 trade(363→303)根治。
+- **REENTRY-COOLDOWN 統一**: closeTrade 單一 source of truth(原 2/5 入口 set 漏咗冷啟動/reversal-point)。
 
 ## ⏳ Pending Validation 索引（等數據累積 → 到期重驗）
 
