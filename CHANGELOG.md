@@ -47,6 +47,9 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.879: SE-direction — SELL 逆 order-book 方向(ob>0 時 SELL)係 Layer 1 方向錯誤(DRAM −9.4%/bnb −5.3% 實錘, 2/2 全蝕 0% WR)。ob 係即時市場參與者意圖嘅實錘(正=買家積極, 負=賣家積極), 逆 ob 方向開倉 = 逆市場即時流動。加 soft penalty 0.15(≤20% 上限, 樣本 <3 唔 block)——用 thesis 含 ob 正數值做 proxy, 四個 signature(above demand/trending_bull/weak target/ob>0)取最大唔疊加。
+
+
 ## v2.0.878: SELL xyz:GOLD premature_sl — add srDistance parameter to computeATRSLTP in atr.ts to scale SL distance by S/R distance (1.2× floor), preventing premature stops when price briefly pierces nearby support/supply levels
 
 

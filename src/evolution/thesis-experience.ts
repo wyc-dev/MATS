@@ -1684,7 +1684,23 @@ function sleep(ms: number): Promise<void> {
  *  呢個 signature 同「above demand」/「trending_bull」獨立——一個 thesis 可以只有 weak target
  *  而冇 above demand(例如「SELL at $1373, target $1350 (weak)」冇提 demand)。
  *  但樣本只有 2 個 (< 3)——按五絕對規則 #2,只可以 soft penalty 0.15(≤20% 上限)。
- *  三個 signature 取最大(唔疊加,避免超過 20% 上限)。 */
+ *  三個 signature 取最大(唔疊加,避免超過 20% 上限)。
+ *
+ *  v2.0.879-SE-direction(2026-09-09, 主神「先搵贏嘅 pattern」+ Layer 1 方向 edge):
+ *  SELL 逆 order-book 方向(ob>0 時 SELL)係 Layer 1 方向錯誤——ob 係即時市場參與者
+ *  意圖嘅實錘(正=買家積極, 負=賣家積極), 逆 ob 方向開倉 = 逆市場即時流動。
+ *  實錘: Trade #6 SELL xyz:DRAM LOSS −9.4% (ob=0.29 正買壓但 SELL) 同 #3 SELL bnb
+ *  LOSS −5.3% (ob=0.29 正買壓但 SELL)——ob 正(買壓)但開 SELL, 2/2 全蝕, 0% WR。
+ *  呢個係「above demand」/「trending_bull」/「weak target」之外嘅獨立 signature——
+ *  ob 方向與交易方向相反本身就係弱入場。
+ *  但樣本只有 2 個 (< 3)——按五絕對規則 #2,唔可以硬 block,只可以 soft penalty。
+ *  而且必須 data 驗證: 如果 ob>0+SELL 樣本 ≥3 且全蝕,先可以加 penalty。
+ *  呢度用「thesis 含 ob 正數值」做 proxy(因為 checkThesisHistory 冇直接 ob 參數
+ *  傳入 computeChasePenalty)——ob 正數值喺 thesis 出現 = 系統自己觀察到買壓,
+ *  再開 SELL = 方向矛盾。soft penalty 0.15(≤20% 上限)。
+ *  如果 thesis 同時有「above demand」+「ob 正」,取較大 penalty(0.2)。
+ *  注意: 呢個係 soft gate,唔 block——ob>0 時 SELL 仍然可以開,只係 pWin 打折。
+ *  樣本 <3 時 penalty 上限 0.15,避免過度干預。 */
 export function computeChasePenalty(side: unknown, thesis: unknown): number {
   if (side !== 'sell') return 0;
   if (typeof thesis !== 'string' || thesis.length === 0) return 0;
@@ -1696,6 +1712,9 @@ export function computeChasePenalty(side: unknown, thesis: unknown): number {
   // v2.0.877-SE-reflection: weak target(<1% 目標距離)——trending_bull 追空 + weak target
   // = 方向錯誤 + 期望值極低(2/2 全蝕實錘)。樣本 <3,soft penalty 上限 0.15。
   const weakTargetPenalty = /\(weak\)/i.test(thesis) ? 0.15 : 0;
-  // 取最大者——三個 signature 都係弱入場,但唔疊加(避免超過 20% 上限)
-  return Math.max(aboveDemandPenalty, trendingBullSellPenalty, weakTargetPenalty);
+  // v2.0.879-SE-direction: ob>0(正買壓)但 SELL = 逆 order-book 方向(2/2 全蝕實錘)
+  // 但樣本 <3,soft penalty 上限 0.15(唔可以過度干預)
+  const obPositiveSellPenalty = /ob\s*[:=]\s*\+?0\.(?:[1-9]\d*|0*[1-9])/i.test(thesis) ? 0.15 : 0;
+  // 取最大者——四個 signature 都係弱入場,但唔疊加(避免超過 20% 上限)
+  return Math.max(aboveDemandPenalty, trendingBullSellPenalty, weakTargetPenalty, obPositiveSellPenalty);
 }
