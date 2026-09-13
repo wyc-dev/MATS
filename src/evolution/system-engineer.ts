@@ -16,6 +16,7 @@ import { join, dirname } from 'node:path';
 import { exec } from 'node:child_process'; // v2.0.882-P9-se-async: execSync → execAsync——SE 內部 tsc/test/git 全部 async I/O,event loop 唔再 block,HACP cycle 照行
 import { promisify } from 'node:util';
 import { extractJSON } from './evolution-utils.ts';
+import { atomicWriteSync } from './persistence.ts'; // v2.0.884-atomic-unify: CHANGELOG 寫入統一（取代手寫 tmp-pid 版——功能重複審計）
 import { assertBootstrappedSource, assertSelfModSafe, isSelfModFile, selfModEnabled } from './se-bootstrap-guard.ts'; // v2.0.877-P9-se-self-mod: Judge Layer（SE 改唔到佢——G10 鎖死）
 import type { ThesisExperienceRecord } from '../types/index.ts';
 
@@ -1834,15 +1835,14 @@ function updateChangelog(entry: unknown): void {
     // Insert after the "---\n" that follows the header, before the first version
     const insertPoint = content.indexOf('\n---\n');
     const block = '\n## ' + clean + '\n\n';
-    const tmpPath = changelogPath + '.tmp-' + process.pid + '-' + Date.now();
+    // v2.0.884-atomic-unify: 統一用 shared atomicWriteSync（unique tmp + dir ensure）取代手寫 tmp-pid-ts 版
     if (insertPoint > 0) {
       const after = content.slice(insertPoint + 5); // after "---\n"
-      writeFileSync(tmpPath, content.slice(0, insertPoint + 5) + block + after, 'utf-8');
+      atomicWriteSync(changelogPath, content.slice(0, insertPoint + 5) + block + after);
     } else {
       // P9-changelog-attack: 冇 "\n---\n" 分隔(格式變)→ append 檔尾——保證寫入(主神「必須啊」——結論唔可以靜默丟失)
-      writeFileSync(tmpPath, content + '\n\n' + block, 'utf-8');
+      atomicWriteSync(changelogPath, content + '\n\n' + block);
     }
-    renameSync(tmpPath, changelogPath); // atomic(同其他學習組件一致——併發安全)
     log.info(`📝 [system-engineer] CHANGELOG.md updated: ${clean.slice(0, 100)}`);
   } catch (err) {
     log.warn(`[system-engineer] CHANGELOG update failed: ${err instanceof Error ? err.message : String(err)}`);

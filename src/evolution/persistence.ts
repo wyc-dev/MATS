@@ -34,11 +34,20 @@ export function lockedWrite(filePath: string, data: string): void {
 // If process crashes mid-write, .tmp is discarded and original file is intact.
 /** v2.0.870-P6-attack: 導出 atomic write——各 analysis 組件嘅 save() 曾用
  *  fs.writeFileSync(非原子),crash mid-write 會 corrupt 檔案(partial JSON)。
- *  改用 write-to-temp + renameSync(同 filesystem 原子)。 */
+ *  改用 write-to-temp + renameSync(同 filesystem 原子)。
+ *  v2.0.884-atomic-unify（主神「功能重複審計」）: 升級——①unique tmp(pid+ts+rand)
+ *  根治舊版固定 `.tmp` 嘅併發 race ②dir ensure(mkdirSync recursive)③finally cleanup
+ *  （rename 失敗都唔留垃圾 tmp）——簽名不變,9+ callers 零改動。 */
 export function atomicWriteSync(filePath: string, data: string): void {
-  const tmpPath = filePath + '.tmp';
-  fs.writeFileSync(tmpPath, data, 'utf-8');
-  fs.renameSync(tmpPath, filePath);
+  const dir = path.dirname(filePath);
+  if (dir && dir !== '.') fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs.writeFileSync(tmpPath, data, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+  } finally {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* cleanup best-effort */ }
+  }
 }
 
 // ─── Minimal Schema Validator ───

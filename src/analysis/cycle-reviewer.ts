@@ -11,6 +11,7 @@
 
 /** close 檢討 —— 攞 TradeRecord 生成一行「賺/蝕原因」。garbage 輸入 → null(唔寫)。 */
 import fs from 'node:fs'; // v2.0.883-investigation-fix: require → ESM import——type=module(ESM) 下 require 爆 ReferenceError → reviewMarketPairs 每 cycle throw → investigation.md 由 09-11 零寫入(根因)
+import { atomicWriteSync } from '../evolution/persistence.ts'; // v2.0.884-atomic-unify: 統一 shared atomic helper（unique tmp + dir ensure）取代手寫 tmp+rename（功能重複審計）
 
 /** v2.0.883-attack fix (A2): path traversal 防禦——拒絕含 '..' 嘅 path（出界寫入）;
  * 注意唔可以同時拒絕絕對路徑（測試/外部用絕對 path 係合法）——caller(index.ts)自負相對路徑 */
@@ -91,11 +92,13 @@ export function buildMissedEdge(item: MarketReviewItem): string | null {
   const sym = typeof item.symbol === 'string' ? item.symbol.split(':').pop() : '?';
   const mom = typeof item.momentum4hPct === 'number' && Number.isFinite(item.momentum4hPct) ? item.momentum4hPct : null;
   if (mom === null) return null;
+  // v2.0.884-edge-label-fix: 0.5% 係 regime 分界（momentum-persistence）,唔係實證 edge——
+  // 強動量只係「進入 trend-following 模式」,唔等於正期望。字面修正避免誤導（決策邏輯零改動）。
   const edge = mom <= -0.5 ? 'BUY-dip(強跌勢)' : mom >= 0.5 ? 'SELL-rip(強升勢)' : null;
   if (!edge) return null;
   const regime = typeof item.regime === 'string' ? item.regime : '?';
   const gate = typeof item.gateBlocked === 'string' && item.gateBlocked.length > 0 ? item.gateBlocked : null;
-  return `⚠️ ${sym}: 「${edge}」訊號存在(4h ${mom >= 0 ? '+' : ''}${mom.toFixed(2)}%, regime=${regime})但冇開倉${gate ? ` — 屏障: ${gate}` : ''} — 潛在 missed edge / alpha 改善候選`;
+  return `⚠️ ${sym}: 「${edge}」訊號存在(4h ${mom >= 0 ? '+' : ''}${mom.toFixed(2)}%, regime=${regime})但冇開倉${gate ? ` — 屏障: ${gate}` : ''} — 4h 強動量未開倉檢討候選(唔等於實證 edge)`;
 }
 
 /** append 去 file(atomic temp+rename)。非 string line → String() 兜底; \n 摺疊防結構注入。 */
@@ -105,12 +108,8 @@ export function appendInvestigation(filePath: string, lines: string[]): void {
   const header = lines.map((l) => String(l ?? '').replace(/\r?\n/g, ' ').slice(0, 300));
   const block = `\n${header.join('\n')}\n`;
   try {
-    const dir = filePath.slice(0, filePath.lastIndexOf('/'));
-    if (dir) fs.mkdirSync(dir, { recursive: true });
-    const tmp = filePath + '.tmp';
     const prev = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : `# MATS Investigation\n\n> 每 Cycle 檢討 Selected Market Pairs —— 點解冇開倉 / 開咗嘅點解賺蝕 / 當前狀況成因 / Edge & Alpha 改善方向(活文檔, 規則式, 任何模式自動維持)\n`;
-    fs.writeFileSync(tmp, prev + block, 'utf-8');
-    fs.renameSync(tmp, filePath);
+    atomicWriteSync(filePath, prev + block); // v2.0.884-atomic-unify: 統一 shared helper
   } catch (err) {
     try { console.warn(`[investigation] append failed: ${err instanceof Error ? err.message : String(err)}`); } catch { /* noop */ }
   }
@@ -144,9 +143,7 @@ export function appendOrMergeInvestigation(
       if (!all) continue;
       // v2.0.883-attack fix (A3): mergedLine sanitize——同 append 一致,摺疊 \n + cap 300（防 header/Markdown 注入）
       lines[i] = String(mergedLine ?? '').replace(/\r?\n/g, ' ').slice(0, 300);
-      const tmp = filePath + '.tmp';
-      fs.writeFileSync(tmp, lines.join('\n'), 'utf-8');
-      fs.renameSync(tmp, filePath);
+      atomicWriteSync(filePath, lines.join('\n')); // v2.0.884-atomic-unify: 統一 shared helper
       return 'merged';
     }
     appendInvestigation(filePath, appendBlock);
@@ -179,8 +176,7 @@ export function writeCurrentInvestigationSection(filePath: string, sectionTitle:
       updated = before + body + (after.length > 0 ? `\n${after}` : '\n');
     }
     const tmp = filePath + '.tmp';
-    fs.writeFileSync(tmp, updated, 'utf-8');
-    fs.renameSync(tmp, filePath);
+    atomicWriteSync(filePath, updated); // v2.0.884-atomic-unify: 統一 shared helper（unique tmp 內部處理,唔再自己 tmp+rename）
   } catch (err) {
     try { console.warn(`[investigation] section write failed: ${err instanceof Error ? err.message : String(err)}`); } catch { /* noop */ }
   }
