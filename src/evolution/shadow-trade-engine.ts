@@ -233,6 +233,11 @@ const SHADOW_CONFIG = {
   maxOpenPerSide: 30,
   /** Default SL distance if S/R not available (fraction of price) */
   defaultSLDistance: 0.02,
+  /** v2.0.889-shadow-sl-floor（主神「sell 死因深挖」）: S/R SL 太窄（~0.07% price）→ noise 即掃
+   *  （sell 91% sl_tp + holdCycles=1 + loss MAE 0.66% margin 實錘;1h 行為顯示 sell 方向啱,係 SL 被切窄）。
+   *  最低 SL 距離 floor——S/R 距離 < floor → 用 floor（兩側）;同時保證 SL 唔會 = entry（開倉即 touch 終結）。
+   *  env SHADOW_SL_FLOOR(% of price, clamp ≤5%）。 */
+  minSLDistance: Number(process.env['SHADOW_SL_FLOOR']) > 0 ? Math.min(Number(process.env['SHADOW_SL_FLOOR']) / 100, 0.05) : 0.005,
   /** Default TP distance if S/R not available (fraction of price) */
   defaultTPDistance: 0.05,
   /** Max cycles to hold a shadow position before force-resolving as "no edge" */
@@ -261,6 +266,31 @@ const SHADOW_CONFIG = {
    */
   staleLearningWeight: 0.3,
 } as const;
+
+/**
+ * v2.0.889-shadow-sl-floor: 統一 SL 解析（單一 source of truth）——
+ * S/R 距離 < minSLDistance(0.5%) → floor;無效 S/R → default(2%);
+ * SL 永遠同 entry 有距離（唔會 = entry → 開倉即 touch 直接終結）。
+ * buy SL 喺 entry 下(support)、sell SL 喺 entry 上(resistance)——caller 傳啱 side 嘅 sr。
+ * （sell 死因: S/R resistance 喺窄 range 市況得 0.07% price → noise 即掃, 91% sl_tp 實錘）
+ */
+export function resolveShadowSL(
+  side: 'buy' | 'sell',
+  entryPrice: number,
+  srPrice: number | null | undefined,
+): number {
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) return 0;
+  const floorDist = SHADOW_CONFIG.minSLDistance;
+  const defaultSL = entryPrice * (side === 'sell' ? 1 + SHADOW_CONFIG.defaultSLDistance : 1 - SHADOW_CONFIG.defaultSLDistance);
+  if (side !== 'buy' && side !== 'sell') return defaultSL;
+  if (typeof srPrice !== 'number' || !Number.isFinite(srPrice) || srPrice <= 0) return defaultSL;
+  const dist = Math.abs(srPrice - entryPrice) / entryPrice;
+  if (dist < floorDist) {
+    // S/R 太近 → floor（方向正確: buy 下/sell 上）——窄 S/R 係 sell 死因
+    return side === 'buy' ? entryPrice * (1 - floorDist) : entryPrice * (1 + floorDist);
+  }
+  return srPrice; // S/R 距離 ≥ floor → S/R 做主(原邏輯)
+}
 
 // ─── v2.0.861: Shadow pool priority eviction config ─────────────────────
 // True-statistical shadows (aligned / statistical / qrl) are worth MORE than
@@ -564,7 +594,8 @@ export class ShadowTradeEngine {
     if (typeof side !== 'string' || (side !== 'buy' && side !== 'sell') || sym.length === 0) return null;
     const entry = Number.isFinite(p['entryPrice']) && p['entryPrice'] > 0 ? p['entryPrice'] : 0;
     if (entry <= 0) return null;
-    const sl = Number.isFinite(p['stopLossPrice']) && p['stopLossPrice'] > 0 ? p['stopLossPrice'] : entry * (side === 'sell' ? 1 + SHADOW_CONFIG.defaultSLDistance : 1 - SHADOW_CONFIG.defaultSLDistance);
+    // v2.0.889-shadow-sl-floor: 統一 SL 解析（S/R 太近 → floor;garbage → default）
+    const sl = resolveShadowSL(side, entry, p['stopLossPrice'] as number | undefined);
     const tp = Number.isFinite(p['takeProfitPrice']) && p['takeProfitPrice'] > 0 ? p['takeProfitPrice'] : entry * (side === 'sell' ? 1 - SHADOW_CONFIG.defaultTPDistance : 1 + SHADOW_CONFIG.defaultTPDistance);
     // v2.0.873-P9-mfe-expose-attack（V3）: persisted mfePct/maePct 1e308 clamp——
     // 極值比例合理範圍 [0, 0.5]; 負數/NaN → 0。污染值唔可以由 load 滲入 getStats。
@@ -711,9 +742,10 @@ export class ShadowTradeEngine {
     }
 
     // Calculate SL/TP prices using fresh levels if available, else provided levels, else defaults
-    const longSL = freshSLPriceLong && freshSLPriceLong > 0 ? freshSLPriceLong : entryPrice * (1 - SHADOW_CONFIG.defaultSLDistance);
+    // v2.0.889-shadow-sl-floor: 統一 SL 解析（S/R 太近(sell 死因)→ floor;garbage → default）
+    const longSL = resolveShadowSL('buy', entryPrice, freshSLPriceLong);
     const longTP = freshTPPriceLong && freshTPPriceLong > 0 ? freshTPPriceLong : entryPrice * (1 + SHADOW_CONFIG.defaultTPDistance);
-    const shortSL = freshSLPriceShort && freshSLPriceShort > 0 ? freshSLPriceShort : entryPrice * (1 + SHADOW_CONFIG.defaultSLDistance);
+    const shortSL = resolveShadowSL('sell', entryPrice, freshSLPriceShort);
     const shortTP = freshTPPriceShort && freshTPPriceShort > 0 ? freshTPPriceShort : entryPrice * (1 - SHADOW_CONFIG.defaultTPDistance);
 
     // Open shadow LONG（buy side 有位先開——per-symbol 上限 + v2.0.875 全局 per-side 配額）
