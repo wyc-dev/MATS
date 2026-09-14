@@ -284,6 +284,10 @@ export function resolveShadowSL(
   const defaultSL = entryPrice * (side === 'sell' ? 1 + SHADOW_CONFIG.defaultSLDistance : 1 - SHADOW_CONFIG.defaultSLDistance);
   if (side !== 'buy' && side !== 'sell') return defaultSL;
   if (typeof srPrice !== 'number' || !Number.isFinite(srPrice) || srPrice <= 0) return defaultSL;
+  // v2.0.889-attack-fix (A1/A2): 方向 guard——BUY SL 必須 < entry(support)、SELL SL 必須 > entry(resistance);
+  // 錯邊/反轉(srProvider 或 caller 傳錯)→ 唔用 S/R → default(保守,唔可以反向 SL 毒化 learning 標籤)
+  if (side === 'buy' && srPrice >= entryPrice) return defaultSL;
+  if (side === 'sell' && srPrice <= entryPrice) return defaultSL;
   const dist = Math.abs(srPrice - entryPrice) / entryPrice;
   if (dist < floorDist) {
     // S/R 太近 → floor（方向正確: buy 下/sell 上）——窄 S/R 係 sell 死因
