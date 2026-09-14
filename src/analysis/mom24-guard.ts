@@ -51,6 +51,8 @@ export function shouldBlockMom24(input: {
   side: 'buy' | 'sell';
   low: number;
   high: number;
+  /** v2.0.887-MOM24_4H_BYPASS: 4h 動量（時間框一致——4h breakout 初期,24h 滯後） */
+  m4hPct?: number | null;
 }): Mom24GuardResult {
   const side = input.side;
   if (side !== 'buy') {
@@ -66,6 +68,15 @@ export function shouldBlockMom24(input: {
     return { blocked: true, reason: `mom24=${mom.toFixed(2)}% < ${low}%——24h 逆勢買跌中(接刀, 歷史 avg −1.35%)` };
   }
   if (mom >= 0 && mom < high) {
+    // v2.0.887-MOM24_4H_BYPASS（主神「BTC 24h 冇單——mom24-guard 鎖死 breakout 初期」）:
+    // mom24∈[0,high) 但 4h≥0.5% = 4h breakout 初期（24h window 滯後, 唔係「由正轉弱」）→
+    // 放行交返 gate 鏈（conviction/combo/confidence 自己判——唔可以一刀切連坐）。
+    // 驗證: shadow 層衝突區 WR 48%(n=67) vs 4h都弱 36%(n=95) —— +12pp 連坐誤傷。
+    // env: MOM24_4H_BYPASS=false 回滾。
+    const m4 = input.m4hPct;
+    if (process.env['MOM24_4H_BYPASS'] !== 'false' && typeof m4 === 'number' && Number.isFinite(m4) && m4 >= 0.5) {
+      return { blocked: false, reason: `mom24=${mom.toFixed(2)}% ∈ [0,${high}%) 但 m4h=${m4.toFixed(2)}%≥0.5(4h breakout)——時間框一致放行(MOM24_4H_BYPASS)` };
+    }
     return { blocked: true, reason: `mom24=${mom.toFixed(2)}% ∈ [0, ${high}%)——由正轉弱初期陷阱(歷史 avg −0.46%)` };
   }
   if (mom < 0) {

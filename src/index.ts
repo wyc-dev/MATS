@@ -6164,7 +6164,10 @@ ${recentExamples}
       if (process.env['ENTRY_MOM24_GUARD'] !== 'false') {
         const th = mom24EnvThresholds(process.env['ENTRY_MOM24_LOW'], process.env['ENTRY_MOM24_HIGH']);
         const mom24 = this.computeOpenMom24Pct(sym);
-        const g = shouldBlockMom24({ mom24Pct: mom24, side: action, low: th.low, high: th.high });
+        // v2.0.887-MOM24_4H_BYPASS: 4h 動量傳入（時間框一致——4h breakout 初期唔可以連坐 block）
+        let m4hNow: number | null = null;
+        try { m4hNow = this.compute4hMomentumPct(sym); } catch { /* 唔影響 gate */ }
+        const g = shouldBlockMom24({ mom24Pct: mom24, side: action, low: th.low, high: th.high, m4hPct: m4hNow });
         if (g.blocked) {
           return { confidence: 0, blocked: true, reason: `mom24-guard: ${g.reason} — HARD BLOCK`, size: 0 };
         }
