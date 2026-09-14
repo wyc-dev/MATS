@@ -289,6 +289,9 @@ export function resolveShadowSL(
   if (side === 'buy' && srPrice >= entryPrice) return defaultSL;
   if (side === 'sell' && srPrice <= entryPrice) return defaultSL;
   const dist = Math.abs(srPrice - entryPrice) / entryPrice;
+  // v2.0.889-attack3-fix (B1/B3): 距離上限 50%——超闊 SL(1e308 天文/100% 距離)= 永不 touch
+  // = force_resolve 標籤(冇資訊)毒化 learning。>50% → default(保守)
+  if (dist > 0.5) return defaultSL;
   if (dist < floorDist) {
     // S/R 太近 → floor（方向正確: buy 下/sell 上）——窄 S/R 係 sell 死因
     return side === 'buy' ? entryPrice * (1 - floorDist) : entryPrice * (1 + floorDist);
