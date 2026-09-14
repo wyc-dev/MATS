@@ -30,6 +30,9 @@ import { normalizeSymbol } from '../trading/portfolio.ts';
 // 目標: 捕「跨跌勢時段」嘅 shadow resolve 完整樣本（recentResults ring 200 ≈ 30min 太短）+ 精確 openedAt。
 // openedAt = pos.openTimestamp（開倉戳,零估算誤差）。env SHADOW_RESOLVE_ARCHIVE=false 可關。
 export const SHADOW_ARCHIVE_PATH = 'data/evolution/shadow-resolve-archive.jsonl';
+// v2.0.885-archive-loud: 「以為有、實際冇」防禦——archive 寫入失敗要 LOUD(throttle 10min once,唔可以每 resolve spam)
+let archiveWarnedAt = 0;
+
 export interface ShadowResolveArchiveEntry {
   id: string; symbol: string; side: string; shadowType?: string;
   outcome: string; exitReason?: string; openedAt?: number; resolvedAt: number;
@@ -54,7 +57,16 @@ export function archiveShadowResolve(entry: ShadowResolveArchiveEntry, filePath:
       } catch { /* rotate fail 唔影響 append */ }
     }
     fs.appendFileSync(filePath, line, 'utf-8'); // O_APPEND single-write——研究檔可容忍 crash cut 尾 line
-  } catch { /* archive 絕唔可以影響 resolve 主流程 */ }
+  } catch (err) {
+    // v2.0.885-archive-loud: 唔可以全吞——「archive 停咗」會令 P18 時機分析靜默冇料（02:31-10:33 8h gap 教訓）
+    try {
+      const now = Date.now();
+      if (now - archiveWarnedAt > 10 * 60 * 1000) {
+        archiveWarnedAt = now;
+        console.warn(`[shadow-archive] append FAILED (throttled 10min): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } catch { /* warn 本身唔可以 throw */ }
+  }
 }
 
 const log = createLogger({ phase: 'shadow-trade' });
@@ -1361,7 +1373,7 @@ export class ShadowTradeEngine {
         this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: pos.stopLossPrice ?? pos.entryPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(pnl) ? pnl : 0);
         this.capRecentResults(200);
         // v2.0.885-shadow-archive: 研究檔捕樣本（openedAt 精確）
-        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome: pos.status, exitReason: 'force_resolve', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(pnl) ? pnl : 0, mfePct: pos.mfePct, maePct: pos.maePct });
+        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome: pos.status, exitReason: 'force_resolve', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, mfePct: pos.mfePct, maePct: pos.maePct }); // v2.0.885-unit-fix: ×100 同 recentResults 一致(%數值, 2.0=2%)
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
         resolved++;
@@ -1421,7 +1433,7 @@ export class ShadowTradeEngine {
         this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: exitPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
         this.capRecentResults(200);
         // v2.0.885-shadow-archive: 研究檔捕樣本（openedAt 精確）
-        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome, exitReason: 'sl_tp', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0, mfePct: pos.mfePct, maePct: pos.maePct });
+        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome, exitReason: 'sl_tp', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, mfePct: pos.mfePct, maePct: pos.maePct }); // v2.0.885-unit-fix: ×100 同 recentResults 一致(%數值, 2.0=2%)
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
 
