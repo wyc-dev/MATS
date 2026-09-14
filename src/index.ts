@@ -26,6 +26,7 @@ import { SelfImprover } from './evolution/self-improver.ts';
 import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-learner.ts';
 import { applyPositionSizeFloor, isTrendFollowingSell, shouldBetDouble, applyBetDoubleSize, type PrevTradeRef } from './analysis/position-size.ts';
 import { buildCloseReview, buildMarketReview, buildMissedEdge, appendInvestigation, writeCurrentInvestigationSection, appendOrMergeInvestigation } from './analysis/cycle-reviewer.ts';
+import { loadTimingEdgeCache, queryTimingEdge, shouldTriggerBuyDip, shouldTriggerSellRip, formatTimingEdgeLine, refreshTimingEdgeCache, TIMING_EDGE_ENV } from './analysis/timing-edge.ts'; // v2.0.886-timing-edge: 時機條件 edge voice
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -886,6 +887,7 @@ class MATSSystem {
   private lastCycleShadowContexts = new Map<string, { symbol: string; price: number; features: Record<string, number> }>();
   // v2.0.875-CYCLE-REVIEW(2026-09-10, 主神「每個 Cycle 檢討 Selected Market Pairs 點解冇開到倉, investigation.md 似 ARCHITECTURE——搵出當前狀況成因 + edge & alpha 改善」):
   private readonly investigationPath = 'data/evolution/investigation.md';
+  private lastTimingEdgeRefresh = 0; // v2.0.886-timing-edge: cache refresh throttle
   private missedEdgeCounters = new Map<string, number>();   // sym → 連續 cycles 有 edge 訊號但冇開
   private lastMarketReviewTitle = '';
   /** 上週期賺錢資產追蹤: sym → { side, pnlPct, closedAt } (close pnl>0 累積, cap 6) */
@@ -6559,6 +6561,17 @@ ${recentExamples}
       const openPos = this.shadowEngine.getOpenPositions();
       const lines: string[] = ['=== SHADOW STATISTICS (✅ 統計層 lean 來源——Shadow WR 全樣本 ρ=+0.106 唯一有預測力入場特徵, 優先參考) ==='];
       for (const sym of syms) {
+        // v2.0.886-timing-edge（主神「BTC 兩週冇單」——voice 斷層）: 時機條件 lean——
+        // 跌勢嗰刻引用「該 symbol 歷史跌勢開 BUY」樣本 WR（pure context,零 gate）
+        try {
+          if (process.env[TIMING_EDGE_ENV] === 'true') {
+            const m4hNow = this.compute4hMomentumPct(sym);
+            if (shouldTriggerBuyDip(m4hNow)) {
+              const te = queryTimingEdge(loadTimingEdgeCache(), sym, 'buy', 'drop');
+              if (te) lines.push(formatTimingEdgeLine(sym, 'buy', 'drop', te, m4hNow as number));
+            }
+          }
+        } catch { /* voice 失敗唔影響主流程 */ }
         const s = stats.find((x) => x.symbol.toLowerCase() === sym.toLowerCase());
         if (!s) continue;
         // 即時 shadow 倉位方向
@@ -16262,6 +16275,22 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             log.warn(`[system-engineer] async SE cycle failed: ${err instanceof Error ? err.message : String(err)}`));
         }
       }
+
+      // v2.0.886-timing-edge: 時機條件 lean cache refresh（throttle 300s;candle fetch fail → 保留舊 cache）
+      try {
+        const now = Date.now();
+        if (now - this.lastTimingEdgeRefresh > 300_000) {
+          this.lastTimingEdgeRefresh = now;
+          const fetchCandles = async (hl: string) => {
+            try {
+              const r = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'candleSnapshot', req: { coin: hl, interval: '1h', startTime: Date.now() - 8 * 24 * 3600 * 1000, endTime: Date.now() } }) });
+              const a = await r.json();
+              return Array.isArray(a) ? a.map((c: any) => ({ t: Number(c.t), c: Number(c.c) })).filter((x: any) => Number.isFinite(x.t) && Number.isFinite(x.c)) : null;
+            } catch { return null; }
+          };
+          void refreshTimingEdgeCache({ fetchCandles }).then((r) => { if (r.updated) log.info(`[timing-edge] cache refreshed: ${r.entries} entries`); }).catch((err) => log.warn(`[timing-edge] refresh failed: ${err instanceof Error ? err.message : String(err)}`));
+        }
+      } catch { /* noop */ }
 
       // v2.0.808: END-OF-CYCLE trade record patching — the 11th attempt.
       // Previous 10 attempts (v2.0.777-807) all failed because they patched
