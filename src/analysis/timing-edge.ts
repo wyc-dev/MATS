@@ -104,8 +104,11 @@ export function loadTimingEdgeCache(filePath: string = TIMING_EDGE_CACHE_PATH): 
       const n = Number(s['n']);
       const wins = Number(s['wins']);
       const avgPct = Number(s['avgPct']);
+      // v2.0.887-attack-fix (T-attack3): 污染 cap——n 極大(1e12)/avg 極大(1e308)唔可以整假 stats
       if (!Number.isFinite(n) || !Number.isFinite(wins) || !Number.isFinite(avgPct)) continue;
-      if (n <= 0) continue;
+      if (n <= 0 || n > 1e7) continue;
+      if (wins < 0 || wins > n) continue;
+      if (Math.abs(avgPct) > 1e4) continue;
       out[k] = { n, wins, wr: wins / n, avgPct };
     }
     return out;

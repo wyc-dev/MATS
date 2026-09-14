@@ -74,7 +74,10 @@ export function shouldBlockMom24(input: {
     // 驗證: shadow 層衝突區 WR 48%(n=67) vs 4h都弱 36%(n=95) —— +12pp 連坐誤傷。
     // env: MOM24_4H_BYPASS=false 回滾。
     const m4 = input.m4hPct;
-    if (process.env['MOM24_4H_BYPASS'] !== 'false' && typeof m4 === 'number' && Number.isFinite(m4) && m4 >= 0.5) {
+    // v2.0.887-attack-fix (B1): m4h sanity——|m4h|≤100 先可以 bypass(1e308 垃圾極值唔可以濫用,
+    // 同 mom24 |mom|>100 防禦一致);污染值 → 唔 bypass → 照 block(保守)
+    const m4ok = typeof m4 === 'number' && Number.isFinite(m4) && Math.abs(m4) <= 100;
+    if (process.env['MOM24_4H_BYPASS'] !== 'false' && m4ok && m4 >= 0.5) {
       return { blocked: false, reason: `mom24=${mom.toFixed(2)}% ∈ [0,${high}%) 但 m4h=${m4.toFixed(2)}%≥0.5(4h breakout)——時間框一致放行(MOM24_4H_BYPASS)` };
     }
     return { blocked: true, reason: `mom24=${mom.toFixed(2)}% ∈ [0, ${high}%)——由正轉弱初期陷阱(歷史 avg −0.46%)` };
