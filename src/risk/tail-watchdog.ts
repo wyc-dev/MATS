@@ -39,6 +39,11 @@ export const tailWatchdogConfig = {
   recoveryConfirm: Math.max(1, Math.min(50, Number(process.env['TAIL_WATCHDOG_RECOVERY_CONFIRM']) || 3)),
   /** 低頻 symbol 防護: 回復最低觀察時長(ms)——唔單靠筆數(幾日冇交易會過早回復) */
   recoveryMinMs: Math.max(1, Number(process.env['TAIL_WATCHDOG_RECOVERY_MIN_HOURS']) || 48) * 3_600_000,
+  /** v2.0.888-timeout-adjust（主神「48h/96h 太保守,6h/24h就差唔多」）:
+   *  時間退化死鎖解除——observe-only → recovery-check 6h;
+   *  recovery-check → normal 24h。獨立參數,唔郁 recoveryMinMs(48h,caution 有 trading 回復時間窗用) */
+  observeRecoveryMs: Math.max(1, Number(process.env['TAIL_WATCHDOG_OBSERVE_RECOVERY_HOURS']) || 6) * 3_600_000,
+  recoveryToNormalMs: Math.max(1, Number(process.env['TAIL_WATCHDOG_NORMAL_RECOVERY_HOURS']) || 24) * 3_600_000,
   /** 時間窗: 最近 T ms 內尾部數(補低頻 symbol 嘅筆數窗失效) */
   tailTimeWindowMs: Math.max(1, Number(process.env['TAIL_WATCHDOG_TAIL_TIME_WINDOW_HOURS']) || 72) * 3_600_000,
 } as const;
@@ -107,14 +112,15 @@ export function advanceWatch(w: SymbolWatch, pnlPct: number, ts: number): Symbol
       }
       break;
     case 'observe-only':
-      if (next.cleanSinceCaution >= tailWatchdogConfig.recoveryClean && ts - next.cleanSinceEpoch >= tailWatchdogConfig.recoveryMinMs) {
+      // v2.0.888-timeout-adjust: 6h 時間退化(有 close 路徑同 advanceByTime 一致)
+      if (next.cleanSinceCaution >= tailWatchdogConfig.recoveryClean && ts - next.cleanSinceEpoch >= tailWatchdogConfig.observeRecoveryMs) {
         next.state = 'recovery-check';
       }
       break;
     case 'recovery-check':
       if (isTail) {
         next.state = 'observe-only'; // 回復失敗 → 跌返
-      } else if (next.cleanSinceCaution >= tailWatchdogConfig.recoveryClean + tailWatchdogConfig.recoveryConfirm && ts - next.cleanSinceEpoch >= tailWatchdogConfig.recoveryMinMs * 2) {
+      } else if (next.cleanSinceCaution >= tailWatchdogConfig.recoveryClean + tailWatchdogConfig.recoveryConfirm && ts - next.cleanSinceEpoch >= tailWatchdogConfig.recoveryToNormalMs) {
         next.state = 'normal';
         next.tailEventsSinceState = 0;
         next.cleanSinceCaution = 0;
@@ -128,8 +134,9 @@ export function advanceWatch(w: SymbolWatch, pnlPct: number, ts: number): Symbol
  * v2.0.888-tail-watchdog-fix（主神「超過一整日冇 trade——檢查三次揾唔到」）:
  * observe-only / recovery-check 死鎖——兩個狀態唔開倉 → 冇新 close → cleanSinceCaution 永唔升
  * → recovery(要 clean≥15)永不觸發 → 永久卡死（BTC 08-21 尾事件卡到 09-14 = 24 日!）。
- * 時間退化（純時間,唔依賴新 close）: 距最後尾事件 ≥ recoveryMinMs(48h) → recovery-check;
- * ≥ 2× (96h) → normal。同 shadow read-time decay 先例一致（唔 mutate 都 OK,statusOf 讀時退化）。
+ * 時間退化（純時間,唔依賴新 close）: 距最後尾事件 ≥ observeRecoveryMs(6h) → recovery-check;
+ * ≥ recoveryToNormalMs(24h) → normal。同 shadow read-time decay 先例一致（唔 mutate 都 OK,statusOf 讀時退化）。
+ * v2.0.888-timeout-adjust: 48h/96h → 6h/24h（主神裁決,太保守唔啱死鎖解除）
  */
 export function advanceByTime(w: SymbolWatch, ts: number): SymbolWatch {
   if (!Number.isFinite(ts)) return w;
@@ -139,11 +146,11 @@ export function advanceByTime(w: SymbolWatch, ts: number): SymbolWatch {
   let state: SymbolWatch['state'] = w.state;
   let lastStateEpoch = w.lastStateEpoch;
   // chain 退化(唔可以一次只退一級就 return): observe-only → recovery-check → normal
-  if (state === 'observe-only' && dt >= tailWatchdogConfig.recoveryMinMs) {
+  if (state === 'observe-only' && dt >= tailWatchdogConfig.observeRecoveryMs) {
     state = 'recovery-check';
     lastStateEpoch = ts;
   }
-  if (state === 'recovery-check' && dt >= tailWatchdogConfig.recoveryMinMs * 2) {
+  if (state === 'recovery-check' && dt >= tailWatchdogConfig.recoveryToNormalMs) {
     state = 'normal';
     lastStateEpoch = ts;
   }
