@@ -124,19 +124,49 @@ export function advanceWatch(w: SymbolWatch, pnlPct: number, ts: number): Symbol
   return next;
 }
 
-export function statusOf(symbol: string, w: SymbolWatch): TailWatchStatus {
-  const recent = w.history.slice(-tailWatchdogConfig.window);
+/**
+ * v2.0.888-tail-watchdog-fix（主神「超過一整日冇 trade——檢查三次揾唔到」）:
+ * observe-only / recovery-check 死鎖——兩個狀態唔開倉 → 冇新 close → cleanSinceCaution 永唔升
+ * → recovery(要 clean≥15)永不觸發 → 永久卡死（BTC 08-21 尾事件卡到 09-14 = 24 日!）。
+ * 時間退化（純時間,唔依賴新 close）: 距最後尾事件 ≥ recoveryMinMs(48h) → recovery-check;
+ * ≥ 2× (96h) → normal。同 shadow read-time decay 先例一致（唔 mutate 都 OK,statusOf 讀時退化）。
+ */
+export function advanceByTime(w: SymbolWatch, ts: number): SymbolWatch {
+  if (!Number.isFinite(ts)) return w;
+  const e = w.cleanSinceEpoch;
+  if (!Number.isFinite(e)) return w;
+  const dt = ts - e;
+  let state: SymbolWatch['state'] = w.state;
+  let lastStateEpoch = w.lastStateEpoch;
+  // chain 退化(唔可以一次只退一級就 return): observe-only → recovery-check → normal
+  if (state === 'observe-only' && dt >= tailWatchdogConfig.recoveryMinMs) {
+    state = 'recovery-check';
+    lastStateEpoch = ts;
+  }
+  if (state === 'recovery-check' && dt >= tailWatchdogConfig.recoveryMinMs * 2) {
+    state = 'normal';
+    lastStateEpoch = ts;
+  }
+  if (state === w.state) return w;
+  return { ...w, state, lastStateEpoch, cleanSinceCaution: state === 'normal' ? 0 : w.cleanSinceCaution };
+}
+
+export function statusOf(symbol: string, w: SymbolWatch, ts = Date.now()): TailWatchStatus {
+  const eff = advanceByTime(w, ts); // 讀時退化——observe-only 卡死嘅 symbol 自動按時間回復(唔 mutate)
+  const recent = eff.history.slice(-tailWatchdogConfig.window);
   const avgWin = recent.length > 0 ? recent.reduce((s, [p]) => s + p, 0) / recent.length : 0;
   const tailCount = recent.filter(([p]) => p < tailWatchdogConfig.tailThreshold).length;
-  const sizeMultiplier = w.state === 'normal' ? 1 : w.state === 'caution' ? 0.5 : 0;
+  const sizeMultiplier = eff.state === 'normal' ? 1 : eff.state === 'caution' ? 0.5 : 0;
   return {
     symbol,
-    state: w.state,
+    state: eff.state,
     windowAvgPct: avgWin * 100,
     tailCount,
     historyN: w.history.length,
     sizeMultiplier,
-    tradeable: w.state === 'normal' || w.state === 'caution',
+    // v2.0.888-tail-watchdog-fix: tradeable 必須用退化後 eff.state(唔係原 w.state)——
+    // 否則 state 退到 normal 但 executeTrade 仍睇 w.state=observe-only → 死鎖冇解
+    tradeable: eff.state === 'normal' || eff.state === 'caution',
   };
 }
 
@@ -161,9 +191,11 @@ export class TailWatchdog {
     // ts 唔可以倒退(取 max(lastStateEpoch+1, ts)),防「後續正常時間被誤判為過去」。
     const safeTs = Number.isFinite(ts) ? Math.max(ts, w.lastStateEpoch + 1, 1) : Math.max(w.lastStateEpoch + 1, Date.now());
     if (!tailWatchdogConfig.enabled) return statusOf(symbol, w);
-    const next = advanceWatch(w, pnlPct, safeTs);
+    // v2.0.888-tail-watchdog-fix: 寫時退化——observe-only/recovery-check 卡死解除(先時間退化再 advance)
+    const timeAdvanced = advanceByTime(w, safeTs);
+    const next = advanceWatch(timeAdvanced, pnlPct, safeTs);
     this.watches.set(symbol, next);
-    return statusOf(symbol, next);
+    return statusOf(symbol, next, safeTs);
   }
 
   /**
