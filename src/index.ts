@@ -27,6 +27,7 @@ import { ExitPriceLearner, convertToPriceExtremes } from './analysis/exit-price-
 import { applyPositionSizeFloor, isTrendFollowingSell, shouldBetDouble, applyBetDoubleSize, type PrevTradeRef } from './analysis/position-size.ts';
 import { buildCloseReview, buildMarketReview, buildMissedEdge, appendInvestigation, writeCurrentInvestigationSection, appendOrMergeInvestigation } from './analysis/cycle-reviewer.ts';
 import { loadTimingEdgeCache, queryTimingEdge, shouldTriggerBuyDip, shouldTriggerSellRip, formatTimingEdgeLine, refreshTimingEdgeCache, TIMING_EDGE_ENV } from './analysis/timing-edge.ts'; // v2.0.886-timing-edge: 時機條件 edge voice
+import { detectPathwayBreak, formatPathwayBreak, type PathwayBreakState } from './analysis/pathway-break.ts'; // v2.0.890-C1: 決策電路斷線監察
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -888,6 +889,8 @@ class MATSSystem {
   // v2.0.875-CYCLE-REVIEW(2026-09-10, 主神「每個 Cycle 檢討 Selected Market Pairs 點解冇開到倉, investigation.md 似 ARCHITECTURE——搵出當前狀況成因 + edge & alpha 改善」):
   private readonly investigationPath = 'data/evolution/investigation.md';
   private lastTimingEdgeRefresh = 0; // v2.0.886-timing-edge: cache refresh throttle
+  /** v2.0.890-C1: pathway 斷線監察——edge+意向+gate-block 連續 N cycle */
+  private pathwayBreakStates = new Map<string, { consecutive: number; intent: string; blockedBy: string; loudedAt: number }>();
   private missedEdgeCounters = new Map<string, number>();   // sym → 連續 cycles 有 edge 訊號但冇開
   private lastMarketReviewTitle = '';
   /** 上週期賺錢資產追蹤: sym → { side, pnlPct, closedAt } (close pnl>0 累積, cap 6) */
@@ -9310,6 +9313,17 @@ ${recentExamples}
     // v2.0.875-CYCLE-REVIEW-v7(2026-09-11 debug): 開頭都 call(雙保險——L13710 尾 call 若被 early return 跳過, 頭都寫)
     try {
       this.reviewMarketPairs();
+      // v2.0.890-C1: pathway 斷線 LOUD（每 cycle 檢查;throttle 30min）——「想開被閂」永久可視
+      try {
+        const threshold = Math.max(2, Number(process.env['PATHWAY_BREAK_CYCLES']) || 6);
+        const now = Date.now();
+        for (const [sym, st] of this.pathwayBreakStates) {
+          if (st.consecutive >= threshold && now - (st.loudedAt ?? 0) > 30 * 60 * 1000) {
+            log.warn(formatPathwayBreak(sym, st.intent as 'buy' | 'sell', st.blockedBy, st.consecutive));
+            st.loudedAt = now;
+          }
+        }
+      } catch { /* 非致命 */ }
       log.info(`[CYCLE-REVIEW] runDecisionCycle 開頭 call reviewMarketPairs (edgeHints=${this.edgeHints.length})`);
     } catch { /* 雙保險失敗唔影響 */ }
     if (isShuttingDown()) return;
@@ -13096,6 +13110,14 @@ ${recentExamples}
                 }
                 const f2 = this.applyEntryConvictionGates(f2Sym, psc.action as 'buy' | 'sell', psc.confidence, psc.positionSizePct ?? 0);
                 if (f2.blocked) {
+                  // v2.0.890-C1: 斷線監察累計——edge 訊號 + agents 意向 + gate block(「想開被閂」)
+                  try {
+                    const symU = (psc.symbol.split(':').pop() ?? psc.symbol).toUpperCase();
+                    const hasEdge = this.edgeHints.some((h) => h.startsWith(symU + ':'));
+                    const prev: PathwayBreakState | undefined = this.pathwayBreakStates.get(psc.symbol);
+                    const st = detectPathwayBreak(prev, { symbol: psc.symbol, hasEdgeSignal: hasEdge, agentIntent: psc.action, blockedBy: f2.reason }, Math.max(2, Number(process.env['PATHWAY_BREAK_CYCLES']) || 6));
+                    this.pathwayBreakStates.set(psc.symbol, { consecutive: st.consecutive, intent: psc.action, blockedBy: f2.reason ?? '', loudedAt: this.pathwayBreakStates.get(psc.symbol)?.loudedAt ?? 0 });
+                  } catch { /* 非致命 */ }
                   log.warn(`🛑 [entry-gate] ${psc.action.toUpperCase()} ${f2Sym}: ${f2.reason}`);
                   auditGates.push({ gate: 'entry-gates', passed: false, reason: f2.reason ?? 'HARD BLOCK' });
                   this.recordDecisionAudit(psc.symbol, psc.action, psc.confidence, psc.entryThesis ?? '', auditGates, false);

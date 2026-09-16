@@ -30,6 +30,24 @@ import { normalizeSymbol } from '../trading/portfolio.ts';
 // 目標: 捕「跨跌勢時段」嘅 shadow resolve 完整樣本（recentResults ring 200 ≈ 30min 太短）+ 精確 openedAt。
 // openedAt = pos.openTimestamp（開倉戳,零估算誤差）。env SHADOW_RESOLVE_ARCHIVE=false 可關。
 export const SHADOW_ARCHIVE_PATH = 'data/evolution/shadow-resolve-archive.jsonl';
+
+/**
+ * v2.0.890-C2（主神「sell 死因→標籤 proofread」）: 垃圾標籤判定——開倉 1 cycle 內 resolve 且
+ * MAE 遠細過 SL 距離（物理上未到 SL）= noise 秒殺,唔係真 SL/TP 信號（sell 91% sl_tp 實錘）。
+ * AutoProof 校準（論文 2025.10.09.680999v2 方法）: 100 筆抽樣實錘「真 SL 命中 0、誤判率 0%」。
+ * env SHADOW_JUNK_CUT_MAE_PCT(default 2% margin;0.5% price floor 之下嘅物理未到線）。
+ */
+export function isJunkShadowResolution(r: { exitReason?: string; holdCycles?: number; maePct?: number }): boolean {
+  if (typeof r !== 'object' || r === null) return false;
+  if (r.exitReason !== 'sl_tp' && r.exitReason !== 'force_resolve') return false;
+  const hc = r.holdCycles;
+  const mae = r.maePct;
+  if (typeof hc !== 'number' || !Number.isFinite(hc) || hc > 1) return false;
+  if (typeof mae !== 'number' || !Number.isFinite(mae)) return false;
+  const cutRaw = Number(process.env['SHADOW_JUNK_CUT_MAE_PCT']);
+  const cut = Number.isFinite(cutRaw) && cutRaw > 0 ? Math.min(cutRaw / 100, 0.1) : 0.02;
+  return mae < cut;
+}
 // v2.0.885-archive-loud: 「以為有、實際冇」防禦——archive 寫入失敗要 LOUD(throttle 10min once,唔可以每 resolve spam)
 let archiveWarnedAt = 0;
 
@@ -39,7 +57,7 @@ export interface ShadowResolveArchiveEntry {
   holdCycles: number; pnlPct?: number; mfePct?: number; maePct?: number; entryOlrPWinAtOpen?: number;
 }
 export function archiveShadowResolve(entry: ShadowResolveArchiveEntry, filePath: string = SHADOW_ARCHIVE_PATH): void {
-  try {
+    try {
     if (process.env['SHADOW_RESOLVE_ARCHIVE'] === 'false') return;
     // v2.0.885-attack-fix (A3): path traversal guard——同上層 cycle-reviewer 一致（含 '..' → 唔寫）
     if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('..')) return;
@@ -1412,7 +1430,7 @@ export class ShadowTradeEngine {
         this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: pos.stopLossPrice ?? pos.entryPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(pnl) ? pnl : 0);
         this.capRecentResults(200);
         // v2.0.885-shadow-archive: 研究檔捕樣本（openedAt 精確）
-        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome: pos.status, exitReason: 'force_resolve', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, mfePct: pos.mfePct, maePct: pos.maePct }); // v2.0.885-unit-fix: ×100 同 recentResults 一致(%數值, 2.0=2%)
+        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome: pos.status, exitReason: 'force_resolve', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(pnl) ? pnl * 100 : 0, mfePct: pos.mfePct, maePct: pos.maePct, junkLabel: isJunkShadowResolution({ exitReason: 'force_resolve', holdCycles, maePct: pos.maePct }) }); // v2.0.885-unit-fix: ×100 同 recentResults 一致(%數值, 2.0=2%); v2.0.890-C2: junkLabel 標籤 proofread
         // v2.0.870-EMR: force-resolve 更新持久化統計（pnl 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, pos.status, Number.isFinite(pnl) ? pnl : 0);
         resolved++;
@@ -1472,7 +1490,7 @@ export class ShadowTradeEngine {
         this.notifyShadowResolved({ id: pos.id, symbol: sym, side: pos.side, entryPrice: pos.entryPrice, closePrice: exitPrice, mfePct: pos.mfePct, features: pos.features }, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
         this.capRecentResults(200);
         // v2.0.885-shadow-archive: 研究檔捕樣本（openedAt 精確）
-        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome, exitReason: 'sl_tp', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, mfePct: pos.mfePct, maePct: pos.maePct }); // v2.0.885-unit-fix: ×100 同 recentResults 一致(%數值, 2.0=2%)
+        archiveShadowResolve({ id: pos.id, symbol: sym, side: pos.side, shadowType: pos.shadowType, outcome, exitReason: 'sl_tp', openedAt: pos.openTimestamp, resolvedAt: Date.now(), holdCycles, pnlPct: Number.isFinite(shadowPnlPct) ? shadowPnlPct * 100 : 0, mfePct: pos.mfePct, maePct: pos.maePct, junkLabel: isJunkShadowResolution({ exitReason: 'sl_tp', holdCycles, maePct: pos.maePct }) }); // v2.0.885-unit-fix: ×100 同 recentResults 一致(%數值, 2.0=2%); v2.0.890-C2: junkLabel 標籤 proofread
         // v2.0.870-EMR: sl_tp resolve 更新持久化統計（shadowPnlPct 小數，唔 ×100——同 backfill 一致）
         this.recordStat(sym, pos.side, outcome, Number.isFinite(shadowPnlPct) ? shadowPnlPct : 0);
 
