@@ -22,6 +22,36 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 ---
 
+## v2.0.886-891-P9（2026-09-13~16——「BTC 冇單」根因系列→sell 死因→connectome-inspired 監察三件套）
+
+> 主神一連串:「BTC 兩週冇單」→「24h 冇 trade 檢查三次揾唔到」→「sell 死因深挖」→「connectome 研究」→「P11 優先監察」——四部曲: 挖出 2 個 hidden blocker + sell SL 死因 + connectome 借鑑落地。全量 **4904 pass / 0 fail**, tsc clean。
+
+### ① TIMING-EDGE-VOICE（886, 88e7f32——BTC 兩週冇單 voice 斷層）
+- buildShadowVoiceBlock 喺 symbol 跌勢(m4h≤−0.5%)嗰刻引用「歷史跌勢開 BUY」樣本 WR(BTC n=50 WR76%)——pure context 零 gate。cache(archive+candle 每 300s 重建,fail-safe 保留舊)。env TIMING_EDGE_VOICE。
+
+### ② MOM24_4H_BYPASS（887, 4e5bb9f——BTC 24h 冇單 root cause #1）
+- mom24-guard 一刀切 block 反彈初期(0≤mom24<0.5%)——BTC breakout(4h+0.82%+comboWR98%+4agents BUY)被鎖死。shadow 衝突區(mom24弱&m4h≥0.5)WR48%(n=67)vs 4h都弱 36% → 時間框一致放行。env MOM24_4H_BYPASS;攻擊輪(1e308 濫用→|m4h|≤100)。
+
+### ③ TAIL-WATCHDOG 死鎖修復（888, bfce485+6275d80——BTC 24日卡死 root cause #2 主因）
+- observe-only/recovery-check 唔開倉→冇 close→cleanSinceCaution 永唔升→recovery 永不觸發→BTC 08-21 卡到 09-14/DRAM/SILVER 同卡。fix: **時間退化**(advanceByTime 純函數, 讀時+寫時雙保險, tradeable 用 eff.state)——主神裁決 48h/96h → **6h/24h**(參數獨立)。live 即時 BTC/DRAM/SILVER 解鎖。
+
+### ④ SHADOW-SL-FLOOR（889, 8574eda+attack×3——sell 死因）
+- **sell 死因完整鏈**: sell SL 設喺即時阻力位 → 窄 range 市況 ≈0.07% price → 91% sl_tp + holdCycles=1 + loss MAE 0.66% margin = noise 秒殺(方向其實啱: 1h avg −0.09%)。fix: 統一 resolveShadowSL + **三維防線**(floor 0.5% 太近 + 方向 guard 錯邊 + 上限 50% 太遠)。
+
+### ⑤ CONNECTOME-INSPIRED 監察三件套（890, 3988d63——讀完生物 connectome 論文後批）
+- **C1 pathway-break**: edge+agents 意向+gate-block 連續 N cycle → 🚨 PATHWAY-BREAK LOUD(「想開被閂」永久可視——mom24/tail-watchdog 兩次教訓消化)。C1 實錘 sell 91% sl_tp 係垃圾標籤。
+- **C2 junk-label**: isJunkShadowResolution(sl_tp+holdCycles≤1+MAE<2% margin = noise)——AutoProof 校準(抽樣 100 筆誤判率 0%)→ archive 加 junkLabel 標記。
+
+### ⑥ READOUT-REVERSAL-MONITOR（891, 8b7b3fb——connectome BPU 研究→P11 優監）
+- BPU(生物 connectome 固定電路+readout)論文啟發 → E1/E2 驗證: **開倉時 shadow WR 反預測 ρ=−0.134**(n=189;高 WR 組 WR18% vs 低 WR 組 58%)——現行 readout(高WR→boost)方向反錯。P11 由 pending 升級「優先監察」: 每 300s 自動重算 ρ, 負 ρ≥0.1+n≥30 → 🔔 READOUT-REVERSAL LOUD(831 裁決)。
+
+### 研究/數據基建（同步）: P17/P17b/P17c 系列 scripts(shadow 開倉時機分析——archive openedAt 精確化;買 dip 嚴格驗證 T1 FAIL=BTC 效應/vol-adjust 否決);PLAN_readout-separation / PLAN_connectome-inspired / PLAN_buy-dip-edge。(PLAN 全 gitignored)
+
+### 驗證
+- 新增測試: timing-edge 6+9 / mom24 bypass 3+6 / tail-watchdog 4 / sl-floor 5+7+6 / C1C2 7 / readout 4+8;全量 **4904 pass / 0 fail, exit 0**, tsc clean
+
+---
+
 ## v2.0.882-885-P9（2026-09-13——SE async + investigation 修復 + 攻擊輪×3 + 寫入統一 + shadow archive 數據基建）
 
 > 主神一連串：why proxy error → SE 卡住 HACP → investigation 兩日冇寫 → 功能重複審計 → 不擇手段攻擊×3 → 深挖 sell/buy shadow 時機 → 四波交付。全量 **4844 pass / 0 fail, exit 0**（4798 → +46）， tsc clean。

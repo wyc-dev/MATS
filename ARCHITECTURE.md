@@ -1,10 +1,21 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.885-P9-shadow-archive
+> **作者**: YC Wong · **版本**: 2.0.891-P9-readout-monitor
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-13 shadow-archive / SE-async 時代）**: vitest **4844 pass / 0 fail — exit 0**（4798 → +46: v2.0.882 SE-async / v2.0.883 investigation-rootcause+p15+attack / v2.0.884 atomic-unify+edge-label / v2.0.885 shadow-archive+attack 系列）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-16 readout-monitor / connectome-inspired 時代）**: vitest **4904 pass / 0 fail — exit 0**（4844 → +60: 886 timing-edge / 887 mom24-bypass / 888 tail-watchdog 時間退化 6h·24h / 889 sl-floor 三維防線 / 890 C1 pathway-break + C2 junk-label / 891 readout-reversal 優監）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+
+---
+
+## 🏗️ v2.0.886-891 新組件（2026-09-13~16, 無單根因系列 + connectome-inspired 監察）
+
+- **TIMING-EDGE-VOICE**（886, `src/analysis/timing-edge.ts`）: symbol 跌勢嗰刻引用「歷史跌勢開BUY」樣本 WR（BTC n=50 WR76%）——pure context 零 gate;cache archive+candle 每 300s 重建。
+- **MOM24_4H_BYPASS**（887, `src/analysis/mom24-guard.ts`）: mom24∈[0,0.5) 且 m4h≥0.5（4h breakout 初期,24h 滯後）→ 放行（shadow 衝突區 48%vs36% 實錘）;|m4h|≤100 防濫用。
+- **TAIL-WATCHDOG 時間退化**（888, `src/risk/tail-watchdog.ts`）: observe-only/recovery-check 死鎖（BTC 24 日卡死）→ advanceByTime（讀時+寫時,tradeable 用 eff.state）;observe 6h / recovery 24h（主神裁決）。
+- **SHADOW-SL-FLOOR 三維防線**（889, `src/evolution/shadow-trade-engine.ts`）: sell 死因（S/R SL 0.07% price 被 noise 秒殺,91% sl_tp）→ resolveShadowSL floor 0.5% + 方向 guard + 距離上限 50%。
+- **C1+C2 監察**（890, `src/analysis/pathway-break.ts` + shadow-trade-engine）: pathway 斷線 LOUD + junk-label（AutoProof 校準誤判率 0%）。
+- **READOUT-REVERSAL 優監**（891, `src/analysis/readout-reversal-monitor.ts`）: connectome BPU 論文啟發——shadow WR 反預測 ρ=−0.134（n=189）→ P11 升級每 300s 自動 ρ 追蹤 + LOUD。
 
 ---
 
