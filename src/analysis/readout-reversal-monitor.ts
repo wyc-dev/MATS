@@ -15,18 +15,26 @@
 export const READOUT_MIN_N_DEFAULT = 30;
 export const READOUT_RHO_THRESHOLD_DEFAULT = 0.1;
 
-/** avg-rank Spearman——paired finite filter;零變異/樣本太少 → null(同 research 工具 rank-correlation 一致) */
+/** avg-rank Spearman——paired finite filter(Symbol/NaN/Infinity/object 全部剔走——sort 比較
+ *  只可以依賴「可比較數值」, 唔可以對 Symbol/object 做 p.v−q.v);零變異/樣本太少 → null */
 export function avgRankSpearman(xs: number[], ys: number[]): number | null {
   if (!Array.isArray(xs) || !Array.isArray(ys)) return null;
-  const n = xs.length;
-  if (n < 10 || n !== ys.length) return null;
-  const rank = (a: number[]): number[] | null => {
-    const idx = a.map((v, i) => ({ v, i })).sort((p, q) => (Number.isNaN(p.v) ? 1 : Number.isNaN(q.v) ? -1 : p.v - q.v));
+  const px: number[] = []; const py: number[] = [];
+  const n0 = Math.min(xs.length, ys.length);
+  for (let i = 0; i < n0; i++) {
+    const x = xs[i]; const y = ys[i];
+    if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+    px.push(x); py.push(y);
+  }
+  const n = px.length;
+  if (n < 10) return null;
+  const rank = (a: number[]): number[] => {
+    const idx = a.map((v, i) => ({ v, i })).sort((p, q) => p.v - q.v);
     const r = new Array<number>(n);
     let s = 0; let eq = 0;
     for (let i = 0; i < n; i++) {
       s += i + 1; eq++;
-      if (i === n - 1 || Number.isNaN(idx[i]!.v) || !Object.is(idx[i]!.v, idx[i + 1]!.v)) {
+      if (i === n - 1 || idx[i]!.v !== idx[i + 1]!.v) {
         const avg = s / eq;
         for (let k = i - eq + 1; k <= i; k++) r[idx[k]!.i] = avg;
         s = 0; eq = 0;
@@ -34,10 +42,9 @@ export function avgRankSpearman(xs: number[], ys: number[]): number | null {
     }
     return r;
   };
-  const rx = rank(xs); const ry = rank(ys);
-  if (!rx || !ry) return null;
+  const rx = rank(px); const ry = rank(py);
   // zero-variance 保護
-  if (new Set(xs).size < 2 || new Set(ys).size < 2) return null;
+  if (new Set(px).size < 2 || new Set(py).size < 2) return null;
   const mx = rx.reduce((a, b) => a + b, 0) / n;
   const my = ry.reduce((a, b) => a + b, 0) / n;
   let num = 0, dx = 0, dy = 0;
@@ -57,12 +64,14 @@ export function computeReadoutRho(samples: ReadoutMonitorInput[]): { rho: number
   if (!Array.isArray(samples)) return { rho: null, n: 0 };
   const xs: number[] = []; const ys: number[] = [];
   for (const s of samples) {
-    if (!s || typeof s !== 'object') continue;
-    const w = s.entryShadowWRAtOpen;
-    const win = s.isWin;
-    if (typeof w !== 'number' || !Number.isFinite(w) || w < 0 || w > 1) continue;
-    if (typeof win !== 'boolean') continue;
-    xs.push(w); ys.push(win ? 1 : 0);
+    try {
+      if (!s || typeof s !== 'object') continue;
+      const w = s.entryShadowWRAtOpen;
+      const win = s.isWin;
+      if (typeof w !== 'number' || !Number.isFinite(w) || w < 0 || w > 1) continue;
+      if (typeof win !== 'boolean') continue;
+      xs.push(w); ys.push(win ? 1 : 0);
+    } catch { /* 單一垃圾 sample(getter bomb / proxy)skip,唔 kill 成個計算 */ }
   }
   return { rho: avgRankSpearman(xs, ys), n: xs.length };
 }
