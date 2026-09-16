@@ -55,6 +55,8 @@ export interface ShadowResolveArchiveEntry {
   id: string; symbol: string; side: string; shadowType?: string;
   outcome: string; exitReason?: string; openedAt?: number; resolvedAt: number;
   holdCycles: number; pnlPct?: number; mfePct?: number; maePct?: number; entryOlrPWinAtOpen?: number;
+  /** v2.0.890-C2: 垃圾標籤 proofread 標記(noise 秒殺, learning 可降重) */
+  junkLabel?: boolean;
 }
 export function archiveShadowResolve(entry: ShadowResolveArchiveEntry, filePath: string = SHADOW_ARCHIVE_PATH): void {
     try {
