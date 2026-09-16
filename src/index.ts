@@ -28,6 +28,7 @@ import { applyPositionSizeFloor, isTrendFollowingSell, shouldBetDouble, applyBet
 import { buildCloseReview, buildMarketReview, buildMissedEdge, appendInvestigation, writeCurrentInvestigationSection, appendOrMergeInvestigation } from './analysis/cycle-reviewer.ts';
 import { loadTimingEdgeCache, queryTimingEdge, shouldTriggerBuyDip, shouldTriggerSellRip, formatTimingEdgeLine, refreshTimingEdgeCache, TIMING_EDGE_ENV } from './analysis/timing-edge.ts'; // v2.0.886-timing-edge: 時機條件 edge voice
 import { detectPathwayBreak, formatPathwayBreak, type PathwayBreakState } from './analysis/pathway-break.ts'; // v2.0.890-C1: 決策電路斷線監察
+import { computeReadoutRho, shouldAlertReadoutReversal, formatReadoutReversalAlert } from './analysis/readout-reversal-monitor.ts'; // v2.0.891: readout 反轉優先監察(P11)
 import { CausalReasoner } from './evolution/causal-reasoner.ts';
 import { ComponentAttributionStore, normalizeTradeSide } from './evolution/component-attribution.ts';
 import { MetaLearner, deriveAssetMetadata } from './evolution/meta-learner.ts';
@@ -891,6 +892,8 @@ class MATSSystem {
   private lastTimingEdgeRefresh = 0; // v2.0.886-timing-edge: cache refresh throttle
   /** v2.0.890-C1: pathway 斷線監察——edge+意向+gate-block 連續 N cycle */
   private pathwayBreakStates = new Map<string, { consecutive: number; intent: string; blockedBy: string; loudedAt: number }>();
+  /** v2.0.891-readout-reversal-monitor: ρ 追蹤 throttle */
+  private lastReadoutRhoCheck = 0;
   private missedEdgeCounters = new Map<string, number>();   // sym → 連續 cycles 有 edge 訊號但冇開
   private lastMarketReviewTitle = '';
   /** 上週期賺錢資產追蹤: sym → { side, pnlPct, closedAt } (close pnl>0 累積, cap 6) */
@@ -16316,6 +16319,28 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
           void refreshTimingEdgeCache({ fetchCandles }).then((r) => { if (r.updated) log.info(`[timing-edge] cache refreshed: ${r.entries} entries`); }).catch((err) => log.warn(`[timing-edge] refresh failed: ${err instanceof Error ? err.message : String(err)}`));
         }
       } catch { /* noop */ }
+
+      // v2.0.891-readout-reversal-monitor（主神「readout 反轉優先監察」）: 每 300s 重算
+      // 開倉時 shadow WR → outcome 嘅 ρ——反預測(負 ρ)達標 → LOUD(P11 由 pending 升級)
+      try {
+        const rn = Date.now();
+        if (rn - this.lastReadoutRhoCheck > 300_000 && process.env['READOUT_REVERSAL_MONITOR'] !== 'false') {
+          this.lastReadoutRhoCheck = rn;
+          const st = JSON.parse(fs.readFileSync('data/evolution/shadow-state.json', 'utf-8'));
+          const samples = (st.recentResults ?? []).map((r: any) => ({
+            entryShadowWRAtOpen: typeof r.entryShadowWRAtOpen === 'number' ? r.entryShadowWRAtOpen : undefined,
+            isWin: r.outcome === 'win',
+          }));
+          const { rho, n } = computeReadoutRho(samples);
+          const th = Number(process.env['READOUT_RHO_THRESHOLD']) || 0.1;
+          const mn = Number(process.env['READOUT_MIN_N']) || 30;
+          if (shouldAlertReadoutReversal(rho, n, th, mn)) {
+            log.warn(formatReadoutReversalAlert(rho as number, n));
+          } else {
+            log.info(`[readout-monitor] ρ=${rho === null ? 'n/a' : rho.toFixed(3)} n=${n}（未達標）`);
+          }
+        }
+      } catch { /* 非致命 */ }
 
       // v2.0.808: END-OF-CYCLE trade record patching — the 11th attempt.
       // Previous 10 attempts (v2.0.777-807) all failed because they patched
