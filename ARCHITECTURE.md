@@ -1,8 +1,8 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.891-P9-readout-monitor
+> **作者**: YC Wong · **版本**: 2.0.899-P9-attack6
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-16 readout-monitor / connectome-inspired 時代）**: vitest **4904 pass / 0 fail — exit 0**（4844 → +60: 886 timing-edge / 887 mom24-bypass / 888 tail-watchdog 時間退化 6h·24h / 889 sl-floor 三維防線 / 890 C1 pathway-break + C2 junk-label / 891 readout-reversal 優監）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-18 attack-round / base-split 時代）**: vitest **4954 pass / 0 fail — exit 0**（4904 → +50: 892 softgate-confirm 確認(scripts) / 893 base-split 6 組件 + 8 tests / 894 attack1+2 19 tests — 6 真漏洞 / 895 docs 同步 / 896 attack3 7 tests — 2 漏洞 / 897 E0 可訓練性(LogReg ρ=+0.141) / 898 E1 時間特徵 3+2 integration tests / 899 attack6 10 tests — getter-bomb 等 2 漏洞）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
 > **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
 
@@ -68,6 +68,7 @@
 | P16 | **shadow pool sell 樣本回流驗證(2026-09-11, qrl-pool-monopoly)**: 修復 qrl 壟斷 60/60 buy(sell 樣本餓死 → agents 冇 lean 錯過跌勢)——A per-side 配額 30 / B evict 優先序 blind→qrl→aligned / C qrl arm 封頂 per-symbol≤3+全局≤24 | `scripts/p15-sell-recovery-verify.ts` pre-registered: sell:buy≥0.2 / qrl<40% / open sell≥1 / sell n≥10 | **修復後幾小時重跑驗證**（baseline: sell:buy=0.17, qrl=73.5%, sell EV −0.44%）|
 | P17 | **Git 私密檔案清除 + TG bridge 409 三源頭修復(2026-09-11 ops)**: HERDR_AGENTS.md filter-branch 全歷史清除 + force push（不可逆, 主神批）; AGENT_PROMPT.md untrack; TG 409 = herdr PI 同主 PI 雙 MASTER → HERDR_ENV=1 自動 slave + 409 自動讓位/reclaim（`~/.pi/agent/extensions/telegram-bridge/index.ts`） | 已驗證: 歷史 0 存在 / 三次採樣 96994 穩定 / herdr agents=0 | ✅ 已完成; 主 PI 重啟載入完整新 code |
 | P18 | **shadow 開倉時機驗證（shadow-archive, 2026-09-13 新增）**: H1-H4——sell「追跌尾」（m4hAtOpen≤−0.5% 開 sell=負 EV）/ buy「買dip vs 追升」時機分野。shadow-resolve-archive.jsonl（append-only, openedAt 精確）累積後重跑 `scripts/p17-shadow-entry-timing.ts` 分桶驗證（每桶 n≥10, avg 差≥0.5pp + WR 差≥10pp 先 PASS） | archive 已由 09-13 live 累積（每小時數百條;跌勢桶要等跌勢時段先有樣本） | 跌勢桶樣本 n≥10 → P17 重跑 → 831 裁決（sell/buy 時機 gate 候選 S1-S4,env 回滾） |
+| P19 | **consensus-close sell 順勢延續 hint（2026-09-18 attack-round 新增——本座量化探索發現）**: close-path-archive 1968 條——buy 側 momentum 順/逆勢延續無分別(2.79% vs 3.00% = 無分辨度, 唔做);**sell 側順勢 median 4.02% vs 逆勢 2.22%(曾行>2%: 85% vs 64%)——sell 順勢 close 有被提早切走 hint, 但 n=73/55 樣本不足 + 24h postClose 係後見之明(唔可作即時 defer 依據)** | close-path-archive postClose 累積中; 需要「close 後 15-45min 真實 candle」數據基建先可嚴格驗證(現 candle-cache 覆蓋 0) | 短窗價格數據基建 + sell 順勢樣本 n≥30 → 重驗 → 831 裁決（**唔好喺樣本不足時落地——buy 側已證無分辨度**） |
 
 ---
 

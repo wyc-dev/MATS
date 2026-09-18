@@ -2,6 +2,211 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.899-P9-attack6（2026-09-18：shadow 時間特徵攻擊輪——getter-bomb/-0/原型污染 2 真漏洞全修）
+
+> 主神第六輪「不擇手段」——目標 = snapshotEntryFeatures + open→resolve 鏈。
+> 新增 tests/base-split-attack6.test.ts(10),2 真漏洞全修(after A2 測試語義修正),全量 4954 pass, tsc clean。
+
+### ① 攻擊輪 6——2 真漏洞 + 1 語義澄清
+- **A1(最致命)**: features 係 Proxy getter-bomb(`get momentumLong()` throw)→ `f[k]` 直接 throw → **resolve 鏈 crash**(recentResults.push 爆 → shadow resolution 停)→ 逐 field try/catch(getter-trap skip,白名單語義: 唔到就 absent)
+- **A3**: momentumShort=-0 → clamp 後輸出 -0(Object.is 污染)→ `Object.is(v,-0)→0`
+- **A2(語義澄清)**: JS 物件字面量 `{'__proto__': x}` 係 setter 語法唔係 own key——真正防線係 `hasOwnProperty` 檢查(已加,own-property-only 讀取)——`out.__proto__` 永遠係 Object.prototype 唔係漏洞
+- 附帶硬化: 只讀 own property(prototype pollution 唔可以泄入)+ typeof number 檢查(string/boolean 唔入)
+- 併發驗證: 1000 次並發 snapshotEntryFeatures deterministic
+
+### ② 量化(先證後改)——E0-E1 路徑確立
+- E0 已證: 8 特徵 LogReg OOS ρ=+0.141 / MLP +0.142——方向判斷可 train(特徵 joint 分佈,唔係 per-bin)
+- E1 已落地: 4 時間特徵(m4h/m15m/regime/hour)今日起 shadow archive 累積
+- **誠實裁決**: 無新 gate 需要即刻落地——volatility ρ=−0.156 反指標係 hint 但未分 regime×side(樣本缺 regime)同 OOS——831「樣本不足唔裁決」→ 2-4 週 E2 全流程
+
+---
+
+## v2.0.898-P9-shadow-time-features（2026-09-18：E1 數據基建落地——時間結構特徵入 shadow archive）
+
+> PLAN_shadow-connectome-layer E1（主神批）. E0 已證方向判斷可 train(LogReg OOS ρ=+0.129);
+> E1 落地 = shadow open 時記錄時間結構特徵(純記錄, 零決策)。全量 4938 pass, tsc clean, runtime import OK。
+
+### ① 落地內容（零決策, 純研究 archive）
+- `snapshotEntryFeatures()` 加 4 個白名單 pick（shadow-trade-engine.ts）:
+  - `momentumLong` → **m4hAtOpen**(fraction, [−1,1])= m4h(primary)/m1h(fallback) 動量——時間結構（果蠅「睇圖案流動」嘅時間維度）
+  - `momentumShort` → **m15mAtOpen**(fraction, [−1,1])= m15m(primary)/m5m(fallback) 動量
+  - `regimeOrdinal` → **regimeOrdinalAtOpen**([0,100] clamp)——狀態條件（831「條件先有 edge」）
+  - `hourOfDay` → **hourOfDayAtOpen**([0,23])——時間標記
+- index.ts shadow-events mapping 白名單同步帶入 4 key → shadow-events.jsonl 由今日起累積
+- 源頭確認: 三個 shadow open call site(blind/openAligned/openSeeded)全部傳 mktFeatures(已含 momentumLong/Short/regimeOrdinal/hourOfDay)——**自動覆蓋, 零額外改動**
+- scripts/verify-shadow-trainability.py 已更新支援 12 特徵(E0 原 8 → 12)——2-4 週後重跑對比分辨力提升
+
+### ② 量化意義
+- E0 實證: 現有 8 特徵 LogReg OOS ρ=+0.129 / EV=+0.011——**方向判斷可以 train**
+- 加時間結構後預期提升(831: 條件先有 edge)——2-4 週後 E2 三關驗證
+- 純記錄零決策——shadow-events 唔入 OLR/learning 決策路徑(研究 archive 專用)
+
+### ③ 完美落地驗證(主神「Are you sure?」——ODP-9 自測修正)
+- **遺漏 1 排除**: 三個 shadow open call site(blind/aligned/seeded)全部傳 mktFeatures——via `lastCycleShadowContexts.set(…features: mktFeatures)`——新欄位自動覆蓋全部 shadow 類型
+- **遺漏 2 修正(真 bug)**: verify-shadow-trainability.py 寫死 12 特徵 but 歷史 shadow-events 只有 18 條 m4hAtOpen → 樣本會由 34k 縮到 0 = script 死 → **動態特徵子集**(<200 樣本嘅新欄位自動剔除,累積 2-4 週後自動恢復)——重跑 E0 樣本保持 34,491, ρ 0.129→0.141
+- **遺漏 3 修正**: snapshotEntryFeatures 新欄位**加咗 3 個 unit tests**(正常 pick / 超界 clamp ±1·[0,100]·[0,23] / missing absent / NaN-Infinity 唔入)——11/11 全綠
+- **遺漏 4 修正(⚡主神第二問「Are you sure now?」捉到——最致命)**: 盲 shadow 用嘅 `mktFeatures`(index.ts L10133)**冇 4 個源頭欄位**(只有 QRL fallback 分支有 `...this.candleMomentumFeatures`)→ snapshotEntryFeatures 加咗 pick 但**發送端冇數據** = m4hAtOpen 永遠 absent = E1 數據基建形同虛設——「接收端有 pick」≠「發送端有數據」(831「以為有實際冇」正中標)→ **修正: mktFeatures 主分支補齊 `...candleMomentumFeatures(mktSym)` + regimeOrdinal + hourOfDay**
+- **遺漏 4b 附帶收益**: OLR `FEATURE_NAMES` 已含 momentumShort/Long/regimeOrdinal/hourOfDay(15 維固定白名單)——之前盲 shadow 嘅 OLR 推理呢 4 維傳 0/中性,而家先有真值 = **順帶修正 OLR 推理分布偏移**
+- **遺漏 5 修正(⚡主神第三問「Are you really sure?」)**: 第二條數據流——`lastCycleShadowContexts`(aligned/seeded 用)嘅 mktFeatures(L10294)之前只有 momentum 欄,缺 regimeOrdinal+hourOfDay → 兩條路徑嘅呢 2 欄永遠 absent → 已補
+- **遺漏 6 修正(⚡主神第四問「I still see something wrong」——最核心)**: 本座之前嘅「4942 pass」係**假完美**——只有 unit test + 源碼推理,**從冇真 integration test proof「open→resolve→recentResults 鏈有 4 欄流出」**;一寫 integration test 即 fail(本座 test 錯假設 side, production 鏈其實通但**冇 proof = 等同冇**)→ **加 2 個真 integration tests**(open 4 欄 → resolve → recentResults 有 m4h/m15m/regime/hour / legacy 無污染)——13/13 全綠
+- 最終: 全量 **4944 pass**(+2 integration), tsc clean, runtime import OK
+
+---
+
+## v2.0.897-P9-shadow-trainability（2026-09-18：果蠅啟發 Shadow 訓練層——E0 可訓練性 PASS）
+
+> 主神 TG:「用果蠅神經網絡放 shadow trade 每 cycle 訓練會唔會有出類拔萃成果?分析需要放啲乜」——
+> 本座先證後改裁決: 搬 166,700 神經元 connectome 仿真入 MATS = 唔可行(時間錯配/credit 斷裂/未證明/計算災難);
+> 但「果蠅三原則」(readout 分離/稀疏可塑/全局 reward)落地做輕量 shadow 層——**E0 證明方向判斷可以 train**。純離線 read-only。
+
+### ① E0 可訓練性 audit(scripts/verify-shadow-trainability.py, numpy)——**雙 baseline 全 PASS**
+- **LogReg(8 features→win)**: OOS ρ=+0.1286 + EV=+0.0105 ✅
+- **MLP(8→16→1)**: OOS ρ=+0.1288 + EV=+0.0088 ✅(同 LogReg 打平 = 特徵係 bottleneck,唔係架構)
+- per-feature: entryShadowWR ρ=+0.143(最強)/ volatility ρ=−0.158(反指標)/ sentiment ρ=−0.088——正負都學,唔好刪負 ρ 特徵
+- **量化解讀**: 同「per-bin 統計 FAIL(831)」唔矛盾——模型學特徵**聯合分佈**,唔係單一 bin 邊際;
+  呢個先係「readout 分離 + 稀疏可塑(8→1 單層)+ 全局 reward(shadow PnL)」嘅正確落地
+
+### ② E1 特徵工程分析——數據基建缺口實錘 + 特徵清單
+- ❌ shadow-events id(shadow-stat_x)同 resolve-archive id(shadow_x)**體系唔一致**,intersection=0——冇得 join openedAt
+- ❌ candle-cache-15m 覆蓋 08-03→09-01,shadow 時期(09-08+)**時間零重疊**——歷史 m4hAtOpen 不可 backfill
+- ✅ 特徵清單(由今日起 shadow open 時記錄,零決策): m4hAtOpen/m1hAtOpen/m15mAtOpen(時間結構) /
+  regimeAtOpen×side(狀態條件——831「條件先有 edge」)/ rangePosition24hAtOpen(位置)/ hourOfDay / calibratedConsensusAtOpen /
+  shadowWR×volatility(條件化自我訊號)
+- 2-4 週樣本後: E2 完整特徵空間重 train + 三關 → E3 第四關 OOS 對照現行 OLR → E4 落地(env 回滾+主神批)
+
+新增: `scripts/verify-shadow-trainability.py`;PLAN_shadow-connectome-layer.md(gitignored);src/ 零改動
+
+---
+
+## v2.0.896-P9-attack3（2026-09-18：周邊 scripts parser 攻擊輪——2 真漏洞全修 + 校準層量化審計）
+
+> 主神第三輪「不擇手段」——上次修咗 base-split helper,今次攻**周邊 scripts parser**(verify-softgate baseProduct)+ 量化審計 calibrator。
+> 新增 tests/base-split-attack3.test.ts(7),2 真漏洞全修,全量 4938 pass / 0 fail, tsc clean。
+
+### ① 攻擊輪 3(baseProduct parser)——2 真漏洞
+- **C1-2(重複組件 double-count)**: 持久化污染加入重複 gate 條目(如 calibrated-consensus ×2)→ 連乘 double-count 毒化研究 → `seen Set` 唯一 key,重複用首個
+- **C4(天文溢出)**: 1e200×1e200×1e200 = Infinity 流出(研究數字毒化連乘下游)→ 防線: product finite + <1e9 先返回,否則 null
+- 併發(5000 async 一致)/持久化輪迴(×3 round-trip)/垃圾 gate 名/部分組件全部驗證
+
+### ② 校準層量化審計(quant——先證後改,唔郁 calibrator)
+- **好發現**: calibrator 已活躍大幅修正 overconfidence——buy conf=0.7 → 校準 45.2%(n=250, shrink 25pp) / sell 0.7 → 39.2%——**831「高信心降權」已落地並生效**
+- **真 gap(數據基建)**: 5-bin 分區太粗——0.6-0.8 佔 80% 樣本但壓縮喺 bin3/bin4 兩格;0.6/0.7 撞同 bin(simulated 實證 0.6→49.1% vs 0.7→50.0% 被 smoothing);**calibrator 冇存 raw conviction point → 冇得驗證 within-bin 單調性**
+- **誠實裁決**: real calibrator 同 simulated archive 喺 0.8 結論相反(buy|4 real 52.4% vs simulated 46.6%)——831「唔可以靠 simulated 改 real calibrator」——需要「per-point raw conviction 記錄」數據基建先可驗證 5-bin 係咪太粗(2-4 週後)
+
+---
+
+## v2.0.895-P9-attack-round（2026-09-18：不擇手段攻擊輪收尾——6 真漏洞全修 + 量化盈利分析誠實裁決）
+
+> 攻擊輪 1+2(27 tests)全綠後,執行「盈利提升探索」。本輪發現: 6 真漏洞已修(base-split 範圍語義/併發/持久化);
+> 量化分析完成但 **defer 強化冇數據支撐——誠實擱置**(831: 唔為做而做 + 分辨力先係 alpha)。全量 4931 pass, tsc clean。
+
+### ① 量化盈利探索方法同誠實結果
+- **目標**: consensus-close「let winners run」強化(quant: 大 winner 被提早截斷——88 real consensus close 中 20 贏 avg +2.56% 但 MFE 高)
+- **方法**: ①close-path-archive 1968 條 postClose(close 後 24h high/low)②momentum 條件 ③candle-cache 重建短窗
+- **發現 1(24h 陷阱)**: 95-100% close 後曾行返有利方向——**但呢個係 24h 窗口後見之明**(任何倉 24h 內幾乎必 touch 返 close 價),**唔可以作 defer 依據**——本座差啲第二次陷入「睇落有、實質冇」
+- **發現 2(momentum 條件)**: buy 側順/逆勢延續幾乎一樣(median 2.79% vs 3.00%——唔一致);sell 側順勢較強(4.02% vs 2.22%,曾行>2%: 85% vs 64%)但 n=73/55 細——**唔一致 + 樣本不足 = 唔足以裁決**
+- **發現 3(數據缺口)**: candle-cache 15m 覆蓋 0(close 後短窗價格唔存在)——defer 值唔值需要「close 後 15-45min 真實價格」,現冇
+- **裁決**: consensus-close defer 強化**唔落地**(831: 分辨力先係 alpha;樣本不足唔裁決;唔為做而做)。sell 側順勢延續 hint 記錄作 Pending Validation 候選(需要 short-window candle 數據基建先可驗證)
+
+### ② 攻擊輪完成總結(v2.0.894)**
+- 6 真漏洞全修: A1(null crash)/A2(1e308→Infinity 必開倉💀)/A3(-0 污染)/A4(getter bomb)/S3(proxy trap)/X2(NaN scripts)
+- 27 攻擊 tests 全綠(base-split 8 + attack 9 + attack2 10)
+- 防禦原則: 失敗→更保守單向性;概率分佈合理域語義([0,1] 概率/[0,10] 乘數)
+
+---
+
+## v2.0.894-P9-base-split-attack（2026-09-18：不擇手段攻擊輪——併發/狀態注入/持久化污染三向量 6 真漏洞全修）
+
+> 主神:「不擇手段使用任何出其不意的更刁鑽(併發/狀態注入/持久化污染)的攻擊方案」——紅先綠後。
+> 新增 27 個攻擊測試(attack 9 + attack2 10 + base-split 8),**紅先命中 6 真漏洞全修**,全量 4931 pass / 0 fail, tsc clean。
+
+### ① 攻擊輪 1(base-split.ts 本體)——4 真漏洞
+- **A1(狀態注入)**: c 傳 null/undefined/string/array/function → `c.calibratedConsensus` TypeError crash → `readWithin()` guard(非 object → null → 閉)
+- **A2(狀態注入·最致命)**: `calibratedConsensus=1e308 → baseConfidence=Infinity → Infinity>=threshold 必定成立 → 繞過一切 gate 必開倉`——**範圍語義**: 概率類組件合法 [0,1] / 乘數類合法 [0,10],超出=污染 → fallback 0(閉)
+- **A3(狀態注入)**: `-0` 輸出 → `Object.is(v,-0)` 排除(JSON roundtrip 污染)
+- **A4(狀態注入)**: proxy/getter-bomb → field 讀取 throw → try/catch → 閉
+
+### ② 攻擊輪 2(周邊: 持久化/env/scripts)——2 真漏洞
+- **S3(併發/trap)**: `dis.has()` 被 Proxy trap throw → `isDisabled()` try/catch → 無法確認 disable → 當冇 disable(**保留 gate = 保守**: disable 係移除 shrink/防禦,唔可以喺不確定下移除)
+- **X2(持久化污染)**: scripts parser `typeof NaN === 'number'` 漏網 → NaN mult 流入連乘毒化研究 → 兩處 parser 加 `Number.isFinite(g.mult)`
+
+### ③ 防禦設計原則(quant 金融師視角)
+- **失敗 → 更保守單向性**(831 資本保存第一): 任何異常輸入 fallback 0(閉)→ HOLD;唔可以 fallback 1.0(放行)
+- **範圍語義係概率分佈嘅自然延伸**: confidence 係概率(∈[0,1]),乘數係有限範圍(boost≤1.35/ev≤1.25)——超出合理分佈域 = 污染,唔係「未見過嘅真值」
+- **併發無共享狀態**(純函數): 5000 次並發 call deterministic
+
+### ④ 量化盈利分析發現(read-only)——consensus-close 誤殺贏單候選
+- realTrades 307: mean +0.666% / WR 52.1% / payoff 1.22 / PF 1.34——正 EV 但邊際
+- **exit_price_lock(n=137, +2.74%, WR 83%) = 系統最大盈利來源** ✓ 保留
+- **consensus close(n=88, −2.36%, WR 23%) = 最大蝕源**——但深潛: 贏單 20 單 avg +2.56%,MFE 極高(bnb +8.64% 單 MFE 662%)——**「大 winner 曾被 consensus close 提早截斷」訊號**, v2.0.873 已有 defer 1-cycle 但未夠
+- sl_tp(n=21, −8.36%, WR 0%) = 純風險事件(SL 命中——可查 SL 距離)
+- tp_hit(n=13, +19.8%, WR 100%) = 大 winner 路徑 ✓
+- buy/sell 對稱(PF 1.35 vs 1.31)
+- **候選(未批)**: ①consensus-close 對「盈利 + 高 MFE + 低回吐」倉位延遲 close 強化(quant: let winners run) ②sl_tp SL 距離 vs ATR 分析
+
+新增檔案: `tests/base-split-attack.test.ts`(9) / `tests/base-split-attack2.test.ts`(10);更新: `src/analysis/base-split.ts`(readWithin+範圍語義+isDisabled) / `scripts/verify-softgate-confirmation.ts`(finite guard)
+
+---
+
+## v2.0.893-P9-base-split（2026-09-18：拆 base 六組件——歸因盲區消除 + V1 落地）
+
+> 主神批 PLAN_base-split 執行 V1-V3。V1(拆分落地)完成;V2/V3(消融重播)需要「拆後樣本 2-4 週」+「threshold 邊界被拒單記錄」——現有 archive 冇,誠實記錄數據限制。src/analysis/base-split.ts 純函數 + tests 8 個,全量 4912 pass / 0 fail, tsc clean。
+
+### ① V1 落地: base 拆分(概念→六組件獨立條目 + 獨立 disable)
+- 新增 `src/analysis/base-split.ts` `buildBaseConviction()` 純函數(單一 source of truth)——index.ts 而家調用佢
+- convLedger 由一條 `base(consensus×pwin×...)` 拆成六條: `calibrated-consensus` / `pwin-blend` / `plan-g-penalty` / `plan-g-boost` / `llm-dir-trust` / `ev-filter`
+- 語義: calibrated-consensus 係「基數」——disable → 用未校準 consensus 原值;其餘五個係「乘數」——disable → ×1.0(soft)
+- **連乘數值 = 原 baseConfidence(不變, 零決策改動——V1-1 測試驗證 1e-12 等價)**;env `P9_SOFTGATE_DISABLE` 加關鍵字即可單獨停用(預設全開 = 零行爲變化)
+- 下游零依賴: 全網搜尋確認無 code 解析舊 `base(` 名(只係歷史 scripts 讀舊數據)
+- tests 8 個(base-split.test.ts): 等價性 / disable 語義 / 全停=consensus / attack(NaN/Infinity/垃圾/undefined)/ 邊界
+- **attack 即時捉到 1 真漏洞**: disabled 傳非 Set → `.has()` crash——已修(defensive: 非 Set → 空 Set)
+
+### ② V3 近似分析(現有 72 筆 ledger, read-only)
+- 72 筆全部係**已開倉**單——「被 penalty 壓死嘅單」唔存在於 archive(被壓死 = 未開倉 = 冇記錄)——**精確 threshold 重播數據上不可能**
+- 近似 cross-sectional(penalty≈base/consensus): 輕 penalty(≥0.8) n=31 avg+0.31% / 中(0.5-0.8) n=31 avg+1.04% / 重(<0.5) n=10 avg+0.86%——唔單調、樣本細、confound 多→**不足以下裁決, 只作方向參考**
+- 重要發現: base 分佈 median=0.408, **76% 已開倉單 base<0.5**(低於典型 threshold)——印證「乘數鏈過度收縮」持續; consensus(0.531-0.639)× 全鏈 shrink 後僅剩 0.41
+
+### ③ 數據缺口(誠實記錄——831「以為有實際無」防線)
+- ❌ 冇「effectiveConfidence vs adjustedThreshold 邊界被拒單」記錄——V2/V3 精確消融重播需要佢
+- ❌ 拆前歷史 trade 冇 per-component 值(只有打包 base)——per-component 樣本由 V1 落地起開始累積(2-4 週後可行)
+- ✅ 由今日起每筆開倉 trade 記錄完整六組件向量 → 2-4 週後重跑 verify-softgate 方法論 = 精確 per-component 消融
+
+新增檔案: `src/analysis/base-split.ts` / `tests/base-split.test.ts`;更新: `src/index.ts`(調用 helper + import)
+
+---
+
+## v2.0.892-P9-softgate-confirm（2026-09-18：831 §27 承諾兌現——2-4 週後確認停用成效 + trend-alignment 裁決修正）
+
+> 主神:「唔好觀察,用現有數據 backfill 測試方案是否可行,可行照行」——兌現 831 §27「2-4 週後確認停用成效」+ p1-replay「entryConvictionLedger 乾淨樣本重驗」兩項拖欠。純離線 read-only(`scripts/verify-softgate-confirmation.ts` + `scripts/backfill-softgate-ablation.ts`),src/ 零改動,全量 4904 pass 保持。
+
+### ① 停用成效確認(09-09 停 8 gate ⭢ 09-18 驗證)
+- **WR 47.9% → 66.2%(+18.3pp)**,avg 0.678% → 0.626%(微降 = regime 混雜:GOLD/SP500 後半段跌市,分層已證)
+- 分層(side):sell avg +0.45% → +1.16%(+0.7pp)｜buy WR 45% → 73%(+28pp)
+- 分層(symbol):SNDK avg −0.91% → +4.93%、SKHX −0.71% → +0.55%、DRAM 蝕幅收窄——無一 symbol 倒退
+- **裁決:09-09 停用 8 gate(success-pattern/reversal-point/convexity/mae-pattern/cal-trust/causal/chart-aware/eq-ev)= 確認正確,保持**
+
+### ② 剩低 gate 乾淨樣本重驗(72 筆 entryConvictionLedger,boost/shrink 分離——修正 09-09 script 混埋計漏洞)
+| gate | 型態 | n | avg | 裁決 |
+|:--|:--|:--|:--|:--|
+| shape | boost ×1.05 | 41 | +1.00% WR76% | 🟢 有效——保留 |
+| four-window | boost ×1.10 | 23 | +0.99% WR70% | 🟢 有效——保留 |
+| trend-alignment | boost ×1.20 | 27 | +0.43% WR67% | 🟢 正EV加持——保留 |
+| convexity | shrink ×0.89 | 41 | +0.46% | 🔴 誤傷——**確認已停用正確** |
+| cal-trust | shrink | 13 | +2.08% | 🔴 誤傷——確認已停用正確 |
+| momentum-8pct-hard / four-window-hard | shrink ×0.0 | 14 | −0.22% WR71% | 🟢 擋蝕——保留 |
+
+### ③ trend-alignment 裁決修正(重要)
+- 本座 script v1 曾判「🟡 無效候選」——**誤判**。原因:①boost gate 唔可以單憑「avg < 全場」判無效(需 counterfactual)②trend-alignment 係**雙向防禦門**:順勢 boost ×1.2(27 單 avg +0.43% 正EV)+ 逆勢 shrink ×0.1(主神 P6 實證:接刀單 9 筆全蝕 EV −0.647,×0.1 近乎 block)
+- **停用净效應 = 放棄正EV加持 + 放生接刀 → 不可行。裁決:trend-alignment 保留(撤回候選)**
+
+### ④ 結構性發現(base 過度收縮——下一輪 candidate)
+- base(consensus×pwin×blend×penalty×boost×dirTrust×ev)avg = **0.424**(min 0.230)——consensus 100% 喺 base 一站平均縮至 42%(831 D1 時 0.247,已改善但仍深)
+- OLR pwin(ρ=+0.02 已證偽)打包喺 base 內,冇得單獨消融——**拆 base = 下一輪數據基建**(env 回滾 + 831 全流程)
+
+新增 scripts(純研究,零決策):`verify-softgate-confirmation.ts` / `backfill-softgate-ablation.ts`
+
+---
+
 ## v2.0.877-P9-engineer-boot + se-self-mod（2026-09-13：engineer 開機 race 根治 + SE 自己改自己——meta self-improvement + Judge Layer 防 bootstrapping）
 
 > 主神「why proxy error?」→ engineer 模式開機 race（UI 比 backend 早 poll）→ Boot Orchestrator 根治;接住「我想 System Engineer 甚至可以自己改自己」→ 調査發現 SE scope 早已包含 src/evolution/（可改自己 code + SystemEngineer.md）但零自改 guard = bootstrapping 危機（考試官自己改分數）→ Judge Layer 分離。全量 **4798 pass / 0 fail, exit 0**（4784 → +14）, tsc clean。

@@ -99,6 +99,7 @@ import { isLockProfitCloseReason } from './lib/close-reason-utils.ts';
 import { resolveReconcileFill } from './lib/reconcile-fill.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
 import { trendAlignmentMultiplier } from './analysis/trend-alignment-gate.ts';
+import { buildBaseConviction } from './analysis/base-split.ts';
 import { computeReversalRiskScore, reversalRiskMultiplier, formatReversalEvidence, shouldExitOnMaeMfeReversal, shouldLockProfitOnMaeMfe, checkFourWindowAlignment, type ReversalCandle } from './analysis/reversal-point.ts';
 import { momentumOlrConflictMultiplier } from './analysis/momentum-olr-conflict.ts';
 import { momentumDirectionalBias, robustMomentumPct, shadowBoostSize } from './analysis/momentum-directional-bias.ts';
@@ -10139,6 +10140,14 @@ ${recentExamples}
             sentiment: safeNum(this.sentimentEngine?.getSentiment()?.overallSentiment, 0),
             sentimentConviction: safeNum(this.sentimentEngine?.getSentiment()?.conviction, 0.5),
             signalAgreement: 0.5,
+            // v2.0.898-P9-shadow-time-features FIX（主神「Are you sure?」——ODP-9 捉到真 bug）:
+            // 之前 snapshotEntryFeatures 加咗 pick 但呢度（盲 shadow + aligned/seeded 嘅共用源）
+            // 冇發送呢 4 個源頭欄位 → m4hAtOpen 永遠 absent = E1 數據基建形同虛設。
+            // 「接收端有 pick」≠「發送端有數據」——831「以為有、實際冇」正中標。
+            // P28-B 先例: qrl fallback 分支早已有同樣 spread——統一埋主分支。
+            ...this.candleMomentumFeatures(mktSym),
+            regimeOrdinal: regimeToOrdinal(mktState?.regime ?? 'unknown'),
+            hourOfDay: currentHourOfDay(),
           };
 
           // Use S/R levels for active symbol; default distances for others
@@ -10293,6 +10302,12 @@ ${recentExamples}
           signalAgreement: 0.5,
           momentumShort: safeNum(mktMomentum.momentumShort, 0),
           momentumLong: safeNum(mktMomentum.momentumLong, 0),
+          // v2.0.898-P9-shadow-time-features FIX2（主神「Are you really sure?」——ODP-9 第四輪）:
+          // 呢個 mktFeatures 係 lastCycleShadowContexts 嘅源頭(aligned/seeded shadow 用),之前
+          // 補咗 momentum 但漏咗 regimeOrdinal+hourOfDay → 兩條 shadow 路徑嘅呢 2 欄永遠 absent。
+          // 「一條路徑修好」≠「全部路徑有數據」——每條 data flow 都要 prove 接到。
+          regimeOrdinal: regimeToOrdinal(mktState?.regime ?? 'unknown'),
+          hourOfDay: currentHourOfDay(),
         };
         const mktPrice = normalizeSymbol(mktSym) === normalizeSymbol(activeSymbol) ? combinedState.price : (mktState?.price ?? 0);
         this.lastCycleShadowContexts.set(mktSym, {
@@ -14682,15 +14697,36 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // v2.0.873-P9-ledger-shape-expose: shape/convexity 從 base 拆出獨立條目——
         // 「You can't tune what you can't attribute」——UI 睇到邊個因素係兇手。
         // 數值不變（只係分兩步計），純觀測層改動。
-        const baseConfidence = safeNum(calibratedConsensus, 0) * pwinBlendFactor * penaltyFactor * boostFactor * llmDirectionTrust * evMultiplier;
+        // v2.0.893-P9-base-split: base 拆分——六組件各自獨立條目 + 各自可獨立 disable。
+        // 目的(PLAN_base-split): 「You can't tune what you can't attribute」最後一塊盲區——
+        //   base 打包(consensus×pwin×blend×penalty×boost×dirTrust×ev) avg=0.424 縮水元兇無法歸因。
+        // 語義: calibrated-consensus 係「基數」——disable 時用未校準 consensus 原值(唔乘 1.0);
+        //   其餘五個係「乘數」——disable 時 ×1.0(soft,唔 block)。連乘數值 = 原 baseConfidence(不變)。
+        // 純函數 buildBaseConviction(單一 source of truth, unit-testable)——見 src/analysis/base-split.ts。
+        const {
+          baseConfidence,
+          ledger: baseSplitLedger,
+        } = buildBaseConviction(
+          {
+            consensusConfidence: safeNum(consensusConfidence, 0),
+            calibratedConsensus: safeNum(calibratedConsensus, 0),
+            pwinBlendFactor,
+            penaltyFactor,
+            boostFactor,
+            llmDirectionTrust,
+            evMultiplier,
+          },
+          P9_SOFTGATE_DISABLE,
+        );
         // P9-softgate-ablation(2026-09-09): convexity 停用(誤傷 55%,n=33)——shape 保留(誤傷 15% 有效)。
         const effShapeMult = P9_SOFTGATE_DISABLE.has('shape') ? 1 : shapeMultiplier;
         const effConvexityMult = P9_SOFTGATE_DISABLE.has('convexity') ? 1 : convexityMultiplier;
         let effectiveConfidence = baseConfidence * effShapeMult * effConvexityMult;
         // v2.0.872-P8-transparency: conviction 乘數總帳——每一個乘數都入帳，
         // Plan-G 顯示同 asset_analyses metadata 全鏈透明（主神:睇到 15% vs 0% 矛盾）。
+        // v2.0.893-P9-base-split: base 打包條目拆分爲六組件——連乘等價(數值不變,純歸因層)。
         const convLedger: Array<{ gate: string; mult: number }> = [
-          { gate: 'base(consensus×pwin×blend×penalty×boost×dirTrust×ev)', mult: baseConfidence },
+          ...baseSplitLedger,
         ];
         if (shapeMultiplier !== 1.0) convLedger.push({ gate: 'shape', mult: shapeMultiplier });
         if (convexityMultiplier !== 1.0) convLedger.push({ gate: 'convexity', mult: convexityMultiplier });
@@ -15113,21 +15149,24 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         // entryConvictionLedger 對已開倉交易係空值或錯誤値（錯誤歸因——1006 筆既有 attribution
         // 疑似同一污染源）。修正後通過 trade 攞到自己嗰條向量。
         this.lastConvLedger = convLedger;
+        // v2.0.893-P9-base-split: log 用 eff 值(disable 生效時顯示 = 實際——唔可以用原值誤導)。
+        // effOf 提升至 if/else 嘅共同 scope(兩個分支都用)。
+        const effOf = (name: string): number => baseSplitLedger.find((l) => l.gate === name)?.mult ?? 1.0;
         if (gateAction !== 'hold' && effectiveConfidence <= adjustedThreshold - 0.001) {
           const blendStr = comboBlendUsed
             ? ` blend=${pwinBlendFactor.toFixed(3)} (combo override: ${comboBlendUsed.reason.slice(0, 80)})`
             : ` blend=${pwinBlendFactor.toFixed(3)}`;
           const pwinStr = olrHasData
-            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} × ev=${evMultiplier.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
-            : ` (consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} × dirTrust=${llmDirectionTrust.toFixed(2)} × ev=${evMultiplier.toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
+            ? ` (P(win)=${(olrPWin * 100).toFixed(0)}%${blendStr} × consensus=${(effOf('calibrated-consensus') * 100).toFixed(0)}% × penalty=${effOf('plan-g-penalty').toFixed(2)} × boost=${effOf('plan-g-boost').toFixed(2)} × dirTrust=${effOf('llm-dir-trust').toFixed(2)} × ev=${effOf('ev-filter').toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%)`
+            : ` (consensus=${(effOf('calibrated-consensus') * 100).toFixed(0)}% × penalty=${effOf('plan-g-penalty').toFixed(2)} × boost=${effOf('plan-g-boost').toFixed(2)} × dirTrust=${effOf('llm-dir-trust').toFixed(2)} × ev=${effOf('ev-filter').toFixed(2)} → effective=${(effectiveConfidence * 100).toFixed(0)}%, OLR cold-start)`;
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
-          log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${penaltyFactor.toFixed(2)}, boost=${boostFactor.toFixed(2)}, risk=${riskProfile})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
+          log.warn(`🛑 [Plan-G] Conviction gate [${finalDecision.symbol || activeSymbol}]: effective ${(effectiveConfidence * 100).toFixed(0)}% < threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, penalty=${effOf('plan-g-penalty').toFixed(2)}, boost=${effOf('plan-g-boost').toFixed(2)}, risk=${riskProfile})${pwinStr} — overriding ${finalDecision.action.toUpperCase()} → HOLD`);
           activeAuditGates.push({ gate: 'conviction-gate', passed: false, reason: `[${gateAction.toUpperCase()}] ${(effectiveConfidence * 100).toFixed(0)}% < ${(adjustedThreshold * 100).toFixed(1)}%${pwinStr} [${factorStr}] [risk=${riskProfile}] [ledger: ${convLedger.map((l) => `${l.gate}×${l.mult.toFixed(2)}`).join(' ')}]` });
           finalDecision = {
             ...finalDecision,
             action: 'hold',
             positionSizePct: 0,
-            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)} × consensus=${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) below dynamic threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, risk=${riskProfile}). HOLD. 乘數總帳: ${convLedger.map((l) => `${l.gate}×${l.mult.toFixed(2)}`).join(' ')} = ${(effectiveConfidence * 100).toFixed(0)}%. Original: ${finalDecision.rationale}`,
+            rationale: `[Plan-G ${finalDecision.symbol || activeSymbol}] Effective confidence ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)} × consensus=${(effOf('calibrated-consensus') * 100).toFixed(0)}% × penalty=${effOf('plan-g-penalty').toFixed(2)} × boost=${effOf('plan-g-boost').toFixed(2)}) below dynamic threshold ${(adjustedThreshold * 100).toFixed(1)}% (score=${dtcResult.totalScore > 0 ? '+' : ''}${dtcResult.totalScore}, risk=${riskProfile}). HOLD. 乘數總帳: ${convLedger.map((l) => `${l.gate}×${l.mult.toFixed(2)}`).join(' ')} = ${(effectiveConfidence * 100).toFixed(0)}%. Original: ${finalDecision.rationale}`,
           };
         } else if (symFilter.isTradeFrequencyLimited()) {
           log.warn(`🛑 [adaptive-filter] Trade frequency throttle [${finalDecision.symbol || activeSymbol}]: limit reached — overriding ${finalDecision.action.toUpperCase()} → HOLD (over-trading prevention)`);
@@ -15141,8 +15180,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
         } else {
           const factorStr = dtcResult.factors.map(f => `${f.factor}=${f.score > 0 ? '+' : ''}${f.score}`).join(' ');
           activeAuditGates.push({ gate: 'conviction-gate', passed: true, reason: olrHasData
-            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)}${comboBlendUsed ? ' [combo override]' : ''} × ${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)}) ≥ ${(adjustedThreshold * 100).toFixed(1)}% [${factorStr}] [risk=${riskProfile}]`
-            : `${(consensusConfidence * 100).toFixed(0)}% × penalty=${penaltyFactor.toFixed(2)} × boost=${boostFactor.toFixed(2)} = ${(effectiveConfidence * 100).toFixed(0)}% ≥ ${(adjustedThreshold * 100).toFixed(1)}% (OLR cold-start) [${factorStr}] [risk=${riskProfile}]` });
+            ? `effective ${(effectiveConfidence * 100).toFixed(0)}% (P(win)=${(olrPWin * 100).toFixed(0)}% × blend=${pwinBlendFactor.toFixed(3)}${comboBlendUsed ? ' [combo override]' : ''} × ${(effOf('calibrated-consensus') * 100).toFixed(0)}% × penalty=${effOf('plan-g-penalty').toFixed(2)} × boost=${effOf('plan-g-boost').toFixed(2)}) ≥ ${(adjustedThreshold * 100).toFixed(1)}% [${factorStr}] [risk=${riskProfile}]`
+            : `${(effOf('calibrated-consensus') * 100).toFixed(0)}% × penalty=${effOf('plan-g-penalty').toFixed(2)} × boost=${effOf('plan-g-boost').toFixed(2)} = ${(effectiveConfidence * 100).toFixed(0)}% ≥ ${(adjustedThreshold * 100).toFixed(1)}% (OLR cold-start) [${factorStr}] [risk=${riskProfile}]` });
           activeAuditGates.push({ gate: 'frequency-throttle', passed: true, reason: 'OK' });
         }
       }
@@ -17682,6 +17721,8 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             rec.exitReason = typeof r.exitReason === 'string' ? r.exitReason : undefined;
             rec.shadowType = typeof r.shadowType === 'string' ? r.shadowType : undefined;
             for (const k of ['sentimentAtEntry','sentimentConvictionAtEntry','fundingRateAtEntry','volatilityAtEntry','srDistanceBpsAtEntry','obImbalanceAtEntry','volumeRatioAtEntry','entryShadowWRAtOpen','entryShadowNAtOpen','entryShadowPnlSumAtOpen']) { const v = pickN(k); if (v !== undefined) rec[k] = v; }
+            // v2.0.898-P9-shadow-time-features（E1 落地）: 時間結構特徵由 recentResults 帶入 archive（白名單—零決策）
+            for (const k of ['m4hAtOpen','m15mAtOpen','regimeOrdinalAtOpen','hourOfDayAtOpen']) { const v = pickN(k); if (v !== undefined) rec[k] = v; }
             mapped.push(rec);
           }
           const n = this.shadowResearchArchive.append(mapped as any);

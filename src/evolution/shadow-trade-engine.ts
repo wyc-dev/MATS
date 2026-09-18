@@ -1768,8 +1768,21 @@ export class ShadowTradeEngine {
     const out: Record<string, number> = {};
     const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
     const pick = (k: string, outKey: string, lo: number, hi: number) => {
-      if (!Number.isFinite(f[k])) return; // omit undefined/NaN — no pollution
-      out[outKey] = clamp(f[k] as number, lo, hi); // bound — 1e308 唔准入
+      // ═══ v2.0.899-P9-attack6 硬化（主神「不擇手段」第六輪——3 真漏洞）═══
+      // A1(最致命): f[k] 係 Proxy getter-bomb → 直接 throw → resolve 鏈 crash。
+      //   逐 field try/catch——單一毒 field skip,唔 kill 成個 snapshot。
+      // A2(原型污染): features 含 __proto__/constructor key——唔可以讀 Object.prototype 上
+      //   嘅繼承屬性(prototype pollution 會泄入 output)。
+      // A3(-0 注入): clamp(-0,...) = -0 → Object.is(-0, x) 污染 output。
+      let raw: unknown;
+      try {
+        if (!Object.prototype.hasOwnProperty.call(f, k)) return; // A2: 只讀 own property
+        raw = (f as Record<string, unknown>)[k];
+      } catch { return; } // A1: getter-trap → skip（白名單語義: 唔到就 absent）
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) return; // omit undefined/NaN/string — no pollution
+      let v = clamp(raw, lo, hi);
+      if (Object.is(v, -0)) v = 0; // A3: -0 → +0
+      out[outKey] = v;
     };
     pick('sentiment', 'sentimentAtEntry', -1, 1);
     pick('sentimentConviction', 'sentimentConvictionAtEntry', 0, 1);
@@ -1778,6 +1791,14 @@ export class ShadowTradeEngine {
     pick('srDistanceBps', 'srDistanceBpsAtEntry', 0, 10_000);
     pick('obImbalance', 'obImbalanceAtEntry', -1, 1);
     pick('volumeRatio', 'volumeRatioAtEntry', 0, 100);
+    // ═══ v2.0.898-P9-shadow-time-features（PLAN_shadow-connectome-layer E1 落地, 2026-09-18）═══
+    // 時間結構特徵——開倉時 snapshot（E0 實證: 方向判斷可 train, 特徵係 bottleneck;
+    // m4h/m15m 動量 = 「果蠅睇圖案流動」嘅時間維度;regime×hour = 狀態條件, 831「條件先有 edge」）。
+    // 純記錄（research archive 用）, 零決策影響——唔入 OLR features 輸入。
+    pick('momentumLong', 'm4hAtOpen', -1, 1);    // = m4h(primary)/m1h(fallback) 動量 fraction
+    pick('momentumShort', 'm15mAtOpen', -1, 1);  // = m15m(primary)/m5m(fallback) 動量 fraction
+    pick('regimeOrdinal', 'regimeOrdinalAtOpen', 0, 100); // regime 序數（0-6 為主, 容忍稍大再 clamp）
+    pick('hourOfDay', 'hourOfDayAtOpen', 0, 23); // 開倉時 server hour
     return out;
   }
 
