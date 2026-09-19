@@ -96,6 +96,7 @@ import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
 import { frequencyLeakMultiplier } from './analysis/trade-frequency-leak.ts';
+import { shouldGivebackCut } from './analysis/giveback-cut.ts';
 import { isLockProfitCloseReason } from './lib/close-reason-utils.ts';
 import { resolveReconcileFill } from './lib/reconcile-fill.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
@@ -13482,6 +13483,17 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               if (shouldLockProfitOnMaeMfe({ unrealizedPnlPct, maePct, mfePct, holdMin, perSymbolMfeP50 })) {
                 log.info(`🟢 [reversal-point-lock] ${psc.symbol}: MFE ${(mfePct * 100).toFixed(1)}% 回吐至 ${(unrealizedPnlPct * 100).toFixed(1)}% — 提早鎖利`);
                 await this.closeTrade(psc.symbol, `Reversal-point lock: MFE ${(mfePct * 100).toFixed(1)}% retraced to ${(unrealizedPnlPct * 100).toFixed(1)}% (≥30% giveback)`, 'exit_price_lock');
+                continue; // 倉位已 close,skip 成個 loop
+              }
+
+              // ═══ v2.0.915-P9-giveback-cut（主神批 P1——「曾浮盈但最終蝕」57/89 單 Σ−207% 缺口）═══
+              // 條件: MFE 曾 ≥0.5% margin ∧ 而家水下 = 市場俾過錢 + 回吐>100% = 離場時機失敗
+              // → 唔等 consensus 慢慢 close, 即時止損（57 單 MFE median 1.46% → pnl median −3.58%）
+              // 誤傷: 大 winner 係 float→win(pnl>0 唔觸發), 只有攞過錢又輸返先 cut。
+              // env: GIVEBACK_CUT_DISABLE=true / GIVEBACK_CUT_MFE_MIN（default 0.005）
+              if (process.env['GIVEBACK_CUT_DISABLE'] !== 'true' && shouldGivebackCut(mfePct, unrealizedPnlPct)) {
+                log.warn(`⏳ [giveback-cut] ${psc.symbol}: 曾浮盈 MFE ${(mfePct * 100).toFixed(1)}% 已回吐至水下 ${(unrealizedPnlPct * 100).toFixed(1)}% — 唔等 consensus, 緊接 lock-pipeline 前止損`);
+                await this.closeTrade(psc.symbol, `Giveback cut: MFE ${(mfePct * 100).toFixed(1)}% was reached then retraced to ${(unrealizedPnlPct * 100).toFixed(1)}% underwater`, 'reversal_point_exit');
                 continue; // 倉位已 close,skip 成個 loop
               }
 

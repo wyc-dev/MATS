@@ -2,7 +2,7 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 
 ## ⭐ 2026-09-18 新組件（v2.0.900-913 UI + 決策歸因系列）
 
-- **v2.0.914-QRL-Shadow-Stop**: HACP panel 歸因區對稱 2×2 grid——WHY LOSING/DISCIPLINE/GATE BLOCKS/PER-SYMBOL 四格統一 border+圓角+tabular-nums, minWidth:0 防溢出。
+- **v2.0.915-P9-giveback-cut**: HACP panel 歸因區對稱 2×2 grid——WHY LOSING/DISCIPLINE/GATE BLOCKS/PER-SYMBOL 四格統一 border+圓角+tabular-nums, minWidth:0 防溢出。
 - **v2.0.912-Layout-Redistribute**: 刪 panel-header(冗餘); canvas 三元素垂直中軸對齊(MARKET box 108px 左/AGENTS W×0.46 置中/READOUT r=40 右), GATES 移離黐底到中下部橫帶, 中央 vignette 光暈。
 - **v2.0.911-MarketBox-Sizing**: MARKETS block 行高 12→16px, 寬 148, x=82(左緣唔再 −4 溢出), boxH match agents span。
 - **v2.0.910-MarketBlock-AllMarkets**: canvas MARKET 節點由單一 active dot → MARKETS block 顯示全部 tradingMarkets(≤10, 每格 symbol+決策色點+decision, active 紫高亮), spike 由 active 市場 row 流向 agents。
@@ -32,7 +32,7 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 - `src/analysis/readout-reversal-monitor.ts` — **Readout 反轉優先監察**（891, connectome BPU 研究→P11 優監）: 每 300s 自動重算開倉時 shadow WR→outcome 的 ρ（avgRankSpearman）, 負 ρ≥0.1+n≥30 → 🔔 READOUT-REVERSAL LOUD（shadow WR 反預測 ρ=−0.134 實錘）。env READOUT_REVERSAL_MONITOR/READOUT_RHO_THRESHOLD/READOUT_MIN_N。
 - `src/analysis/mom24-guard.ts` — **MOM24_4H_BYPASS**（887）: mom24∈[0,0.5) 且 m4h≥0.5（4h breakout 初期）→ 放行交 gate 鏈（shadow 衝突區 WR48%vs36% 實錘）。
 
-**Version**: 2.0.914-QRL-Shadow-Stop · **Tests**: **4980 pass / 0 fail, exit 0**（2026-09-18; 4912 → +19: 894 base-split-attack 9 + attack2 10——6 真漏洞全修）（2026-09-10 SE-verdict-maxbuffer: v2.0.854-attack2-nan-price + v2.0.868-attack 等 12 個 known-noise files 已由 `vitest.config.ts exclude`——之前 13 pre-existing fail 令 vitest 永遠 exit≠0 → SE 判定永遠假 FAIL → 啱 fix 全被 rollback）; 另 9 個 legacy `node:test` 格式 file + 1 個測已刪代碼嘅死 file vitest 收集唔到——開發噪音,非 regression) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.915-P9-giveback-cut · **Tests**: **4988 pass / 0 fail, exit 0**（2026-09-18; 4912 → +19: 894 base-split-attack 9 + attack2 10——6 真漏洞全修）（2026-09-10 SE-verdict-maxbuffer: v2.0.854-attack2-nan-price + v2.0.868-attack 等 12 個 known-noise files 已由 `vitest.config.ts exclude`——之前 13 pre-existing fail 令 vitest 永遠 exit≠0 → SE 判定永遠假 FAIL → 啱 fix 全被 rollback）; 另 9 個 legacy `node:test` 格式 file + 1 個測已刪代碼嘅死 file vitest 收集唔到——開發噪音,非 regression) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
 
 ## ⭐ 2026-09-13 新組件（v2.0.882-885）
 

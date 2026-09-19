@@ -2,6 +2,31 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.915-P9-giveback-cut（2026-09-18：回吐過頭熔斷——consensus close 離場缺口修復）
+
+> 主神批 P1。margin-basis 修正後 57/89 consensus close（64%）=「曾浮盈 ≥0.5% margin 但最終蝕」——
+> MFE median 1.46% → pnl median −3.58%（Σ −207.1%）。離場鏈（exit_price_lock/MAE-MFE lock）
+> 冇喺 pnl 仲係正嗰陣出手 → 水下先被 consensus 慢慢 close。87% consensus 流失由此造成。
+
+### ① 新組件（src/analysis/giveback-cut.ts 純函數）
+- `shouldGivebackCut(mfePct, unrealizedPnlPct)`: MFE 曾 ≥0.5% margin ∧ 而家 pnl<0 = 回吐>100% = 離場時機失敗 → 即時止損
+- 接入 consensus close loop（shouldLockProfitOnMaeMfe 之後、shouldExitOnMaeMfeReversal 之前）——closeReason 'reversal_point_exit'（白名單）
+- env 回滾: `GIVEBACK_CUT_DISABLE=true` / `GIVEBACK_CUT_MFE_MIN`(default 0.005)
+
+### ② Counterfactual 驗證（304 單全樣本）
+```
+觸發 57 單(avg −3.63%, Σ −207.1%)
+[保守] cut 喺 −1%(防 whipsaw): 慳 +156.2%
+[樂觀] cut 喺 0%:             慳 +207.1%
+誤傷: 0(觸發條件 pnl<0——大 winner 必 pnl>0 先唔會觸發)
+consensus 全體 −204.4% → giveback-cut 後剩 +2.7%
+```
+
+### ③ 硬體
+- 測試 8 個（觸發/誤傷防線/MFE 門檻/零浮盈唔 cut/垃圾輸入/mfeMin clamp/併發 1000/持久化輪迴）
+- 全量 4988 pass(+8), tsc clean, runtime import OK, 全英文 0 中文字元
+
+---
 ## v2.0.914-QRL-Shadow-Stop（2026-09-18：架構審計落地——Q-RL shadow 行為停用）
 
 > 主神批 PLAN_architecture-profit-audit: 停用已失效組件。全樣本 304 realTrades + 11,248 shadow 樣本審計:
