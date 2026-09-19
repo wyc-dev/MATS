@@ -2,6 +2,18 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.911-MarketBox-Sizing（2026-09-18：MARKETS block 尺寸校準）
+
+> Master Lord:「個框唔啱 size」——MARKETS block 每行 12px 太窄(10 市場 box 128px vs agents span 250px 唔對稱), 寬 120px 貼邊, x=70 令 box 左緣 −4 溢出 canvas。
+
+### 修正
+- 每行高 12→16px; box 寬 120→148px; x 62→82(左緣 8, 唔再溢出)
+- boxH = min(mkts×16+26, H−24)——10 市場 = 186px, 垂直置中匹配 agents span(30-250)
+- 標題行距/active 高亮 row/色點/決策字位置全部對齊新行高
+- spike 起點 = active 市場 row 新位置
+- 全英文 0 中文字元; tsc clean + vite build OK
+
+---
 ## v2.0.910-MarketBlock-AllMarkets（2026-09-18：canvas MARKET 節點顯示全部市場——唔止 active）
 
 > Master Lord:「Market 幅圖上唔應該只 show BTC」——canvas 左邊 MARKET 節點之前淨係單一 active symbol。

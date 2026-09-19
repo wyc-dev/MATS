@@ -138,7 +138,7 @@ export default function FlyThoughtPanel({ data }: Props) {
     }
 
     // layout
-    const INPUT = { x: 62, y: H * 0.5, w: 120, h: 12 }
+    const INPUT = { x: 82, y: H * 0.5, w: 148, h: 16 }
     const READOUT = { x: W - 58, y: H * 0.42, r: 34 }
     const agentX = W * 0.38
 
@@ -161,15 +161,15 @@ export default function FlyThoughtPanel({ data }: Props) {
 
       // ── INPUT: ALL markets block (v2.0.910 — not just active) ──
       const mkts = (curMkts ?? [sym]).slice(0, 10)
-      const boxH = Math.max(32, mkts.length * INPUT.h + 8)
+      const boxH = Math.max(40, Math.min(mkts.length * INPUT.h + 26, H - 24))
       const boxY = (H - boxH) / 2
       ctx.strokeStyle = 'rgba(56,189,248,0.5)'; ctx.lineWidth = 1.2
       ctx.fillStyle = 'rgba(56,189,248,0.05)'
       ctx.beginPath(); ctx.roundRect(INPUT.x - INPUT.w / 2, boxY, INPUT.w, boxH, 8); ctx.fill(); ctx.stroke()
       ctx.fillStyle = '#7dd3fc'; ctx.font = '8px ui-monospace, monospace'; ctx.textAlign = 'center'
-      ctx.fillText('MARKETS', INPUT.x, boxY + 11)
+      ctx.fillText('MARKETS', INPUT.x, boxY + 12)
       mkts.forEach((m: string, mi: number) => {
-        const rowY = boxY + 24 + mi * INPUT.h
+        const rowY = boxY + 26 + mi * INPUT.h
         const norm = String(m).replace(/^xyz:/, '').toUpperCase()
         const isActive = norm === String(sym).replace(/^xyz:/, '').toUpperCase()
         const pc = perSymC.find((x: any) => String(x.symbol).replace(/^xyz:/, '').toUpperCase() === norm)
@@ -177,16 +177,16 @@ export default function FlyThoughtPanel({ data }: Props) {
         const mCol = mAct === 'buy' ? '#4ade80' : mAct === 'sell' ? '#f87171' : '#475569'
         if (isActive) {
           ctx.fillStyle = 'rgba(167,139,250,0.18)'
-          ctx.beginPath(); ctx.roundRect(INPUT.x - INPUT.w / 2 + 3, rowY - 8, INPUT.w - 6, 11, 3); ctx.fill()
+          ctx.beginPath(); ctx.roundRect(INPUT.x - INPUT.w / 2 + 3, rowY - 9, INPUT.w - 6, 14, 3); ctx.fill()
         }
         ctx.font = 'bold 8px ui-monospace, monospace'
         ctx.fillStyle = isActive ? '#e9d5ff' : '#94a3b8'
-        ctx.fillText(norm, INPUT.x - 22, rowY + 1)
+        ctx.fillText(norm, INPUT.x - 34, rowY + 2)
         ctx.fillStyle = mCol
-        ctx.beginPath(); ctx.arc(INPUT.x + 16, rowY - 1, 3, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.arc(INPUT.x + 4, rowY - 1, 3, 0, Math.PI * 2); ctx.fill()
         ctx.font = '6.5px ui-monospace, monospace'
         ctx.fillStyle = '#64748b'
-        ctx.fillText(String(mAct ?? '—').toUpperCase(), INPUT.x + 26, rowY + 1)
+        ctx.fillText(String(mAct ?? '—').toUpperCase(), INPUT.x + 14, rowY + 2)
       })
       ctx.textAlign = 'left'
       // pulse (active market)
@@ -205,7 +205,7 @@ export default function FlyThoughtPanel({ data }: Props) {
       for (const n of agentNodes) {
         // input → neuron spike (start at ACTIVE market row, not box center)
         const actIdx = Math.max(0, mkts.findIndex((m: string) => String(m).replace(/^xyz:/, '').toUpperCase() === String(sym).replace(/^xyz:/, '').toUpperCase()))
-        const srcX = INPUT.x, srcY = boxY + 24 + actIdx * INPUT.h
+        const srcX = INPUT.x, srcY = boxY + 26 + actIdx * INPUT.h
         const ph = (t * 60 + n.y * 0.5) % 100
         const sx = srcX + (n.x - srcX) * ph / 100, sy = srcY + (n.y - srcY) * ph / 100
         ctx.strokeStyle = 'rgba(148,163,184,0.12)'; ctx.lineWidth = 1
