@@ -2,6 +2,18 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.900-Fly-Thought-Panel（2026-09-18：果蠅思考巨象化——HACP 決策可視化）
+
+> 主神:「睇唔到佢點思考,亦唔知點解一直蝕」→ 新增 `ui/src/FlyThoughtPanel.tsx`——
+> HACP 辯論流程 ≡ 果蠅腦訊號流（connectome-inspired,純顯示層零決策）: 感官輸入 → 7 agent 神經元
+> （亮度=confidence, 色=投票方向）→ 辯論連線（spike 動畫）→ 突觸檢查站（decisionAudit gates:
+> passed=綠通/blocked=紅閃斷路——mom24/tail-watchdog 兩大蝕因視覺化）→ 讀出層（consensus）→
+> 多巴胺回饋（最近 PnL 綠/紅脈）。**點解蝕嘅視覺答案**: gate 紅閃=訊號斷路 / agent 投票 vs consensus
+> 方向對抗 / PnL sparkline 向下=決策誤判。接入 HACP Hippocampus panel（EvolutionPanel 之上）。
+> UI tsc clean + vite build 成功。
+
+---
+
 ## v2.0.899-P9-attack6（2026-09-18：shadow 時間特徵攻擊輪——getter-bomb/-0/原型污染 2 真漏洞全修）
 
 > 主神第六輪「不擇手段」——目標 = snapshotEntryFeatures + open→resolve 鏈。

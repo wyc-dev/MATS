@@ -6,6 +6,7 @@ import type { APIData, AgentModelConfig, ModelDefinition, EMInsightStats } from 
 import { AGENT_META, AGENT_ROLES } from './types'
 import TradingViewChart from './TradingViewChart'
 import { fetchAssetAnalyses, supabaseEnabled, type AssetAnalysisRow } from './lib/supabase'
+import FlyThoughtPanel from './FlyThoughtPanel'
 
 const API_BASE = '/api'
 
@@ -2143,6 +2144,11 @@ function PortfolioPanel({ data }: { data: APIData | null }) {
       </div>
 
       {/* v2.0.151: Balance/Equity moved to Trading Terminal */}
+
+      {/* v2.0.900: 果蠅思考巨象化——HACP 決策可視化（睇到佢點諗 + 點解蝕） */}
+      <FlyThoughtPanel data={data} />
+
+      <div style={{ height: 'var(--space-6)' }} />
 
       {/* Evolution Panel — embedded as module inside Hippocampus */}
       <EvolutionPanel data={data} />
