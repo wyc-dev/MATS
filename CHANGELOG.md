@@ -7,6 +7,11 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - **歸因變化(正確行為, 記錄)**: 57 單 closeReason 由 `consensus`(learning weight 0.5)變 `reversal_point_exit`(0.3)——機制改動後 closeReason 反映真實離場機制, 而 reversal_point_exit 本就係「系統決策」低權重——learning 對呢批單降權至 0.3, 唔會再教「consensus close 就係咁」; close-decision-calibrator 已含 reversal_point_exit(可校準)
 - 驗證: 8 tests + 52 相關 tests 全綠, tsc clean
 
+### ⑤ 誠實修正(主神「are you sure now alright」——再自測)+ GOT 閉環
+- **counterfactual 係「上限」唔係保證**: 24h 後見之明——950 虧損 close 中 75% close 後 24h 反彈 >1%(窗口 bias, 唔等於實時誤斬, 但揭示「可能斬喺暫時回調底」風險)
+- **加 GOT 閉環**: gate='giveback-cut'——量度被 cut 單 close 後「繼續跌=hit / 反彈=miss」; 2-4 週後 hit rate <50% → 停用/調 GIVEBACK_CUT_MFE_MIN(831 校準)
+- 即: 呢一步係「有 GOT 量度嘅嘗試」, 唔係「已證明慳 +156%」——落地後用真數據確認先算數
+
 ## v2.0.915-P9-giveback-cut（2026-09-18：回吐過頭熔斷——consensus close 離場缺口修復）
 
 > 主神批 P1。margin-basis 修正後 57/89 consensus close（64%）=「曾浮盈 ≥0.5% margin 但最終蝕」——
