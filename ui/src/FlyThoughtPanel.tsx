@@ -38,6 +38,9 @@ const ROLE_COLORS: Record<string, string> = {
 
 export default function FlyThoughtPanel({ data }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  // v2.0.904: animation reads latest via ref — effect mounts once, no restart (no flicker/frame-skip)
+  const dataRef = useRef(data)
+  dataRef.current = data
   const votes = data?.consensus?.votes ?? []
   const agents = data?.agentThoughts ?? []
   const consensus = data?.consensus
@@ -50,12 +53,10 @@ export default function FlyThoughtPanel({ data }: Props) {
   const p = (data?.portfolio as any) ?? {}
   const s = data?.status as any
 
-  // ── Genuine Balance / cumulative PnL ──
+  // ── Genuine Balance / last-trade P&L（Master Lord: must be obvious, no dead cells） ──
   const isRealMode = (data?.marketAgent?.config as any)?.tradeMode === 'real'
   const genuineBalance = isRealMode ? p?.totalEquity : (p?.balance ?? s?.balance)
   const genuineEquity = isRealMode ? p?.balance : (p?.totalEquity ?? s?.equity)
-  const cumPnl = typeof p?.totalPnl === 'number' ? p.totalPnl : null
-  const cumPnlPct = typeof p?.totalPnlPct === 'number' ? p.totalPnlPct : null
 
   // ── closed trades for attribution ──
   const trades = useMemo(() => {
@@ -118,7 +119,10 @@ export default function FlyThoughtPanel({ data }: Props) {
   /* ─────────────────────────────────────────────────────────────
    * CANVAS — DRAW THE FLY (top-down): eyes / antennae / brain /
    * VNC with gate segments / abdominal readout
-   * ───────────────────────────────────────────────────────────── */
+   * ─────────────────────────────────────────────────────────────
+   * Animation stability (v2.0.904): effect mounts once (empty deps), each frame reads
+   * latest via dataRef — no RAF restart on data update (old version flickered/skipped).
+   */
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -128,6 +132,29 @@ export default function FlyThoughtPanel({ data }: Props) {
     const cx = W / 2
     let raf = 0, t = 0
 
+    // read latest data each frame (no frozen closure values)
+    const cur = (): { votes: any[]; agents: any[]; decision: string; statusColor: string; conf: number; gates: any[]; lastPnl: number } => {
+      const d = dataRef.current
+      const c = d?.consensus as any
+      const decision = c?.decision?.action ?? 'hold'
+      const gates = (() => {
+        const a = d?.decisionAudit ?? []
+        return a.length > 0 ? (a[a.length - 1]?.gates ?? []) : []
+      })()
+      const rec = ((d?.portfolio as any)?.tradeRecords ?? d?.tradeRecords ?? [])
+        .filter((x: any) => x && typeof x === 'object' && typeof x.pnlPct === 'number' && Number.isFinite(x.pnlPct) && (x.status === 'closed' || x.status === 'hl-fill'))
+      const lastPnl = rec.length ? rec[rec.length - 1].pnlPct : 0
+      return {
+        votes: c?.votes ?? [],
+        agents: d?.agentThoughts ?? [],
+        decision,
+        statusColor: decision === 'buy' ? '#4ade80' : decision === 'sell' ? '#f87171' : '#94a3b8',
+        conf: typeof c?.confidence === 'number' ? c.confidence : 0,
+        gates,
+        lastPnl,
+      }
+    }
+
     // body geometry (top-down fly)
     const HEAD_R = 34, EYE_RX = 26, EYE_RY = 30
     const headY = H * 0.26
@@ -135,10 +162,16 @@ export default function FlyThoughtPanel({ data }: Props) {
     const abdomenY = H * 0.82, abdomenW = 52, abdomenH = 44
     const VNC_START = headY + 20, VNC_END = abdomenY
 
-    const gates = (lastAudit?.gates ?? []) as Array<{ gate: string; passed: boolean }>
-    const vncGates = gates.slice(0, 5)
-
     const draw = () => {
+      // fresh values each frame (v2.0.904)
+      const { votes: curVotes, agents: curAgents, decision: curDecision, statusColor: curColor, conf: curConf, gates: curGates, lastPnl } = cur()
+      const votes = curVotes as any[]
+      const agents = curAgents as any[]
+      const decision = curDecision
+      const statusColor = curColor
+      const gates = (curGates ?? []) as Array<{ gate: string; passed: boolean }>
+      const consensusConf = curConf
+      const vncGates = gates.slice(0, 5)
       t += 0.016
       ctx.clearRect(0, 0, W, H)
       // background
@@ -147,8 +180,6 @@ export default function FlyThoughtPanel({ data }: Props) {
       ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H)
 
       // ── dopamine wash (P&L pulse over the whole body) ──
-      const last = recent[0] as any
-      const lastPnl = last ? last.pnlPct : 0
       const wash = lastPnl > 0.0001 ? 'rgba(74,222,128,' : lastPnl < -0.0001 ? 'rgba(248,113,113,' : 'rgba(148,163,184,'
       const washA = 0.04 + 0.03 * Math.min(1, Math.abs(lastPnl) * 6)
       ctx.fillStyle = wash + washA + ')'
@@ -264,7 +295,7 @@ export default function FlyThoughtPanel({ data }: Props) {
       // readout text
       ctx.fillStyle = statusColor; ctx.font = 'bold 11px ui-monospace, monospace'
       ctx.textAlign = 'center'
-      ctx.fillText(`${decision.toUpperCase()} ${Math.round((consensus?.confidence ?? 0) * 100)}%`, cx, abdomenY + 4)
+      ctx.fillText(`${decision.toUpperCase()} ${Math.round(consensusConf * 100)}%`, cx, abdomenY + 4)
       ctx.font = '7.5px ui-monospace, monospace'
       ctx.fillStyle = 'rgba(148,163,184,0.7)'
       ctx.fillText('READOUT', cx, abdomenY + abdomenH / 2 + 10)
@@ -279,10 +310,7 @@ export default function FlyThoughtPanel({ data }: Props) {
     }
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
-  }, [agents.length, votes.length, lastAudit, decision, statusColor, consensus?.confidence, recent])
-
-  const blockedGates = (lastAudit?.gates ?? []).filter((g: any) => !g.passed).length
-  const gateCount = (lastAudit?.gates ?? []).length
+  }, []) // v2.0.904: empty deps — RAF mounts once, reads latest via dataRef
 
   return (
     <div className="panel panel-rgb-border" style={{ padding: 0, overflow: 'hidden' }}>
@@ -293,15 +321,14 @@ export default function FlyThoughtPanel({ data }: Props) {
       </div>
 
       {/* balance strip (obvious) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
         {[
           [isRealMode ? 'GENUINE BALANCE' : 'SIM BALANCE', money(genuineBalance), '#e2e8f0'],
           [isRealMode ? 'GENUINE EQUITY' : 'SIM EQUITY', money(genuineEquity), '#e2e8f0'],
-          ['CUMULATIVE P&L', cumPnl !== null ? money(cumPnl) : '—', typeof cumPnl === 'number' && cumPnl >= 0 ? '#4ade80' : '#f87171'],
-          ['PNL %', cumPnlPct !== null ? fmtPct(cumPnlPct) : '—', typeof cumPnlPct === 'number' && cumPnlPct >= 0 ? '#4ade80' : '#f87171'],
+          ['LAST CLOSED', (() => { const l = recent[0] as any; return l ? `${l.side?.toUpperCase?.() ?? '?'} ${fmtPct(l.pnlPct)}` : '—' })(), (() => { const l = recent[0] as any; return l ? (l.pnlPct >= 0 ? '#4ade80' : '#f87171') : '#94a3b8' })()],
           ['LAST {n} NET', stats.n ? fmtPct(stats.net) : '—', stats.net >= 0 ? '#4ade80' : '#f87171'],
         ].map(([label, val, col], i) => (
-          <div key={i} style={{ padding: '9px 10px', borderRight: i < 4 ? '1px solid rgba(148,163,184,0.12)' : 'none' }}>
+          <div key={i} style={{ padding: '9px 10px', borderRight: i < 3 ? '1px solid rgba(148,163,184,0.12)' : 'none' }}>
             <div style={{ fontSize: 8.5, color: '#64748b', letterSpacing: 0.5 }}>{label}</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: col as string, fontVariantNumeric: 'tabular-nums' }}>{val}</div>
           </div>
@@ -354,8 +381,8 @@ export default function FlyThoughtPanel({ data }: Props) {
               ['PAYOFF', stats.payoff.toFixed(2), stats.payoff >= 1.3 ? '#4ade80' : '#fbbf24'],
               ['STREAK', `${stats.streak >= 0 ? '+' : ''}${stats.streak}`, stats.streak >= 0 ? '#4ade80' : '#f87171'],
               ['FREQ/DAY', (() => {
-                // real span of last-30 window (not hardcoded 30 days)
-                const ts = recent.map((t: any) => t.openedAt ?? t.closedAt ?? 0).filter((x: number) => x > 0)
+                // real span of ALL closed trades (not last-30 window)
+                const ts = closed.map((t: any) => t.openedAt ?? t.closedAt ?? 0).filter((x: number) => x > 0)
                 if (ts.length < 2) return '—'
                 const spanDays = (Math.max(...ts) - Math.min(...ts)) / 86400_000
                 return spanDays > 0 ? (ts.length / spanDays).toFixed(1) : '—'
@@ -397,7 +424,15 @@ export default function FlyThoughtPanel({ data }: Props) {
                   if (stats.winRate < 0.45) parts.push(`WR ${Math.round(stats.winRate * 100)}%`)
                   return 'Persistent loss: ' + (parts.join(' · ') || 'see grid')
                 })()
-            : `Positive ${fmtPct(stats.net)} over ${stats.n} — payoff ${stats.payoff.toFixed(2)}${stats.payoff < 1.2 ? ', but winners too small vs losers (cutting wins?)' : ', discipline ok'}.`}
+            : (() => {
+                const hints: string[] = []
+                if (stats.payoff < 1.2) hints.push(`payoff ${stats.payoff.toFixed(2)}<1.2 — winners too small vs losers (cutting wins?)`)
+                if (gateBlocks[0]) hints.push(`path blocked ${gateBlocks[0][0]} ×${gateBlocks[0][1]}`)
+                if (stats.winRate < 0.45) hints.push(`WR ${Math.round(stats.winRate * 100)}%`)
+                const top = byReason[0]
+                if (top && top.total < 0) hints.push(`top leak by reason: ${top.reason}`)
+                return hints.length ? `Watching for: ${hints.join(' · ')}` : 'Discipline looks healthy.'
+              })()}
         </div>
       </div>
     </div>
