@@ -13491,7 +13491,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               // → 唔等 consensus 慢慢 close, 即時止損（57 單 MFE median 1.46% → pnl median −3.58%）
               // 誤傷: 大 winner 係 float→win(pnl>0 唔觸發), 只有攞過錢又輸返先 cut。
               // env: GIVEBACK_CUT_DISABLE=true / GIVEBACK_CUT_MFE_MIN（default 0.005）
-              if (process.env['GIVEBACK_CUT_DISABLE'] !== 'true' && shouldGivebackCut(mfePct, unrealizedPnlPct)) {
+              if (process.env['GIVEBACK_CUT_DISABLE'] !== 'true' && shouldGivebackCut(mfePct, unrealizedPnlPct, parseLockNumEnv(process.env['GIVEBACK_CUT_MFE_MIN'], 0.005))) {
                 log.warn(`⏳ [giveback-cut] ${psc.symbol}: 曾浮盈 MFE ${(mfePct * 100).toFixed(1)}% 已回吐至水下 ${(unrealizedPnlPct * 100).toFixed(1)}% — 唔等 consensus, 緊接 lock-pipeline 前止損`);
                 await this.closeTrade(psc.symbol, `Giveback cut: MFE ${(mfePct * 100).toFixed(1)}% was reached then retraced to ${(unrealizedPnlPct * 100).toFixed(1)}% underwater`, 'reversal_point_exit');
                 continue; // 倉位已 close,skip 成個 loop

@@ -2,6 +2,11 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+### ④ 自測修正(主神「are you sure」) + 歸因變化記錄
+- **遺漏1(真 bug)修正**: `GIVEBACK_CUT_MFE_MIN` env 之前冇接入(調用冇傳第三參數, env 形同虛設)→ 接入 `parseLockNumEnv(env, 0.005)`
+- **歸因變化(正確行為, 記錄)**: 57 單 closeReason 由 `consensus`(learning weight 0.5)變 `reversal_point_exit`(0.3)——機制改動後 closeReason 反映真實離場機制, 而 reversal_point_exit 本就係「系統決策」低權重——learning 對呢批單降權至 0.3, 唔會再教「consensus close 就係咁」; close-decision-calibrator 已含 reversal_point_exit(可校準)
+- 驗證: 8 tests + 52 相關 tests 全綠, tsc clean
+
 ## v2.0.915-P9-giveback-cut（2026-09-18：回吐過頭熔斷——consensus close 離場缺口修復）
 
 > 主神批 P1。margin-basis 修正後 57/89 consensus close（64%）=「曾浮盈 ≥0.5% margin 但最終蝕」——
