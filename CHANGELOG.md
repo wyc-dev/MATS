@@ -2,6 +2,21 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.917-P9-attack10（2026-09-18：第十輪——env 注入/邊界/消費者範圍鎖死）
+
+> 目標 = env 解析層(parseBoolEnv/parseLockNumEnv) + Q-RL shadowEnabled 消費者範圍 + judgeGateOutcome 邊界。
+
+### ① 真漏洞 1 個
+- **E3(move cap 缺口)**: judgeGateOutcome ratio guard(0.001~1000)過到但 move 可以 +49900%(如 0.002→1)——「唔可比價格對」唔應該判 hit/miss → 加 **|move| ≤ 10(±1000%)第二層**, 超過 = 污染 pending。正常 move(0.5%~1000%)照判。
+
+### ② 防禦鎖死(已 cover, 測試證明唔會被攻破)
+- E1: QRL_SHADOW_ENABLED 垃圾 env(banana/空格)→ parseBoolEnv 返 default false(唔會被誤開)
+- E2: GIVEBACK_CUT_MFE_MIN env 負數/0/1e308 → 純函數二次 clamp(mfeMin 垃圾唔可能改閾值)
+- E4: Q-RL shadowEnabled=false 只停「開倉行為」, 觀測(getStats context)照常——消費者範圍正確
+- E5: 併發 1000 個不同 mfeMin 一致
+- 全量 5005 pass(+5), tsc clean
+
+---
 ## v2.0.916-P9-attack9（2026-09-18：第九輪——giveback-cut 週邊污染 3 真漏洞全修）
 
 > 目標 = giveback-cut / GOT 週邊 / judgeGateOutcome。紅先綠後, 全部真漏洞實證。

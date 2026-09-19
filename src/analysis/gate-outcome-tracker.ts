@@ -74,6 +74,9 @@ export function judgeGateOutcome(
   if (direction !== 'buy' && direction !== 'sell' && direction !== 'close') return 'pending';
   const move = (currentPrice - entryPrice) / entryPrice;
   if (Math.abs(move) < RESOLVE_THRESHOLD) return 'pending';
+  // attack10-E3: move 幅度上限——±1000%(10 倍)內先 judge;超過 = 唔可比價格對污染
+  // (ratio 可過 1000 邊界但 move 49900% 嘅垃圾對——唔可以當真 move)。真實市場單次 move 絕唔超 1000%。
+  if (Math.abs(move) > 10) return 'pending';
   if (direction === 'buy') return move < 0 ? 'hit' : 'miss';
   if (direction === 'sell') return move > 0 ? 'hit' : 'miss';
   // close — 用持倉方向判定
