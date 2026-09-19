@@ -1,268 +1,243 @@
 /* ═══════════════════════════════════════════════════════════════════════
- * FlyThoughtPanel.tsx —— 果蠅思考巨象化（HACP Hippocampus 內嵌）
- * v2.0.900, 主神 2026-09-18:「睇唔到佢點思考,亦唔知點解一直蝕」
+ * FlyThoughtPanel.tsx — HACP Decision Intelligence (v2.0.901)
+ * Master Lord 2026-09-18: professional-grade loss attribution, English-only UI.
  *
- * 概念（connectome-inspired, 純顯示層——零決策改動）:
- *   HACP 辯論流程 ≡ 果蠅腦訊號流:
- *     [感官輸入] 市場特徵 (symbol/trend/regime)
- *     → [Agent 神經元種群] 7 個 agent:圓形亮度 = confidence, 顏色 = 投票方向
- *     → [辯論連線] vote weight:綠 buy / 紅 sell / 灰 hold, 動畫 spike 流動
- *     → [突觸檢查站] decisionAudit.gates:passed=綠通 / blocked=紅閃斷路
- *        （斷路 = 「系統想開但被閂」——mom24/tail-watchdog 兩大蝕因嘅視覺化）
- *     → [讀出層] consensus 最終決策 + confidence（MBON-like readout）
- *     → [多巴胺回饋] 最近 trades P&L: 正=綠脈 / 負=紅脈（reward/aversive）
- *
- * 點解蝕嘅視覺答案:
- *   ① gate 鏈紅閃 = 訊號被斷（pathway break——C1 監察嘅可視化）
- *   ② 多數 agent 投票方向 vs consensus 最終方向 ≠ = 學習層對抗
- *   ③ PnL sparkline 向下 = 決策/執行層持續誤判
+ * Three answers to "why is it persistently losing":
+ *   ① Loss attribution by close-reason  (SL too tight? consensus cut too early?
+ *      reversal stop? reconciliation?) — with avg loss per bucket
+ *   ② Payoff ratio & win-rate discipline  (avg win vs |avg loss| — the structural
+ *      reason a system bleeds even at 50% win rate)
+ *   ③ Gate-block leaderboard + per-symbol drag  (which decision path keeps
+ *      breaking, and which symbol keeps draining)
+ * Plus a minimal live-decision strip (agents → consensus) in professional
+ * terminal style — not a cartoon.
  * ═══════════════════════════════════════════════════════════════════════ */
-import React, { useEffect, useRef, useMemo } from 'react'
+import React, { useMemo } from 'react'
 import type { APIData } from './types'
 
 interface Props { data: APIData | null }
 
-const AGENT_COLORS: Record<string, string> = {
-  'meta-agent': '#c084fc',       // 紫 — Meta
-  'optimist': '#4ade80',         // 綠
-  'pessimist': '#f87171',        // 紅
-  'skeptic': '#fbbf24',          // 琥珀
-  'market': '#38bdf8',           // 藍
-  'risk': '#fb923c',             // 橙
-  'news': '#a78bfa',             // 淡紫
-}
+const fmtPct = (v: number): string => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`
+const fmtNum = (v: number, d = 2): string => (Number.isFinite(v) ? v.toFixed(d) : '—')
 
 export default function FlyThoughtPanel({ data }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const votes = data?.consensus?.votes ?? []
   const agents = data?.agentThoughts ?? []
   const consensus = data?.consensus
   const audit = data?.decisionAudit ?? []
+  const trades = useMemo(() => {
+    const raw = (data?.portfolio as any)?.tradeRecords ?? data?.tradeRecords ?? []
+    return (Array.isArray(raw) ? raw : []).filter(
+      (t: any) => t && typeof t === 'object' && typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct)
+    )
+  }, [data])
+
+  const closed = useMemo(
+    () => trades.filter((t: any) => t.status === 'closed' || t.status === 'hl-fill') as any[],
+    [trades]
+  )
+  const recent = useMemo(() => [...closed].sort((a: any, b: any) => (b.closedAt ?? 0) - (a.closedAt ?? 0)).slice(0, 30), [closed])
+
+  // ── ① Loss attribution by close-reason ──
+  const byReason = useMemo(() => {
+    const map = new Map<string, { n: number; wins: number; sumPct: number }>()
+    for (const t of recent) {
+      const r = t.closeReason ?? 'unknown'
+      const e = map.get(r) ?? { n: 0, wins: 0, sumPct: 0 }
+      e.n++
+      if (t.pnlPct > 0) e.wins++
+      e.sumPct += t.pnlPct
+      map.set(r, e)
+    }
+    return [...map.entries()]
+      .map(([reason, e]) => ({
+        reason: String(reason).replace(/_/g, ' '),
+        n: e.n,
+        winRate: e.n > 0 ? e.wins / e.n : 0,
+        avg: e.n > 0 ? e.sumPct / e.n : 0,
+        total: e.sumPct,
+      }))
+      .sort((a, b) => a.total - b.total) // most-damaging first
+  }, [recent])
+
+  // ── ② Payoff / discipline ──
+  const stats = useMemo(() => {
+    const pnls = recent.map((t: any) => t.pnlPct)
+    const wins = pnls.filter((p) => p > 0)
+    const losses = pnls.filter((p) => p < 0)
+    const avgWin = wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0
+    const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0
+    const net = pnls.reduce((a, b) => a + b, 0)
+    return {
+      n: pnls.length,
+      winRate: pnls.length ? wins.length / pnls.length : 0,
+      avgWin,
+      avgLoss,
+      payoff: Math.abs(avgLoss) > 1e-9 ? avgWin / Math.abs(avgLoss) : 0,
+      net,
+      streak: (() => {
+        let s = 0
+        for (let i = 0; i < pnls.length; i++) {
+          if ((pnls[i] > 0) === (pnls[0] > 0)) s++ ; else break
+        }
+        return pnls.length ? (pnls[0] > 0 ? s : -s) : 0
+      })(),
+    }
+  }, [recent])
+
+  // ── ③ Gate-block leaderboard + per-symbol drag ──
+  const gateBlocks = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const a of audit.slice(-30)) {
+      for (const g of a.gates ?? []) {
+        if (!g.passed) {
+          const k = String(g.gate ?? '?').replace(/[()]/g, '').slice(0, 32)
+          map.set(k, (map.get(k) ?? 0) + 1)
+        }
+      }
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
+  }, [audit])
+
+  const bySymbol = useMemo(() => {
+    const map = new Map<string, { n: number; sumPct: number }>()
+    for (const t of recent) {
+      const sym = String(t.symbol ?? '?').replace(/^xyz:/, '').toUpperCase()
+      const e = map.get(sym) ?? { n: 0, sumPct: 0 }
+      e.n++; e.sumPct += t.pnlPct
+      map.set(sym, e)
+    }
+    return [...map.entries()].sort((a, b) => a[1].sumPct - b[1].sumPct)
+  }, [recent])
+
   const lastAudit = audit.length > 0 ? audit[audit.length - 1] : null
   const decision = (consensus?.decision as any)?.action ?? 'hold'
-  const trades = (data?.portfolio as any)?.tradeRecords ?? data?.tradeRecords ?? []
-  const marketState = data?.marketState as any
-  const activeSymbol = (data?.status as any)?.activeSymbol ?? (data?.tradingMarkets?.[0] ?? '—')
-
-  // 用 tradeRecords 計最近交易 win/loss
-  const recentTrades = useMemo(() => {
-    const list = (Array.isArray(trades) ? trades : []).filter(
-      (t: any) => t && typeof t === 'object' && typeof t.closedAt === 'number'
-    )
-    return list
-      .sort((a: any, b: any) => (b.closedAt ?? 0) - (a.closedAt ?? 0))
-      .slice(0, 12)
-  }, [trades])
-
-  const pnls = recentTrades.map((t: any) => (typeof t.pnlPct === 'number' && Number.isFinite(t.pnlPct) ? t.pnlPct : 0))
-  const lastPnl = pnls.length > 0 ? pnls[0] : 0
-  const lastPnlSign: 'pos' | 'neg' | 'flat' = lastPnl > 0.0001 ? 'pos' : lastPnl < -0.0001 ? 'neg' : 'flat'
-
-  // ── canvas 繪製（果蠅腦網絡）──
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    const W = canvas.width, H = canvas.height
-    const cx = W / 2
-
-    // 節點位置: 感官輸入(左) / agent 種群(中) / 檢查站(右偏) / 讀出(右)
-    const sensoryY = H * 0.18
-    const readout = { x: W - 44, y: H / 2, r: 26 }
-    const senseNode = { x: 26, y: sensoryY, r: 10 }
-
-    let raf = 0
-    let t = 0
-
-    const draw = () => {
-      t += 0.02
-      ctx.clearRect(0, 0, W, H)
-      // 背景: 極淡粉紫網格（connectome vibe）
-      ctx.fillStyle = 'rgba(18,16,32,0.85)'
-      ctx.fillRect(0, 0, W, H)
-      ctx.strokeStyle = 'rgba(124,58,237,0.06)'
-      for (let gx = 12; gx < W; gx += 26) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke(); }
-      for (let gy = 12; gy < H; gy += 26) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke(); }
-
-      const agentNodes = agents
-        .map((a: any, i: number) => {
-          const col = AGENT_COLORS[a.agentRole] ?? '#94a3b8'
-          const conf = typeof a.confidence === 'number' && Number.isFinite(a.confidence) ? Math.max(0, Math.min(1, a.confidence)) : 0
-          const y = 34 + ((H - 68) * (i + 0.5)) / Math.max(1, agents.length)
-          return { x: cx - 18, y, r: 8 + conf * 10, col, role: String(a.agentRole ?? '?'), conf }
-        })
-        .slice(0, 8)
-
-      // 感官輸入 → agents 連線（spike 流動 = 市場訊號輸入）
-      for (const n of agentNodes) {
-        const pulse = (t * 60 + n.y * 0.5) % 120
-        const px = senseNode.x + ((n.x - senseNode.x) * pulse) / 120
-        const py = senseNode.y + ((n.y - senseNode.y) * pulse) / 120
-        ctx.strokeStyle = 'rgba(148,163,184,0.12)'
-        ctx.lineWidth = 1
-        ctx.beginPath(); ctx.moveTo(senseNode.x, senseNode.y); ctx.lineTo(n.x, n.y); ctx.stroke()
-        ctx.fillStyle = 'rgba(96,165,250,0.9)'
-        ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill()
-      }
-
-      // agents → 讀出連線（vote 方向 + weight 粗幼 + spike）
-      for (const v of votes) {
-        const n = agentNodes.find((a: any) => String(a.role) === String(v.agentRole)) ?? agentNodes[0]
-        if (!n) continue
-        const w = typeof v.weight === 'number' && Number.isFinite(v.weight) ? v.weight : 0.5
-        const decision = v.decision as any
-        const action = decision?.action ?? 'hold'
-        const color = action === 'buy' ? 'rgba(74,222,128,0.7)' : action === 'sell' ? 'rgba(248,113,113,0.7)' : 'rgba(148,163,184,0.45)'
-        ctx.strokeStyle = color
-        ctx.lineWidth = 0.8 + w * 1.8
-        const pulse = (t * 40 + n.y) % 130
-        const px = n.x + ((readout.x - n.x) * pulse) / 130
-        const py = n.y + ((readout.y - n.y) * pulse) / 130
-        ctx.beginPath(); ctx.moveTo(n.x, n.y); ctx.lineTo(readout.x, readout.y); ctx.stroke()
-        ctx.fillStyle = color
-        ctx.beginPath(); ctx.arc(px, py, 1.8 + w, 0, Math.PI * 2); ctx.fill()
-      }
-
-      // Agent 神經元（亮度 = confidence, 呼吸 = voting 中）
-      for (const n of agentNodes) {
-        const glow = 0.35 + 0.25 * Math.sin(t * 2 + n.y)
-        ctx.strokeStyle = n.col
-        ctx.lineWidth = 1.4
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.stroke()
-        ctx.fillStyle = n.col + '22'
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill()
-        ctx.fillStyle = n.col
-        ctx.globalAlpha = 0.25 + n.conf * 0.75 + glow * 0.3
-        ctx.beginPath(); ctx.arc(n.x, n.y, Math.max(1.5, n.r * 0.35), 0, Math.PI * 2); ctx.fill()
-        ctx.globalAlpha = 1
-      }
-
-      // 突觸檢查站（decisionAudit gates——lastAudit）
-      const gates = (lastAudit?.gates ?? []) as Array<{ gate: string; passed: boolean }>
-      const gateNodes = gates.slice(0, 5).map((g, i) => ({
-        x: W - 108,
-        y: H * 0.22 + i * (H * 0.15),
-        passed: !!g.passed,
-        gate: String(g.gate ?? '?').slice(0, 14),
-      }))
-      for (const g of gateNodes) {
-        const flash = g.passed ? 0.25 : 0.5 + 0.5 * Math.abs(Math.sin(t * 4)) // 斷路紅閃
-        ctx.strokeStyle = g.passed ? 'rgba(74,222,128,0.8)' : `rgba(248,113,113,${0.55 + flash * 0.45})`
-        ctx.lineWidth = g.passed ? 1.2 : 2.2
-        ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.stroke()
-        if (!g.passed) {
-          ctx.fillStyle = `rgba(248,113,113,${0.15 + flash * 0.3})`
-          ctx.beginPath(); ctx.arc(g.x, g.y, 8, 0, Math.PI * 2); ctx.fill()
-        }
-        ctx.fillStyle = 'rgba(226,232,240,0.7)'
-        ctx.font = '8px system-ui'
-        ctx.fillText(g.gate, g.x - 4, g.y - 11)
-      }
-
-      // 讀出層（consensus）
-      const decision = (consensus?.decision as any)?.action ?? 'hold'
-      const conf = typeof consensus?.confidence === 'number' ? consensus.confidence : 0
-      const dColor = decision === 'buy' ? '#4ade80' : decision === 'sell' ? '#f87171' : '#94a3b8'
-      ctx.strokeStyle = dColor
-      ctx.lineWidth = 2
-      ctx.beginPath(); ctx.arc(readout.x, readout.y, readout.r, 0, Math.PI * 2); ctx.stroke()
-      ctx.fillStyle = dColor + (0.12 + conf * 0.28).toString(16).padStart(2, '0')
-      ctx.fillStyle = dColor + '33'
-      ctx.beginPath(); ctx.arc(readout.x, readout.y, readout.r, 0, Math.PI * 2); ctx.fill()
-      ctx.fillStyle = dColor
-      ctx.font = 'bold 9px system-ui'
-      ctx.textAlign = 'center'
-      ctx.fillText(decision.toUpperCase(), readout.x, readout.y + 3)
-      ctx.textAlign = 'left'
-
-      // 多巴胺回饋脈衝（最近 PnL）——頂部
-      const pnlColor = lastPnlSign === 'pos' ? 'rgba(74,222,128,' : lastPnlSign === 'neg' ? 'rgba(248,113,113,' : 'rgba(148,163,184,'
-      const amp = lastPnlSign === 'flat' ? 0.1 : 0.35 + 0.25 * Math.min(1, Math.abs(lastPnl) * 8)
-      ctx.strokeStyle = pnlColor + (0.35 + amp * Math.abs(Math.sin(t * 2.5))) + ')'
-      ctx.lineWidth = 2.2
-      ctx.beginPath(); ctx.arc(W / 2, H * 0.10, 5 + amp * 8, 0, Math.PI * 2); ctx.stroke()
-
-      raf = requestAnimationFrame(draw)
-    }
-    raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
-  }, [agents.length, votes.length, lastAudit, lastPnlSign, lastPnl, activeSymbol])
-
-  const gateCount = (lastAudit?.gates ?? []).length
-  const blockedGates = (lastAudit?.gates ?? []).filter((g: any) => !g.passed).length
-  const executed = lastAudit?.executed
+  const statusColor = decision === 'buy' ? '#4ade80' : decision === 'sell' ? '#f87171' : '#94a3b8'
+  const blockPct = recent.length ? byReason.filter((r) => r.total < 0).reduce((a, r) => a + r.total, 0) / Math.max(1e-9, Math.abs(stats.net)) : 0
 
   return (
-    <div className="panel" style={{ padding: 0 }}>
+    <div className="panel panel-rgb-border" style={{ padding: 0 }}>
+      {/* ── header ── */}
       <div className="panel-header">
-        <span className="panel-title">🧠 Fly Thought — HACP 決策巨象化</span>
-        {lastPnlSign !== 'flat' && (
-          <span className={`panel-badge ${lastPnlSign === 'pos' ? 'text-green' : 'text-red'}`}>
-            {lastPnlSign === 'pos' ? '▲' : '▼'} {lastPnl >= 0 ? '+' : ''}{(lastPnl * 100).toFixed(2)}% last
+        <span className="panel-title">HACP Decision Intelligence</span>
+        <span className="panel-badge">{stats.n} closed</span>
+        {stats.n > 0 && (
+          <span className={`panel-badge ${stats.net >= 0 ? 'text-green' : 'text-red'}`}>
+            NET {fmtPct(stats.net)}
           </span>
         )}
       </div>
-      <div style={{ position: 'relative' }}>
-        <canvas ref={canvasRef} width={460} height={240} style={{ width: '100%', display: 'block', borderRadius: '0 0 8px 8px' }} />
-        <div style={{
-          position: 'absolute', top: 8, left: 12, fontSize: 10, color: '#64748b',
-          fontFamily: 'monospace', lineHeight: 1.5,
-        }}>
-          <div>IN: {activeSymbol} · trend {(marketState as any)?.trend ?? '—'} · regime {(marketState as any)?.regime ?? '—'}</div>
-          <div style={{ color: '#94a3b8' }}>sensory ▸ agents ▸ gates ▸ readout</div>
+
+      {/* ── live decision strip (professional, compact) ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+        borderBottom: '1px solid rgba(148,163,184,0.15)', flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <span style={{ fontSize: 10, color: '#64748b' }}>DECISION</span>
+          <span style={{ fontSize: 16, fontWeight: 700, color: statusColor, letterSpacing: 0.5 }}>
+            {decision.toUpperCase()}
+          </span>
+        </div>
+        <div style={{ flex: 1, display: 'flex', gap: 4, alignItems: 'center', minWidth: 120 }}>
+          {(votes as any[]).map((v, i) => {
+            const a = (v.decision as any)?.action ?? 'hold'
+            const c = a === 'buy' ? '#4ade80' : a === 'sell' ? '#f87171' : '#334155'
+            return <div key={i} title={`${v.agentRole}: ${a}`} style={{ width: 14, height: 14, borderRadius: 3, background: c, opacity: 0.85 }} />
+          })}
+        </div>
+        <div style={{ fontSize: 10, color: '#64748b', textAlign: 'right' }}>
+          {(agents as any[]).filter((a) => a.state === 'thinking' || a.state === 'voting').length > 0
+            ? '⦿ debating…'
+            : `conf ${fmtNum((consensus?.confidence ?? 0) * 100, 0)}%`}
         </div>
       </div>
 
-      {/* 解釋行: 點解蝕嘅視覺答案 */}
-      <div className="panel-body" style={{ paddingTop: 8, fontSize: 11 }}>
-        {blockedGates > 0 ? (
-          <div style={{ color: '#f87171' }}>
-            ⛔ 訊號斷路: 想 {String((decision as any) ?? '?')} 但被 {blockedGates}/{gateCount} 個 gate 攔截 —{' '}
-            {(lastAudit?.gates ?? []).filter((g: any) => !g.passed).map((g: any) => g.gate).join(', ')}
+      {/* ── KPI row ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 0, borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
+        {[
+          ['WIN RATE', fmtNum(stats.winRate * 100, 0) + '%', stats.winRate >= 0.5 ? '#4ade80' : '#f87171'],
+          ['AVG WIN', fmtPct(stats.avgWin), '#4ade80'],
+          ['AVG LOSS', fmtPct(stats.avgLoss), '#f87171'],
+          ['PAYOFF', fmtNum(stats.payoff, 2), stats.payoff >= 1.5 ? '#4ade80' : '#fbbf24'],
+          ['STREAK', `${stats.streak >= 0 ? '+' : ''}${stats.streak}`, stats.streak >= 0 ? '#4ade80' : '#f87171'],
+          ['BLOCKED/BY REASON', `${Math.round(blockPct * 100)}%`, '#94a3b8'],
+        ].map(([label, val, col], i) => (
+          <div key={i} style={{ padding: '8px 10px', borderRight: i < 5 ? '1px solid rgba(148,163,184,0.12)' : 'none' }}>
+            <div style={{ fontSize: 9, color: '#64748b', letterSpacing: 0.6 }}>{label}</div>
+            <div style={{ fontSize: 15, fontWeight: 650, color: col as string }}>{val}</div>
           </div>
-        ) : executed ? (
-          <div style={{ color: '#4ade80' }}>✅ 訊號全通 — 執行 {(lastAudit?.action ?? '?').toUpperCase()} @{(lastAudit?.confidence ?? 0).toFixed(0)}%</div>
-        ) : (
-          <div style={{ color: '#94a3b8' }}>💤 等待決策…</div>
-        )}
+        ))}
+      </div>
 
-        {/* Agent 投票矩陣 */}
-        <div style={{ marginTop: 6 }}>
-          {votes.map((v: any) => {
-            const action = (v.decision as any)?.action ?? 'hold'
-            const color = action === 'buy' ? '#4ade80' : action === 'sell' ? '#f87171' : '#94a3b8'
-            const w = typeof v.weight === 'number' ? Math.round(v.weight * 100) : 0
-            const conf = typeof v.confidence === 'number' ? Math.round(v.confidence * 100) : 0
-            return (
-              <div key={v.agentId ?? v.agentRole} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '1px 0' }}>
-                <span style={{ width: 8, height: 8, borderRadius: 4, background: AGENT_COLORS[v.agentRole] ?? '#94a3b8', flexShrink: 0 }} />
-                <span style={{ width: 92, color: '#94a3b8', flexShrink: 0 }}>{String(v.agentRole ?? '?').slice(0, 12)}</span>
-                <span style={{ color, fontWeight: 600, width: 34 }}>{action.toUpperCase()}</span>
-                <span style={{ color: '#64748b', fontSize: 10 }}>{w}%</span>
-                <div style={{ flex: 1, height: 3, background: 'rgba(148,163,184,0.2)', borderRadius: 2 }}>
-                  <div style={{ width: `${Math.max(0, Math.min(100, conf))}%`, height: 3, background: color, borderRadius: 2 }} />
-                </div>
-                <span style={{ color: '#64748b', fontSize: 10, width: 30, textAlign: 'right' }}>{conf}%</span>
+      {/* ── attribution grid ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, padding: 12 }}>
+        {/* ① loss attribution by reason */}
+        <div>
+          <div className="stat-label" style={{ marginBottom: 6 }}>LOSS ATTRIBUTION (last 30 closed)</div>
+          {byReason.length === 0 && <div style={{ color: '#475569', fontSize: 11 }}>No closed trades yet.</div>}
+          {byReason.map((r) => (
+            <div key={r.reason} style={{ padding: '4px 0', borderBottom: '1px solid rgba(148,163,184,0.08)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.4 }}>
+                <span style={{ color: r.total < 0 ? '#fca5a5' : '#94a3b8', textTransform: 'capitalize' }}>{r.reason}</span>
+                <span style={{ color: r.avg >= 0 ? '#4ade80' : '#f87171', fontWeight: 600 }}>{fmtPct(r.avg)}</span>
               </div>
-            )
-          })}
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#64748b' }}>
+                <span>{r.n} trades · WR {fmtNum(r.winRate * 100, 0)}%</span>
+                <span>Σ {fmtPct(r.total)}</span>
+              </div>
+            </div>
+          ))}
         </div>
 
-        {/* PnL sparkline */}
-        {pnls.length >= 2 && (
-          <div style={{ marginTop: 6 }}>
-            <span style={{ color: '#64748b', fontSize: 10 }}>最近 {pnls.length} 單 P&L:</span>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 26, marginTop: 2 }}>
-              {pnls.map((p: number, i: number) => (
-                <div key={i} title={`${(p * 100).toFixed(2)}%`} style={{
-                  width: 8, background: p >= 0 ? 'rgba(74,222,128,0.8)' : 'rgba(248,113,113,0.8)',
-                  height: `${Math.max(2, Math.min(100, Math.abs(p) * 340))}%`, borderRadius: 1,
-                }} />
-              ))}
+        {/* ③ gate-block leaderboard + per-symbol */}
+        <div>
+          <div className="stat-label" style={{ marginBottom: 6 }}>BLOCKED SIGNALS (last 30 audits)</div>
+          {gateBlocks.length === 0 && <div style={{ color: '#475569', fontSize: 11 }}>No gate blocks recorded.</div>}
+          {gateBlocks.map(([gate, cnt]) => (
+            <div key={gate} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0' }}>
+              <div style={{ flex: 1, fontSize: 10, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{gate}</div>
+              <div style={{ width: 60, height: 4, background: 'rgba(248,113,113,0.15)', borderRadius: 2 }}>
+                <div style={{ width: `${Math.min(100, cnt * 14)}%`, height: 4, background: '#f87171', borderRadius: 2 }} />
+              </div>
+              <span style={{ fontSize: 10, color: '#f87171', width: 18, textAlign: 'right' }}>{cnt}</span>
             </div>
-          </div>
-        )}
+          ))}
+
+          <div className="stat-label" style={{ marginTop: 10, marginBottom: 6 }}>PER-SYMBOL DRAG</div>
+          {bySymbol.length === 0 && <div style={{ color: '#475569', fontSize: 11 }}>—</div>}
+          {bySymbol.slice(0, 4).map(([sym, e]) => (
+            <div key={sym} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0', color: e.sumPct < 0 ? '#fca5a5' : '#4ade80' }}>
+              <span>{sym} <span style={{ color: '#64748b' }}>({e.n})</span></span>
+              <span style={{ fontWeight: 600 }}>{fmtPct(e.sumPct)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── insight line: why persistent loss ── */}
+      <div style={{ padding: '0 12px 12px' }}>
+        <div style={{
+          padding: '8px 10px', borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+          background: stats.payoff >= 1.2 && stats.net >= 0 ? 'rgba(74,222,128,0.07)' : 'rgba(248,113,113,0.08)',
+          border: `1px solid ${stats.net >= 0 ? 'rgba(74,222,128,0.25)' : 'rgba(248,113,113,0.3)'}`,
+          color: stats.net >= 0 ? '#bbf7d0' : '#fecaca',
+        }}>
+          {stats.n === 0
+            ? 'Awaiting first closed trade for attribution.'
+            : stats.net < 0
+              ? (() => {
+                  const worst = byReason[0]
+                  const worstGate = gateBlocks[0]
+                  const parts: string[] = []
+                  if (worst && worst.total < 0) parts.push(`biggest leak: ${worst.reason} (Σ ${fmtPct(worst.total)})`)
+                  if (stats.payoff < 1.2) parts.push(`payoff ${fmtNum(stats.payoff, 2)} < 1.2 — winners too small vs losers (cutting wins / letting losses run)`)
+                  if (worstGate) parts.push(`path blocked ${worstGate[0]} ×${worstGate[1]} — signals killed before execution`)
+                  if (stats.winRate < 0.45) parts.push(`win rate ${fmtNum(stats.winRate * 100, 0)}% — directional judgement weak`)
+                  return parts.length ? `Persistent loss: ${parts.join(' · ')}` : 'Persistent loss (see grid above).'
+                })()
+            : `Positive: ${fmtPct(stats.net)} over ${stats.n} — payoff ${fmtNum(stats.payoff, 2)}, keep discipline.`}
+        </div>
       </div>
     </div>
   )
