@@ -10194,7 +10194,9 @@ ${recentExamples}
           //      (regime-starved buckets make NO directional claim)
           //   3. no qrl shadow already open for this symbol+side+cycle
           try {
-            if (qrlDirectionConfig.masterEnabled && qrlDirectionConfig.leanEnabled && this.qrlTable) {
+            // v2.0.914-审计: Q-RL shadow 行為停用(shadowEnabled=false 默認)——ρ=+0.0064 已證偽 +
+            // 11,248 shadow 樣本 WR47%/avg −2.34% 負期望。已證偽源唔可以開 QRL shadow 製造污染樣本。
+            if (qrlDirectionConfig.masterEnabled && qrlDirectionConfig.leanEnabled && qrlDirectionConfig.shadowEnabled && this.qrlTable) {
               const qrlCtx = this.lastCycleShadowContexts.get(mktNorm);
               const qrlFeatures = qrlCtx?.features && Object.keys(qrlCtx.features).length > 0
                 ? qrlCtx.features
@@ -11790,7 +11792,9 @@ ${recentExamples}
             // Compute Smart SL/TP using config defaults + S/R if available
             // v2.0.835: Q-RL ε-greedy action selection — may override LLM lean
             // to explore actions the LLM wouldn't choose. Cold-start (Q=0) → follow LLM.
-            const rlAction = qrlDirectionConfig.masterEnabled ? this.qrlTable.selectAction(leanSide, features) : leanSide;
+            // v2.0.914-审计: Q-RL ε-greedy 覆蓋 LLM lean 停用(shadowEnabled=false 默認)——已證偽源
+            // 唔可以主宰 shadow 方向;LLM lean 先行。恢復需重訓 + live Spearman>0.2。
+            const rlAction = (qrlDirectionConfig.masterEnabled && qrlDirectionConfig.shadowEnabled) ? this.qrlTable.selectAction(leanSide, features) : leanSide;
 
             const slPct = config.risk.stopLossPct;
             const tpPct = config.risk.takeProfitPct;

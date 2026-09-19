@@ -939,6 +939,11 @@ export function parseNumEnv(v: string | undefined, def: number): number {
 export const qrlDirectionConfig = {
   /** P1(audit #6): master switch——false = Q-RL 完全隔離(所有消費點 no-op) */
   masterEnabled: parseBoolEnv(process.env['QRL_MASTER_ENABLED'], true),
+  /** v2.0.914-审计: Q-RL shadow 行為停用——ρ=+0.0064 已證偽 + 11,248 shadow 樣本
+   *  WR 47%/avg −2.34%(負期望製造器)。已證偽源唔可以再「製造行為」(開 QRL shadow /
+   *  ε-greedy 覆蓋 LLM lean)——只保留被動觀察(context 注入已標「僅背景」)。
+   *  默認 false = 即刻停;重訓 + live Spearman>0.2 先可恢復。 */
+  shadowEnabled: parseBoolEnv(process.env['QRL_SHADOW_ENABLED'], false),
   /** 1.1: inject Q-RL expectancy block into Meta-Agent context */
   leanEnabled: parseBoolEnv(process.env['QRL_DIRECTION_LEAN_ENABLED'], true),
   /** 1.2: apply Q-RL expectancy conviction multiplier in the gate */

@@ -2,6 +2,24 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.914-QRL-Shadow-Stop（2026-09-18：架構審計落地——Q-RL shadow 行為停用）
+
+> 主神批 PLAN_architecture-profit-audit: 停用已失效組件。全樣本 304 realTrades + 11,248 shadow 樣本審計:
+> Q-RL(ρ=+0.0064 已證偽)仍開 shadow + ε-greedy 覆蓋 LLM lean——係唯一確定嘅 dead weight 消費者。
+
+### ① 審計驗證(全部離線, 先證後改)
+- V-DW1 PASS: Q-RL shadow 11,248 樣本 WR 47% / avg −2.34%(負期望製造器)——已證偽源唔可以再製造行為
+- V-DW2 PASS: success-pattern 已受 P9_SOFTGATE_DISABLE 控制——假警報澄清, 唔使郁
+- V-P1 FAIL(誠實): consensus underwater cut counterfactual——`maxValueReached` 唔係價格極值(high/entry≈0.02-0.2 語義係 margin 倍數)→ 冇可靠 MFE 軌跡數據 → 一刀切唔可以做(831「以為有實際冇」)
+- V-P3 FAIL: DRAM per-symbol WR gate——n=12 統計力不足 + GOLD n=7 WR0% 同差(consensus close 係全局問題唔係 DRAM 專屬)
+
+### ② 落地(QRL_SHADOW_ENABLED 默認 false, env 回滾)
+- `src/evolution/q-rl-table.ts`: qrlDirectionConfig 加 `shadowEnabled`(env `QRL_SHADOW_ENABLED`, 默認 false)——註明「重訓 + live Spearman>0.2 先可恢復」
+- `src/index.ts` 兩處 gate: ①QRL arm 開 shadow(L10199) ②`rlAction` ε-greedy 覆蓋 LLM lean(L11797)——shadowEnabled=false 時 QRL 完全停止製造 shadow/主宰方向, LLM lean 先行
+- tests 2 個新增(qrl-direction-signal): shadowEnabled 默認 false + masterEnabled 與 shadowEnabled 分離驗證
+- 全量 4980 pass(+8), tsc clean, runtime import OK
+
+---
 ## v2.0.913-Attribution-2x2（2026-09-18：歸因區對稱 2×2 排列）
 
 > Master Lord:「排列得整齊啲球平均啲」——歸因區之前兩欄高度唔平均(左短右長)。
