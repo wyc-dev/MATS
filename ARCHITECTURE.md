@@ -1,12 +1,21 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.917-P9-attack10
+> **作者**: YC Wong · **版本**: 2.0.919-P9-hacp-adversarial
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
-> **測試狀態（2026-09-18 attack-round / base-split 時代）**: vitest **5005 pass / 0 fail — exit 0**（4904 → +101: 892-899 攻擊輪+E0/E1 基(50 tests) / 900-913 UI Decision-Flow 系列(0.909 all-markets 0.913 2x2) / 914 QRL-Shadow-Stop(+2) / 915 giveback-cut(+8 GOT 語義鎖) / 916 attack9 pollution(+3) / 917 attack10 move-cap(+5)）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
+> **測試狀態（2026-09-19 hacp-adversarial 時代）**: vitest **5020 pass / 0 fail — exit 0**（5008 → +12: hacp-adversarial 對抗/5-tier/三 stance）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
-> **代碼量**: ~74,500 行 TypeScript（嚴格模式，零類型錯誤）
+> **代碼量**: ~75,200 行 TypeScript（嚴格模式，零類型錯誤）
 
 ---
+
+## 🏗️ v2.0.919-P9-hacp-adversarial 新組件（2026-09-19）
+
+- **病徵實錘（E1-E6）**: HOLD 率 95.1% 死局 / 反面詞 29% / Skeptics 0 modified / 風險單一視角
+- **mock 邏輯實驗（V-1~V-3）**: 同 context 同 LLM——現版全 HOLD(0B/0S/7H) vs 對抗版 commit 到 Overweight; 對抗逼 fact-check(research manager 揪出 bear 分析錯誤)
+- **新增** `src/cognition/adversarial-debate.ts`（Bull/Bear 對抗, opponentMarker 首輪防 fabrication, timeout 30s, 失敗 graceful no-op）/ `rating.ts`（5-tier→3-tier map: Buy 1.0/Over 0.6/Hold/Under 0.6/Sell 1.0 + Conflict≠Hold clause + size 細粒度）/ `risk-stance.ts`（Aggressive⇄Conservative⇄Neutral 互駁 + disagreement flag）
+- **hacp.ts 接入**: 早退路跑對抗(commit 打破 unanimous-HOLD 早退)→ Phase 2 context 注入 bull/bear clash + Conflict≠Hold + risk 分歧視角(agents 自己權衡, 唔 hard override)
+- **env**: `HACP_ADVERSARIAL`(default on) / `HACP_ADVERSARIAL_ROUNDS`(1-3) / `HACP_RISK_STANCES`(default off) / `HACP_ADVERSARIAL_MODEL`
+- **統計層零 touched**: OLR/shadow/PAEL/EV/gates/trade-frequency-leak/giveback-cut 全部冇改; 對抗只係 context 注入 + 誘導 commit
 
 ## 🏗️ v2.0.886-891 新組件（2026-09-13~16, 無單根因系列 + connectome-inspired 監察）
 

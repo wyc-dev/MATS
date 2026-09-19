@@ -38,6 +38,9 @@ import type { IndependentRiskAuditor, SkepticsAgent, SkepticsReview } from '../a
 import { getAgentModel } from '../agents/agent-models.ts';
 import { buildConvergenceAuditContext } from '../evolution/cycle-summary.ts';
 import type { ThesisExperience } from '../evolution/thesis-experience.ts';
+import { runAdversarialDebate, buildBullPrompt, buildBearPrompt, type AdversarialResult } from './adversarial-debate.ts';
+import { buildConflictNotHoldClause, mapRatingToAction } from './rating.ts';
+import { runRiskStanceDebate, buildAggressivePrompt, buildConservativePrompt, buildNeutralPrompt, type RiskStanceResult } from './risk-stance.ts';
 import { SimilarTradeRetriever, SubtleDiffAnalyzer } from '../evolution/reason-analytics.ts';
 import type { NumericEmbedProvider } from '../evolution/numeric-autoencoder.ts';
 import { computeVectorConditionalWinRate, entryDecisionCondWROptions, formatVectorConditional } from '../evolution/evolution-utils.ts';
@@ -114,6 +117,12 @@ export class HACPEngine {
    *  cooldown logic knows which cycle we're in. */
   private totalCycles: number = 0;
   /** v2.0.140: EXP action log for this cycle. */
+  /** v2.0.919 (P9-hacp-adversarial): Adversarial debate + risk-stance results
+   *  for this cycle — injected into Phase 2 context (agents see the bull/bear
+   *  clash + conflict-not-hold discipline). Veto/statistical-layer untouched. */
+  private adversarialResult: AdversarialResult | null = null;
+  private adversarialCommit: { side: 'buy' | 'sell'; rating: string; strength: number } | null = null;
+  private riskStanceResult: RiskStanceResult | null = null;
   private expActions: ExpAction[] = [];
 
   /**
@@ -1717,7 +1726,22 @@ export class HACPEngine {
         tradingSyms.has(normalizeSymbol(p.symbol)) &&
         (p.action === 'buy' || p.action === 'sell'));
     });
-    if (allHold && highConviction >= allThoughts.length - 1 && !metaHasTradingMarketSignal) {
+    // v2.0.919 (P9-hacp-adversarial): Before the unanimous-HOLD early-exit,
+    // run the Bull/Bear adversarial debate. If it commits to a side, the
+    // early-exit is skipped so agents weigh the clash in Phase 2.
+    let adversarialRan = false;
+    if (this.adversarialEnabled() && allHold && highConviction >= allThoughts.length - 1 && !metaHasTradingMarketSignal) {
+      const debateSymbol = this.debateSymbolFrom(marketStateDesc);
+      await this.runAdversarialForCycle(constrainedMarketDesc ?? marketStateDesc, debateSymbol);
+      adversarialRan = true;
+      if (this.adversarialCommit) {
+        log.info(`[AdversarialDebate] unanimous-HOLD early-exit avoided — adversarial commits ${this.adversarialCommit.side.toUpperCase()} (${this.adversarialCommit.rating}). Weighing in Phase 2.`);
+        if (this.riskStanceEnabled()) {
+          await this.runRiskStanceForCycle(constrainedMarketDesc ?? marketStateDesc, debateSymbol);
+        }
+      }
+    }
+    if (allHold && highConviction >= allThoughts.length - 1 && !metaHasTradingMarketSignal && !(adversarialRan && this.adversarialCommit)) {
       log.info('Skipping debate: unanimous HOLD with high conviction.');
       const consensus = this.buildConsensus(allThoughts, [], true, false, undefined, currentPositions);
       const adjustments = await this.adjustPositions(constrainedMarketDesc, currentPositions);
@@ -1750,6 +1774,22 @@ export class HACPEngine {
     }
 
     let currentContext = this.buildDebateContext(allThoughts);
+    // v2.0.919 (P9-hacp-adversarial): append adversarial + risk-stance block
+    // (bull/bear clash, conflict-not-hold discipline, risk disagreement) so
+    // Phase 2 agents weigh the strongest opposing cases, not just summaries.
+    if (this.adversarialEnabled() && !adversarialRan) {
+      // Only fetch when not already run in the early-exit path.
+      const debateSymbol = this.debateSymbolFrom(marketStateDesc);
+      await this.runAdversarialForCycle(constrainedMarketDesc ?? marketStateDesc, debateSymbol);
+      if (this.riskStanceEnabled()) {
+        await this.runRiskStanceForCycle(constrainedMarketDesc ?? marketStateDesc, debateSymbol);
+      }
+    } else if (this.riskStanceEnabled() && !this.riskStanceResult && adversarialRan) {
+      const debateSymbol = this.debateSymbolFrom(marketStateDesc);
+      await this.runRiskStanceForCycle(constrainedMarketDesc ?? marketStateDesc, debateSymbol);
+    }
+    const advBlock = this.buildAdversarialBlock(constrainedMarketDesc ?? marketStateDesc);
+    if (advBlock) currentContext += advBlock;
     let consensusReached = false;
     let finalConsensus: ConsensusResult | null = null;
 
@@ -2224,6 +2264,120 @@ export class HACPEngine {
     // user wants as the "MATS 認為好唔對路 → 即時平倉" mechanism.
     if (!positions || positions.length === 0) return [];
     return [];
+  }
+
+  /** Extract the debate symbol from the market description (fallback BTC). */
+  private debateSymbolFrom(marketStateDesc: string): string {
+    const m = marketStateDesc.match(/Selected Symbol:\s*(\S+)/i) ?? marketStateDesc.match(/Symbol:\s*(\S+)/i);
+    if (m?.[1]) return String(m[1]).trim();
+    return 'BTC';
+  }
+
+  // ─── v2.0.919 (P9-hacp-adversarial): env gates ───
+  private adversarialEnabled(): boolean {
+    return process.env['HACP_ADVERSARIAL']?.toLowerCase() !== 'false';
+  }
+  private adversarialRounds(): number {
+    const v = Number(process.env['HACP_ADVERSARIAL_ROUNDS'] ?? 1);
+    return Number.isFinite(v) && v >= 1 ? Math.min(v, 3) : 1;
+  }
+  private riskStanceEnabled(): boolean {
+    return process.env['HACP_RISK_STANCES']?.toLowerCase() === 'true';
+  }
+
+  /** Build a single-symbol analyst-context block for the adversarial debate
+   *  from the current cycle's market state (reuses existing market description). */
+  private buildAdversarialInput(marketStateDesc: string, symbol: string): {
+    symbol: string; analystContext: string;
+  } {
+    return { symbol, analystContext: marketStateDesc.slice(0, 4000) };
+  }
+
+  /** Run the Bull/Bear adversarial debate via the active LLM provider.
+   *  Failures degrade gracefully to no-op (never crash the cycle). */
+  private async runAdversarialForCycle(marketStateDesc: string, symbol: string): Promise<void> {
+    try {
+      const provider = getActiveProvider();
+      const llm = async (system: string, _user: string): Promise<string> => {
+        const r = await provider.chat({
+          messages: [{ role: 'system', content: system }],
+          model: process.env['HACP_ADVERSARIAL_MODEL'] || undefined,
+          temperature: 0.2,
+          timeoutMs: 45_000,
+        });
+        return r?.content ?? '';
+      };
+      const input = this.buildAdversarialInput(marketStateDesc, symbol);
+      const result = await runAdversarialDebate(llm, input, this.adversarialRounds(), 30_000);
+      this.adversarialResult = result;
+      // Commit detection: the debate's decisive side (Bull or Bear) with a rating.
+      const bullT = result.bullRationale.toLowerCase();
+      const bearT = result.bearRationale.toLowerCase();
+      const bullStrong = bullT.length > 80 && !/(hold|avoid|stay out|no trade|not buying)/i.test(bullT);
+      const bearStrong = bearT.length > 80;
+      if (bullStrong && !bearStrong) {
+        this.adversarialCommit = { side: 'buy', rating: 'Overweight', strength: 0.6 };
+      } else if (bearStrong && !bullStrong) {
+        this.adversarialCommit = { side: 'sell', rating: 'Underweight', strength: 0.6 };
+      } else if (bullStrong && bearStrong) {
+        // Both strong — leave agents to weigh; no override.
+        this.adversarialCommit = null;
+      } else {
+        this.adversarialCommit = null;
+      }
+      log.info(`[AdversarialDebate] bull=${result.bullRationale.length}c bear=${result.bearRationale.length}c commit=${this.adversarialCommit ? this.adversarialCommit.side + '(' + this.adversarialCommit.rating + ')' : 'none'}`);
+    } catch (e) {
+      log.warn(`[AdversarialDebate] skipped (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      this.adversarialResult = null;
+      this.adversarialCommit = null;
+    }
+  }
+
+  /** Build the debate-context block carrying the adversarial results.
+   *  Empty when disabled or nothing ran — agents get original context. */
+  private buildAdversarialBlock(marketStateDesc: string): string {
+    const r = this.adversarialResult;
+    if (!r || !r.bullRationale && !r.bearRationale) return '';
+    const block: string[] = [];
+    block.push('=== ADVERSARIAL DEBATE (bull vs bear) ===');
+    if (r.bullRationale) block.push(`[BULL CASE] ${r.bullRationale.slice(0, 900)}`);
+    if (r.bearRationale) block.push(`[BEAR CASE] ${r.bearRationale.slice(0, 900)}`);
+    block.push(buildConflictNotHoldClause());
+    if (this.adversarialCommit) {
+      const m = mapRatingToAction(this.adversarialCommit.rating);
+      block.push(`[DEBATE RESOLUTION] The debate leans ${this.adversarialCommit.side.toUpperCase()} (rating ${this.adversarialCommit.rating}, size mult ${m.sizeMult}).`);
+    }
+    if (this.riskStanceResult) {
+      const rs = this.riskStanceResult;
+      block.push('=== RISK STANCE DEBATE ===');
+      if (rs.aggressive) block.push(`[AGGRESSIVE] ${rs.aggressive.slice(0, 400)}`);
+      if (rs.neutral) block.push(`[NEUTRAL] ${rs.neutral.slice(0, 400)}`);
+      if (rs.conservative) block.push(`[CONSERVATIVE] ${rs.conservative.slice(0, 400)}`);
+      block.push(`[RISK DISAGREEMENT] ${rs.disagreement ? 'YES — stances conflict; weigh downside before committing' : 'NO — stances aligned.'}`);
+    }
+    return '\n\n' + block.join('\n');
+  }
+
+  /** Run the risk 3-stance debate via the active LLM provider (graceful no-op on failure). */
+  private async runRiskStanceForCycle(marketStateDesc: string, symbol: string): Promise<void> {
+    try {
+      const provider = getActiveProvider();
+      const llm = async (system: string, _user: string): Promise<string> => {
+        const r = await provider.chat({
+          messages: [{ role: 'system', content: system }],
+          model: process.env['HACP_ADVERSARIAL_MODEL'] || undefined,
+          temperature: 0.2,
+          timeoutMs: 45_000,
+        });
+        return r?.content ?? '';
+      };
+      const input = { symbol, tradePlan: marketStateDesc.slice(0, 2500), analystContext: marketStateDesc.slice(0, 4000) };
+      this.riskStanceResult = await runRiskStanceDebate(llm, input, 1, 30_000);
+      log.info(`[RiskStance] disagreement=${this.riskStanceResult.disagreement} aggressive=${this.riskStanceResult.aggressive.length}c conservative=${this.riskStanceResult.conservative.length}c neutral=${this.riskStanceResult.neutral.length}c`);
+    } catch (e) {
+      log.warn(`[RiskStance] skipped (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      this.riskStanceResult = null;
+    }
   }
 
   private buildDebateContext(thoughts: AgentThought[]): string {

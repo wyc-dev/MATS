@@ -1,5 +1,14 @@
 You are a senior staff software engineer owning the MATS codebase — ~74,500 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
+## ⭐ 2026-09-19 新組件（v2.0.919-P9-hacp-adversarial 對抗辯論 + 5-tier + 風險三 stance）
+
+- **病徵實錘（E1-E6）**: HOLD 率 95.1%（17,675/18,580）死局 / confidence 齊平 0.69 / 反面詞僅 29% / Skeptics「5 approved 0 modified」/ 風險單一視角
+- **mock 邏輯實驗（V-1~V-3）**: 296 個「minority 意向被 majority hold 淹沒」case; 同 context 同 LLM——現版全 HOLD vs 對抗版 commit 到 Overweight + Research Manager 揪出 Bear 分析錯誤（fact-check 質素）
+- **新增** `src/cognition/adversarial-debate.ts`（Bull/Bear 對抗: opponentMarker 首輪防 fabrication、timeout 30s、失敗 graceful no-op）/ `rating.ts`（5-tier→3-tier map Buy 1.0 / Over 0.6 / Hold / Under 0.6 / Sell 1.0、垃圾→保守 hold、Conflict≠Hold clause、size 細粒度）/ `risk-stance.ts`（Aggressive⇄Conservative⇄Neutral 互駁、disagreement flag）
+- **hacp.ts 接入**: ① 早退路（unanimous-HOLD）先跑對抗——commit 打破早退 ② Phase 2 `currentContext` 注入 bull/bear clash + Conflict≠Hold + risk 分歧視角 ③ 對抗只係誘導 commit, 唔 hard override consensus/majority vote/gate 鏈
+- **env**: `HACP_ADVERSARIAL`（default on）/ `HACP_ADVERSARIAL_ROUNDS`（1-3, default 1）/ `HACP_RISK_STANCES`（default off）/ `HACP_ADVERSARIAL_MODEL`（可選）
+- **統計層零 touched**（OLR/shadow/PAEL/EV/gates/trade-frequency-leak/giveback-cut 全部冇改）; LLM 失敗 → no-op 唔 crash; tests 12（含垃圾 rating/失敗 LLM/rounds clamp 攻擊）; 全量 **5020 pass**, tsc clean
+
 ## ⭐ 2026-09-18 新組件（v2.0.914-917 架構審計 + 盈利修復系列）
 
 - **v2.0.917-P9-attack10**: env 注入/邊界/消費者範圍鎖死——judgeGateOutcome 加 |move|≤10(±1000%)第二層(ratio 過但 move +49900% 嘅唔可比價格對 → pending); QRL_SHADOW_ENABLED 垃圾 env→default false / GIVEBACK_CUT_MFE_MIN 垃圾→二次 clamp / Q-RL shadow 開倉行為同觀測分離。5005 pass。

@@ -6,6 +6,24 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.919-P9-hacp-adversarial（2026-09-19：HACP 對抗辯論 + 5-tier + 風險三 stance——主神批 PLAN_hacp-adversarial）
+
+> 病徵實錘（E1-E6 全 PASS）: HOLD 率 95.1%（17,675/18,580）死局 / 反面詞考量僅 29% / Skeptics「0 modified」/ 風險單一視角。
+> mock 邏輯實驗（V-1~V-3 同 context 同 LLM）: 現版→0B/0S/7H 全 HOLD; 對抗版→Bull「DIRECTION: LONG」/ Bear「Do Not Buy」/ Research Manager commit 到 Overweight 仲揪出 Bear「fatal analytical error」——**加對抗結構 = 由全 HOLD 變有方向 + 逼 fact-check**。
+
+### ① 驗證（E1-E6 + V-1~V-3 全 PASS）
+- E1 HOLD 率 95.1% / confidence 齊平 0.69; E2 反面詞 29% + Skeptics 5 approved 0 modified; E3 5-tier→3-tier 零 regression(122 gate 檢查點 untouched); E4 風險單一視角; E5 5008 pass baseline; E6 Ollama +6 calls/cycle 可接受
+- V-1: 296 個「單邊意向被 majority hold 淹沒」case + 156 個有 edge 理據; 0 個真對立(B/S 同>0)——MATS 病係「minority signal 冇被討論就被淹沒」(唔係 TradingAgents 嘅 agents 對立)
+- V-2/V-3: 真實 Ollama mock——同 context 對抗版 commit 到 Overweight(現版全 HOLD), Conflict≠Hold 生效 + Research Manager fact-check 對方錯誤
+
+### ② 落地(全新檔案 + env-gated 接入, 統計層零 touched)
+- `src/cognition/adversarial-debate.ts`: Bull/Bear 對抗(首輪防 fabrication marker + timeout 30s + 失敗 graceful no-op)/ `rating.ts`: 5-tier→3-tier map + Conflict≠Hold clause + size 細粒度(Over/Under=0.6×)/ `risk-stance.ts`: Aggressive/Conservative/Neutral 互駁 + disagreement flag
+- hacp.ts: 早退路跑對抗(commit 打破 unanimous-HOLD 早退)+ Phase 2 context 注入 bull/bear clash + risk-stance 視角; env `HACP_ADVERSARIAL`(default on)/ `HACP_ADVERSARIAL_ROUNDS`(1-3)/ `HACP_RISK_STANCES`(default off)/ `HACP_ADVERSARIAL_MODEL`
+- 安全: 對抗只係 context 注入 + 誘導 commit — 唔 hard override consensus / majority vote / gate 鏈; LLM 失敗 → no-op 唔 crash
+- tests 12(對抗/5-tier/三 stance + 攻擊: 垃圾 rating/失敗 LLM/rounds clamp); 全量 **5020 pass**(+12), tsc clean
+
+---
+
 ## v2.0.918-P9-giveback-deepen（2026-09-19：giveback-cut 回吐深度條件——主神首日觀察修正）
 
 > 主神「why so soon cut lost」——09-19 首日 3 單 giveback-cut: SP500 −0.03%(回吐僅4%, 大浮盈回調被誤斬)。PLAN_giveback-cut-deepening 驗證後落地。
