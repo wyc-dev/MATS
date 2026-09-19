@@ -13450,8 +13450,14 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
             if (holdMin >= 15) {
               // margin-basis excursion（position value = margin + unrealized PnL）
               const margin = safeNum(pos.quantity, 0) * safeNum(pos.averageEntryPrice, 0) / safeLeverage(pos.leverage);
-              const minV = safeNum(pos.minValueReached, margin);
-              const maxV = safeNum(pos.maxValueReached, margin);
+              // v2.0.916-P9-attack9: maxValueReached/minValueReached 持久化污染(1e308/0/負)
+              // → mfePct/maePct 爆大 → giveback-cut/reversal-exit 誤觸發斬正常倉。
+              // position value = margin ± unrealized——合理範圍 [margin/100, margin×20](±2000% margin)
+              // 超出 = 污染 → fallback margin(中性: mfe/mae = 0, 唔觸發)。
+              const clamp2margin = (v: number): number =>
+                Number.isFinite(v) && v > margin / 100 && v < margin * 20 ? v : margin;
+              const minV = clamp2margin(safeNum(pos.minValueReached, margin));
+              const maxV = clamp2margin(safeNum(pos.maxValueReached, margin));
               const maePct = margin > 0 ? Math.max(0, (margin - minV) / margin) : 0;
               const mfePct = margin > 0 ? Math.max(0, (maxV - margin) / margin) : 0;
 

@@ -2,6 +2,22 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.916-P9-attack9（2026-09-18：第九輪——giveback-cut 週邊污染 3 真漏洞全修）
+
+> 目標 = giveback-cut / GOT 週邊 / judgeGateOutcome。紅先綠後, 全部真漏洞實證。
+
+### ① 真漏洞(全部實證 + 修復雙保險)
+- **B1(CV/持久化污染)**: `pos.maxValueReached=1e308` 持久化污染 → mfePct 爆大(≈1e306)→ **giveback-cut 誤觸發斬正常倉**
+  - 修復①(純函數): `GIVEBACK_CUT_MFE_CAP=10`(margin 浮盈 >1000% = 污染 → 唔觸發, 保守閉)
+  - 修復②(接入點): `clamp2margin()`——minV/maxV 超出 [margin/100, margin×20] → fallback margin(中性, 同 sanitizePosition 精神)
+- **B1b(GOT)**: `judgeGateOutcome` entryPrice=1e308 → 出 'hit'——**可偽造 gate 有效性統計** → entry/current ratio sanity(0.001~1000 唔可比 → pending)
+- **B3(GOT)**: direction 垃圾(Symbol/empty/null)→ fallthrough 用 side 亂判 → 白名單(buy/sell/close)→ pending(保守)
+
+### ② 測試
+- attack9 系列: A1(污染→唔觸發)/A3(併發 1000 一致唔觸發)/A4(clamp 設計)/A5(邊界 0.5~5.0 照觸發, 10.000001 唔觸發)/B1-B3(GOT 污染)
+- 全量 5000 pass(+3), tsc clean, runtime OK
+
+---
 ### ④ 自測修正(主神「are you sure」) + 歸因變化記錄
 - **遺漏1(真 bug)修正**: `GIVEBACK_CUT_MFE_MIN` env 之前冇接入(調用冇傳第三參數, env 形同虛設)→ 接入 `parseLockNumEnv(env, 0.005)`
 - **歸因變化(正確行為, 記錄)**: 57 單 closeReason 由 `consensus`(learning weight 0.5)變 `reversal_point_exit`(0.3)——機制改動後 closeReason 反映真實離場機制, 而 reversal_point_exit 本就係「系統決策」低權重——learning 對呢批單降權至 0.3, 唔會再教「consensus close 就係咁」; close-decision-calibrator 已含 reversal_point_exit(可校準)

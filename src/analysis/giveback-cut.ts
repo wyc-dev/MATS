@@ -18,6 +18,8 @@
  */
 export const GIVEBACK_CUT_MFE_MIN_DEFAULT = 0.005; // was floating ≥0.5% margin
 
+export const GIVEBACK_CUT_MFE_CAP = 10.0; // margin-basis 浮盈上限(~1000% margin)——超過 = 污染
+
 export function shouldGivebackCut(
   mfePct: number | null | undefined,
   unrealizedPnlPct: number | null | undefined,
@@ -26,6 +28,9 @@ export function shouldGivebackCut(
   // sanitize: garbage/NaN/non-finite → no cut (conservative — never cut on poisoned data)
   if (typeof mfePct !== 'number' || !Number.isFinite(mfePct)) return false;
   if (typeof unrealizedPnlPct !== 'number' || !Number.isFinite(unrealizedPnlPct)) return false;
+  // v2.0.916-P9-attack9: 1e308 maxValueReached 持久化污染 → mfePct 爆大 → 誤觸發 cut 正常倉。
+  // 合理 margin 浮盈 < 1000%;超過 = 污染 → 唔觸發(保守閉, 唔可能係真浮盈)。
+  if (mfePct > GIVEBACK_CUT_MFE_CAP) return false;
   const safeMin = Number.isFinite(mfeMin) && mfeMin > 0 ? Math.min(Math.max(mfeMin, 0.0001), 0.05) : GIVEBACK_CUT_MFE_MIN_DEFAULT;
   // MFE reached material level (margin-basis) and now underwater → giveback overflow
   return mfePct >= safeMin && unrealizedPnlPct < 0;

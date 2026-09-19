@@ -55,7 +55,9 @@ function normalizeSymbolKey(symbol: string): string {
   return String(symbol).toLowerCase().replace(/^xyz:/, '');
 }
 
-/** 純函數：判定被攔截訊號嘅後續走勢係 hit（攔截啱）定 miss（攔截錯）。 */
+/** 純函數：判定被攔截訊號嘅後續走勢係 hit（攔截啱）定 miss（攔截錯）。
+ *  v2.0.916-P9-attack9 硬化: ① entry/current 比例 sanity(1e308 污染 → 唔可比 → pending,
+ *  唔可以偽造 hit) ② direction 白名單(垃圾 → pending, 唔 fallthrough 亂判)。 */
 export function judgeGateOutcome(
   direction: BlockedDirection,
   side: 'buy' | 'sell' | null,
@@ -64,6 +66,12 @@ export function judgeGateOutcome(
 ): GateOutcome | 'pending' {
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) return 'pending';
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) return 'pending';
+  // attack9-B1: entryPrice=1e308 污染 → ratio≈0 → 唔可比(兩個值唔係同 level) → pending,
+  // 唔可以當做「跌咗 100%」= hit 偽造 GOT 統計。合理 ratio 0.001~1000。
+  const ratio = currentPrice / entryPrice;
+  if (!Number.isFinite(ratio) || ratio > 1000 || ratio < 0.001) return 'pending';
+  // attack9-B3: direction 垃圾(Symbol/object/空)→ 白名單——唔可以 fallthrough 用 side 亂判
+  if (direction !== 'buy' && direction !== 'sell' && direction !== 'close') return 'pending';
   const move = (currentPrice - entryPrice) / entryPrice;
   if (Math.abs(move) < RESOLVE_THRESHOLD) return 'pending';
   if (direction === 'buy') return move < 0 ? 'hit' : 'miss';
