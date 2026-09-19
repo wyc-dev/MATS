@@ -13497,7 +13497,7 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               // → 唔等 consensus 慢慢 close, 即時止損（57 單 MFE median 1.46% → pnl median −3.58%）
               // 誤傷: 大 winner 係 float→win(pnl>0 唔觸發), 只有攞過錢又輸返先 cut。
               // env: GIVEBACK_CUT_DISABLE=true / GIVEBACK_CUT_MFE_MIN（default 0.005）
-              if (process.env['GIVEBACK_CUT_DISABLE'] !== 'true' && shouldGivebackCut(mfePct, unrealizedPnlPct, parseLockNumEnv(process.env['GIVEBACK_CUT_MFE_MIN'], 0.005))) {
+              if (process.env['GIVEBACK_CUT_DISABLE'] !== 'true' && shouldGivebackCut(mfePct, unrealizedPnlPct, parseLockNumEnv(process.env['GIVEBACK_CUT_MFE_MIN'], 0.005), parseLockNumEnv(process.env['GIVEBACK_CUT_RATIO'], 0.5))) {
                 log.warn(`⏳ [giveback-cut] ${psc.symbol}: 曾浮盈 MFE ${(mfePct * 100).toFixed(1)}% 已回吐至水下 ${(unrealizedPnlPct * 100).toFixed(1)}% — 唔等 consensus, 緊接 lock-pipeline 前止損`);
                 // v2.0.915-attack/誠實校準: GOT 閉環——量度被 cut 單 close 後「繼續跌 = hit」vs「反彈 = miss」。
                 // ⚠️ 語義修正(v2.0.915-attack 自測捉到): direction 唔可以用 'close'——judgeGateOutcome 對

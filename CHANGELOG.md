@@ -2,6 +2,27 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+# Changelog
+
+All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
+
+## v2.0.918-P9-giveback-deepen（2026-09-19：giveback-cut 回吐深度條件——主神首日觀察修正）
+
+> 主神「why so soon cut lost」——09-19 首日 3 單 giveback-cut: SP500 −0.03%(回吐僅4%, 大浮盈回調被誤斬)。PLAN_giveback-cut-deepening 驗證後落地。
+
+### ① 驗證(PASS——89 單 consensus counterfactual)
+- 原條件: 57 單(一轉負就斬, Σ −207.1%)——誤斬 10 單「大浮盈淺回吐(3-41%)有反彈空間」
+- 新條件(回吐≥50% 先斬): 47 單(Σ −200.4%, 82% 保留)——真正浮盈走蝕照斬, 10 單大浮盈回調俾空間
+- 首日 SP500 情境: 原條件斬喺 −0.03% → 新條件唔斬(回吐僅4%); SNDK/DRAM 深回吐照斬 ✓
+- E4 兩半: 全水下(保護有效), sign 一致
+
+### ② 落地
+- `shouldGivebackCut()` 加 `givebackRatio` 參數(default 0.5: pnl ≤ −0.5×mfe 先觸發)——向後兼容(0 = 任何負即斬)
+- index.ts 接入 `GIVEBACK_CUT_RATIO` env(clamp [0,1])
+- tests 28 個(含首日三單情境 + ratio 垃圾 clamp + 併發 + 邊界)
+- 全量 5008 pass(+3), tsc clean
+
+---
 ## v2.0.917-P9-attack10（2026-09-18：第十輪——env 注入/邊界/消費者範圍鎖死）
 
 > 目標 = env 解析層(parseBoolEnv/parseLockNumEnv) + Q-RL shadowEnabled 消費者範圍 + judgeGateOutcome 邊界。
