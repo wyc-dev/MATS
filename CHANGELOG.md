@@ -2,6 +2,17 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.910-MarketBlock-AllMarkets（2026-09-18：canvas MARKET 節點顯示全部市場——唔止 active）
+
+> Master Lord:「Market 幅圖上唔應該只 show BTC」——canvas 左邊 MARKET 節點之前淨係單一 active symbol。
+
+### 修正
+- MARKET 節點由「單一圓點」改為「MARKETS block」: 列出全部 tradingMarkets(最多 10), 每格 = symbol + 決策色點(BUY綠/SELL紅/HOLD灰) + 決策字, active market 紫色高亮
+- spike(訊號輸入)由 active market 嗰格流向 agents(唔再係 box 中心)——代表「active 市場訊號流入決策」
+- 數據源: data.tradingMarkets + perSymbolConsensus(active fallback global decision)
+- 全英文 0 中文字元; tsc clean + vite build OK; UI 測試 full suite 通過
+
+---
 ## v2.0.909-All-Markets（2026-09-18：顯示全部交易市場——唔再淨係 active BTC）
 
 > Master Lord:「Why just BTC?」——panel MARKET 節點之前淨顯示 activeSymbol。修正: 頂部加「ALL MARKETS pulse strip」。

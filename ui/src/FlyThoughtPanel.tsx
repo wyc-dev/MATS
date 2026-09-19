@@ -108,7 +108,7 @@ export default function FlyThoughtPanel({ data }: Props) {
     const W = canvas.width, H = canvas.height
     let raf = 0, t = 0
 
-    const cur = (): { votes: any[]; agents: any[]; decision: string; conf: number; gates: any[]; lastPnl: number; sym: string; trend: string } => {
+    const cur = (): { votes: any[]; agents: any[]; decision: string; conf: number; gates: any[]; lastPnl: number; sym: string; mkts: string[]; perSym: any[]; trend: string } => {
       const d = dataRef.current
       const c = d?.consensus as any
       const decision = c?.decision?.action ?? 'hold'
@@ -120,6 +120,9 @@ export default function FlyThoughtPanel({ data }: Props) {
         .filter((x: any) => x && typeof x === 'object' && typeof x.pnlPct === 'number' && Number.isFinite(x.pnlPct) && (x.status === 'closed' || x.status === 'hl-fill'))
       const lastPnl = rec.length ? rec[rec.length - 1].pnlPct : 0
       const ms = (d?.marketState as any) ?? {}
+      const active = String((d?.status as any)?.activeSymbol ?? (d?.tradingMarkets?.[0] ?? '—'))
+      const mkts = (d?.tradingMarkets ?? []).filter((m: any) => typeof m === 'string' && m.length > 0)
+      const perSym = (c?.perSymbolConsensus ?? []) as any[]
       return {
         votes: c?.votes ?? [],
         agents: d?.agentThoughts ?? [],
@@ -127,18 +130,20 @@ export default function FlyThoughtPanel({ data }: Props) {
         conf: typeof c?.confidence === 'number' ? c.confidence : 0,
         gates,
         lastPnl,
-        sym: String((d?.status as any)?.activeSymbol ?? (d?.tradingMarkets?.[0] ?? '—')),
+        sym: active,
+        mkts: mkts.length > 0 ? mkts : [active],
+        perSym,
         trend: String(ms.trend ?? ms.regime ?? '—'),
       }
     }
 
     // layout
-    const INPUT = { x: 64, y: H * 0.42, r: 26 }
+    const INPUT = { x: 62, y: H * 0.5, w: 120, h: 12 }
     const READOUT = { x: W - 58, y: H * 0.42, r: 34 }
     const agentX = W * 0.38
 
     const draw = () => {
-      const { votes, agents, decision, conf, gates, lastPnl, sym, trend } = cur()
+      const { votes, agents, decision, conf, gates, lastPnl, sym, trend, mkts: curMkts, perSym: perSymC } = cur()
       const colorD = decision === 'buy' ? '#4ade80' : decision === 'sell' ? '#f87171' : '#94a3b8'
       const gatesArr = (gates ?? []) as Array<{ gate: string; passed: boolean }>
       t += 0.016
@@ -154,22 +159,39 @@ export default function FlyThoughtPanel({ data }: Props) {
 
       ctx.font = '9px ui-monospace, monospace'
 
-      // ── INPUT ──
-      ctx.strokeStyle = 'rgba(56,189,248,0.8)'; ctx.lineWidth = 1.6
-      ctx.beginPath(); ctx.arc(INPUT.x, INPUT.y, INPUT.r, 0, Math.PI * 2); ctx.stroke()
-      ctx.fillStyle = 'rgba(56,189,248,0.12)'
-      ctx.beginPath(); ctx.arc(INPUT.x, INPUT.y, INPUT.r, 0, Math.PI * 2); ctx.fill()
-      ctx.fillStyle = '#7dd3fc'; ctx.textAlign = 'center'
-      ctx.fillText('MARKET', INPUT.x, INPUT.y - INPUT.r - 10)
-      ctx.font = 'bold 11px ui-monospace, monospace'
-      ctx.fillText(sym.toUpperCase(), INPUT.x, INPUT.y + 2)
-      ctx.font = '9px ui-monospace, monospace'
-      ctx.fillStyle = '#94a3b8'
-      ctx.fillText(trend, INPUT.x, INPUT.y + 14)
+      // ── INPUT: ALL markets block (v2.0.910 — not just active) ──
+      const mkts = (curMkts ?? [sym]).slice(0, 10)
+      const boxH = Math.max(32, mkts.length * INPUT.h + 8)
+      const boxY = (H - boxH) / 2
+      ctx.strokeStyle = 'rgba(56,189,248,0.5)'; ctx.lineWidth = 1.2
+      ctx.fillStyle = 'rgba(56,189,248,0.05)'
+      ctx.beginPath(); ctx.roundRect(INPUT.x - INPUT.w / 2, boxY, INPUT.w, boxH, 8); ctx.fill(); ctx.stroke()
+      ctx.fillStyle = '#7dd3fc'; ctx.font = '8px ui-monospace, monospace'; ctx.textAlign = 'center'
+      ctx.fillText('MARKETS', INPUT.x, boxY + 11)
+      mkts.forEach((m: string, mi: number) => {
+        const rowY = boxY + 24 + mi * INPUT.h
+        const norm = String(m).replace(/^xyz:/, '').toUpperCase()
+        const isActive = norm === String(sym).replace(/^xyz:/, '').toUpperCase()
+        const pc = perSymC.find((x: any) => String(x.symbol).replace(/^xyz:/, '').toUpperCase() === norm)
+        const mAct = pc?.action ?? (isActive ? decision : '—')
+        const mCol = mAct === 'buy' ? '#4ade80' : mAct === 'sell' ? '#f87171' : '#475569'
+        if (isActive) {
+          ctx.fillStyle = 'rgba(167,139,250,0.18)'
+          ctx.beginPath(); ctx.roundRect(INPUT.x - INPUT.w / 2 + 3, rowY - 8, INPUT.w - 6, 11, 3); ctx.fill()
+        }
+        ctx.font = 'bold 8px ui-monospace, monospace'
+        ctx.fillStyle = isActive ? '#e9d5ff' : '#94a3b8'
+        ctx.fillText(norm, INPUT.x - 22, rowY + 1)
+        ctx.fillStyle = mCol
+        ctx.beginPath(); ctx.arc(INPUT.x + 16, rowY - 1, 3, 0, Math.PI * 2); ctx.fill()
+        ctx.font = '6.5px ui-monospace, monospace'
+        ctx.fillStyle = '#64748b'
+        ctx.fillText(String(mAct ?? '—').toUpperCase(), INPUT.x + 26, rowY + 1)
+      })
       ctx.textAlign = 'left'
-      // pulse
+      // pulse (active market)
       ctx.fillStyle = 'rgba(125,211,252,0.9)'
-      ctx.beginPath(); ctx.arc(INPUT.x, INPUT.y, 3 + 1.4 * Math.sin(t * 3), 0, Math.PI * 2); ctx.fill()
+      ctx.beginPath(); ctx.arc(INPUT.x + INPUT.w / 2 - 4, boxY + 18, 3 + 1.4 * Math.sin(t * 3), 0, Math.PI * 2); ctx.fill()
 
       // ── AGENT neurons (labelled: name + vote arrow + conf) ──
       const agentNodes = agents.map((a: any, i: number) => {
@@ -181,11 +203,13 @@ export default function FlyThoughtPanel({ data }: Props) {
       }).slice(0, 8)
 
       for (const n of agentNodes) {
-        // input → neuron spike
+        // input → neuron spike (start at ACTIVE market row, not box center)
+        const actIdx = Math.max(0, mkts.findIndex((m: string) => String(m).replace(/^xyz:/, '').toUpperCase() === String(sym).replace(/^xyz:/, '').toUpperCase()))
+        const srcX = INPUT.x, srcY = boxY + 24 + actIdx * INPUT.h
         const ph = (t * 60 + n.y * 0.5) % 100
-        const sx = INPUT.x + (n.x - INPUT.x) * ph / 100, sy = INPUT.y + (n.y - INPUT.y) * ph / 100
+        const sx = srcX + (n.x - srcX) * ph / 100, sy = srcY + (n.y - srcY) * ph / 100
         ctx.strokeStyle = 'rgba(148,163,184,0.12)'; ctx.lineWidth = 1
-        ctx.beginPath(); ctx.moveTo(INPUT.x, INPUT.y); ctx.lineTo(n.x, n.y); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(srcX, srcY); ctx.lineTo(n.x, n.y); ctx.stroke()
         ctx.fillStyle = 'rgba(96,165,250,0.8)'
         ctx.beginPath(); ctx.arc(sx, sy, 1.5, 0, Math.PI * 2); ctx.fill()
 
