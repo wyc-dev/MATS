@@ -2,6 +2,20 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.908-HACP-Decision-Flow（2026-09-18：重畫決策流程圖——刪冗餘 strip + 全標籤自明圖）
+
+> Master Lord review 3: ① balance strip 同主 UI 重複 → 全刪 ② 果蠅解剖圖用戶睇唔明 → 重畫做「決策流程圖」, 每個元素有字。
+
+### ① 刪冗餘
+- 移除頂部 balance strip(Gen Balance/Equity/Last/Net——主 UI portfolio grid 已有, 喺度重複 = 噪音)
+
+### ② 重畫（自明——用戶唔使解讀就知）
+- 決定網絡圖: MARKET(active symbol+trend) → 7 AGENT neurons(角色名 + 投票 ▲/▼/· + confidence%) → GATE chain(綠=通/紅閃=斷路, 每格 gate 名) → READOUT(BUY/SELL/HOLD + conf%)
+- 所有元素有文字標明; spike 流動 = 訊號傳遞; 紅格 = 「想開被閂」即刻見(why losing 喺圖上)
+- 保留: WHY LOSING(closeReason 真數據) / GATE BLOCKS / DISCIPLINE / PER-SYMBOL / 一句 insight(唔重複數字)
+- 全英文 0 中文字元; tsc clean + vite build OK
+
+---
 ## v2.0.907-P9-attack8（2026-09-18：第八輪——python script 污染 crash + 雙 view 統計修正）
 
 > 目標 = verify-shadow-trainability.py(python 未攻過) + index.ts env/portfolio 注入。攻擊後順帶修復統計缺陷。

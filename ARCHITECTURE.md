@@ -1,6 +1,6 @@
 # {MATS} — Multi Agent Trading System（訊號運算後端）
 
-> **作者**: YC Wong · **版本**: 2.0.907-P9-attack8
+> **作者**: YC Wong · **版本**: 2.0.908-HACP-Decision-Flow
 > **核心哲學**: 資本保存為絕對第一優先，但必須在安全前提下持續創造盈利
 > **測試狀態（2026-09-18 attack-round / base-split 時代）**: vitest **4972 pass / 0 fail — exit 0**（4904 → +50: 892 softgate-confirm 確認(scripts) / 893 base-split 6 組件 + 8 tests / 894 attack1+2 19 tests — 6 真漏洞 / 895 docs 同步 / 896 attack3 7 tests — 2 漏洞 / 897 E0 可訓練性(LogReg ρ=+0.141) / 898 E1 時間特徵 3+2 integration tests / 899 attack6 10 tests — getter-bomb 等 2 漏洞）（12 個 known-noise files 已 exclude: v2.0.854-attack2-nan-price / v2.0.868-attack + 9 個 legacy node:test 格式 + 1 個測已刪代碼嘅死 file——唔再令 vitest exit≠0 → system-engineer 判定唔再假 FAIL）; `tests/p7-lyapunov-fix.test.ts`（P7，12 測試）本地有效（tests/ gitignored）; OLR hard gate 已知 2/3 接駁（active 主路徑只有 EV gate）——**P9-olr-audit 已取代（OLR 硬閘統計噪音 → 默認 OFF，env `OLR_HARD_GATE='true'` 可逆）**
 > **定位**: `mats_backend` 係 **`mats_app`（Expo React Native 客戶端）嘅訊號運算系統**——計算 HACP 共識 → 擴展成 1×3 風險矩陣（v2.0.857 moderate-only）→ 寫入 Supabase；客戶端按用戶選擇讀取對應矩陣格並決定執行
