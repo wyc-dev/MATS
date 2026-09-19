@@ -2,6 +2,22 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.907-P9-attack8（2026-09-18：第八輪——python script 污染 crash + 雙 view 統計修正）
+
+> 目標 = verify-shadow-trainability.py(python 未攻過) + index.ts env/portfolio 注入。攻擊後順帶修復統計缺陷。
+
+### ① 真漏洞 1 個
+- **P2(python 持久化污染)**: shadow-events.jsonl 行係非 dict(123/"str"/null/list)→  **AttributeError crash 成個 script** → 載入時  guard, 污染行全 skip(唔 crash, 唔影響有效樣本)
+
+### ② 統計修正(主神「驗證絕對成效」——唔可以靠唔同樣本比較)
+- script 升級為**三 view**: A(8 特徵全樣本 37,838) / B(12 特徵樣本 3,273) / **C(同一批樣本對照 8 vs 12)**
+- 關鍵發現: A vs B 差距(−0.09)係**樣本集唔同假象**; View C 同批樣本 8→12 特徵 **ρ −0.0159 → +0.0110 (Δ=+0.027)**——**時間特徵(m4h/m15m/regime/hour)確認有加值**, E1 數據基建方向正確
+- 原 v2.0.898 嘅「動態子集」會因新欄位積累自動收窄樣本 → 假 FAIL——三 view 修正避免誤判, 2-4 週後樣本充足重驗
+
+### ③ env/portfolio 注入驗證(attack7 續)
+- E1 parseLockNumEnv: 0/負/NaN env → default(唔可以 0 window 恆觸發);E2 portfolio null → optional chain;E3 throw → 接入點 try/catch 已存在——全部免疫
+
+---
 ## v2.0.906-P9-attack7（2026-09-18：第七輪——getter-bomb 元素 crash 修復 + closeReason 兜底）
 
 > 目標 = trade-frequency-leak / closeReason serialize / FlyThoughtPanel 數據路徑。新增 attack7 9 tests, 全量 4972 pass。

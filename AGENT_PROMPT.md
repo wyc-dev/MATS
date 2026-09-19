@@ -3,7 +3,7 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 ## ⭐ 2026-09-18 新組件（v2.0.896-899）
 
 - **v2.0.898-P9-shadow-time-features（E1 落地）**: `snapshotEntryFeatures()` 加 4 個時間結構特徵 pick——m4hAtOpen(momentumLong=4h/1h fraction) / m15mAtOpen(momentumShort=15m/5m) / regimeOrdinalAtOpen / hourOfDayAtOpen——shadow open 時 snapshot(blind/aligned/seeded 三路徑全覆蓋)→ shadow-events archive 累積。`verify-shadow-trainability.py` 動態特徵子集(<200 樣本新欄位自動剔除)。**全鏈 integration proof**: open→resolve→recentResults 有 4 欄(2 真 integration tests)。
-- **v2.0.906-P9-attack7**: snapshotEntryFeatures 攻擊輪——A1 Proxy getter-bomb(resolve 鏈 crash💀)→ 逐 field try/catch(skip 毒 field,唔 kill 成個 snapshot);A3 -0→0;A2 hasOwnProperty(own-property-only,prototype 污染防)。10 attack tests。
+- **v2.0.907-P9-attack8**: snapshotEntryFeatures 攻擊輪——A1 Proxy getter-bomb(resolve 鏈 crash💀)→ 逐 field try/catch(skip 毒 field,唔 kill 成個 snapshot);A3 -0→0;A2 hasOwnProperty(own-property-only,prototype 污染防)。10 attack tests。
 - **v2.0.896-P9-attack3**: baseProduct parser 攻擊輪——C1-2 重複組件 double-count / C4 天文溢出(1e9 防線)。
 - `src/analysis/base-split.ts` — **v2.0.893→895 攻擊輪硬化**: `readWithin()`(object guard + getter-trap try/catch + finite + [-0 排除] + 範圍語義: 概率 [0,1] / 乘數 [0,10]) + `isDisabled()`(proxy trap → 無法確認 disable → 保留 gate = 保守)。**A2 最致命**: 1e308 注入 → baseConfidence=Infinity → `Infinity>=threshold` 必定開倉(繞過一切 gate)——已封。
 - P19 Pending Validation（ARCHITECTURE 索引）: consensus-close sell 順勢延續 hint（close-path-archive n=73/55, 24h postClose 後見之明限制）——等短窗 candle 數據基建先驗證。
@@ -22,7 +22,7 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 - `src/analysis/readout-reversal-monitor.ts` — **Readout 反轉優先監察**（891, connectome BPU 研究→P11 優監）: 每 300s 自動重算開倉時 shadow WR→outcome 的 ρ（avgRankSpearman）, 負 ρ≥0.1+n≥30 → 🔔 READOUT-REVERSAL LOUD（shadow WR 反預測 ρ=−0.134 實錘）。env READOUT_REVERSAL_MONITOR/READOUT_RHO_THRESHOLD/READOUT_MIN_N。
 - `src/analysis/mom24-guard.ts` — **MOM24_4H_BYPASS**（887）: mom24∈[0,0.5) 且 m4h≥0.5（4h breakout 初期）→ 放行交 gate 鏈（shadow 衝突區 WR48%vs36% 實錘）。
 
-**Version**: 2.0.906-P9-attack7 · **Tests**: **4972 pass / 0 fail, exit 0**（2026-09-18; 4912 → +19: 894 base-split-attack 9 + attack2 10——6 真漏洞全修）（2026-09-10 SE-verdict-maxbuffer: v2.0.854-attack2-nan-price + v2.0.868-attack 等 12 個 known-noise files 已由 `vitest.config.ts exclude`——之前 13 pre-existing fail 令 vitest 永遠 exit≠0 → SE 判定永遠假 FAIL → 啱 fix 全被 rollback）; 另 9 個 legacy `node:test` 格式 file + 1 個測已刪代碼嘅死 file vitest 收集唔到——開發噪音,非 regression) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
+**Version**: 2.0.907-P9-attack8 · **Tests**: **4972 pass / 0 fail, exit 0**（2026-09-18; 4912 → +19: 894 base-split-attack 9 + attack2 10——6 真漏洞全修）（2026-09-10 SE-verdict-maxbuffer: v2.0.854-attack2-nan-price + v2.0.868-attack 等 12 個 known-noise files 已由 `vitest.config.ts exclude`——之前 13 pre-existing fail 令 vitest 永遠 exit≠0 → SE 判定永遠假 FAIL → 啱 fix 全被 rollback）; 另 9 個 legacy `node:test` 格式 file + 1 個測已刪代碼嘅死 file vitest 收集唔到——開發噪音,非 regression) · **Build**: `tsc --noEmit` (zero errors) + `cd ui && npx vite build` (zero errors) · **Run**: `npm run dev` (concurrently runs API :3456 + UI :5173) · **Codebase**: ~74,500 lines TypeScript (src 全樹) + legacy React UI (now superseded by `mats_app`)
 
 ## ⭐ 2026-09-13 新組件（v2.0.882-885）
 

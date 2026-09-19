@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-verify-shadow-trainability.py —— PLAN_shadow-connectome-layer E0: 可訓練性 audit(v2 numpy)
-2026-09-18。純離線(read-only)。用現有 33k shadow-events 驗證:
-  E0-1: Logistic Regression(8 entry features → win)
-  E0-2: 2-layer MLP(8 → 16 → 1)
-  E0-3: per-feature avgRankSpearman
-時間序 split: 前 70% train / 後 30% OOS(零 look-ahead)
+verify-shadow-trainability.py —— PLAN_shadow-connectome-layer E0/E2: 可訓練性 audit(v3 雙 view)
+2026-09-18。純離線(read-only)。用 shadow-events 驗證方向判斷可 train:
+  View A: 8 基本 entry features（全樣本——歷史 34k+, 唔要求時間欄位）
+  View B: 全部 active features（8 基本 + 已累積嘅時間特徵——新樣本, 樣本較少）
+比較 A vs B 嘅 OOS ρ——**時間特徵有冇真正加值**, 唔好被「樣本集唔同」假 FAIL 誤導。
 """
 import json, math
 import numpy as np
@@ -16,54 +15,18 @@ for line in open('data/evolution/shadow-events.jsonl'):
     if not line: continue
     try: r = json.loads(line)
     except: continue
+    if not isinstance(r, dict): continue  # v2.0.907-attack8: 持久化污染防線
     rows.append(r)
 print(f"shadow-events 總數: {len(rows)}")
 
-# v2.0.898-fix: 動態特徵子集——歷史數據冇新欄位(只 18 條 m4hAtOpen),唔可以要求全 12 特徵先入樣本
-# (否則 34k 樣本縮到 0 = script 死)。策略: 先統計每個特徵覆蓋,<200 樣本嘅新欄位自動剔除;
-# 特徵空間 = 數據實際覆蓋話事(歷史 8 / 累積後 12)。
-F = ['entryShadowWRAtOpen','sentimentAtEntry','sentimentConvictionAtEntry','fundingRateAtEntry',
-     'volatilityAtEntry','obImbalanceAtEntry','volumeRatioAtEntry','srDistanceBpsAtEntry',
-     'm4hAtOpen','m15mAtOpen','regimeOrdinalAtOpen','hourOfDayAtOpen']
-coverage = {f: sum(1 for r in rows if isinstance(r.get(f),(int,float)) and math.isfinite(r.get(f))) for f in F}
-active_F = [f for f in F if coverage[f] >= 200]
-if len(active_F) < len(F):
-    print(f"[動態子集] 特徵覆蓋: {len(active_F)}/{len(F)} active——剔除 <200 樣本嘅新欄位")
-    print(f"  剔除: {[f for f in F if f not in active_F]} (累積 2-4 週後自動恢復)")
-F = active_F
+F_BASE = ['entryShadowWRAtOpen','sentimentAtEntry','sentimentConvictionAtEntry','fundingRateAtEntry',
+          'volatilityAtEntry','obImbalanceAtEntry','volumeRatioAtEntry','srDistanceBpsAtEntry']
+F_TIME = ['m4hAtOpen','m15mAtOpen','regimeOrdinalAtOpen','hourOfDayAtOpen']
 
-samples = []
-for r in rows:
-    vals = []
-    ok = True
-    for f in F:
-        v = r.get(f)
-        if not isinstance(v,(int,float)) or not math.isfinite(v):
-            ok = False; break
-        vals.append(float(v))
-    if not ok: continue
-    y = r.get('outcome')
-    if y not in ('win','loss'): continue
-    ts = r.get('resolvedAt')
-    if not isinstance(ts,(int,float)): ts = 0
-    samples.append((ts, vals, 1.0 if y=='win' else 0.0))
-print(f"完整特徵樣本: {len(samples)}")
-if len(samples) < 200:
-    print("樣本不足"); raise SystemExit(1)
-
-samples.sort(key=lambda s: s[0])
-split = int(len(samples)*0.7)
-train, oos = samples[:split], samples[split:]
-print(f"train={len(train)} oos={len(oos)}")
-
-Xtr = np.array([s[1] for s in train], dtype=np.float64)
-Ytr = np.array([s[2] for s in train])
-Xoo = np.array([s[1] for s in oos], dtype=np.float64)
-Yoo = np.array([s[2] for s in oos])
-
-# 標準化(fit on train)——零 look-ahead
-mu = Xtr.mean(axis=0); sd = Xtr.std(axis=0); sd[sd==0] = 1.0
-Xtr = (Xtr - mu)/sd; Xoo = (Xoo - mu)/sd
+# 時間特徵覆蓋
+cov = {f: sum(1 for r in rows if isinstance(r.get(f),(int,float)) and math.isfinite(r.get(f))) for f in F_TIME}
+active_time = [f for f in F_TIME if cov[f] >= 200]
+print(f"時間特徵 active: {active_time} (覆蓋: { {f: cov[f] for f in F_TIME} })")
 
 def spearman(a, b):
     n = len(a)
@@ -80,9 +43,8 @@ def spearman(a, b):
         return r
     ra, rb = rank(a), rank(b)
     ma, mb = ra.mean(), rb.mean()
-    num = ((ra-ma)*(rb-mb)).sum()
     da = math.sqrt(((ra-ma)**2).sum()); db = math.sqrt(((rb-mb)**2).sum())
-    return num/(da*db) if da*db else 0.0
+    return 0.0 if da*db == 0 else float(((ra-ma)*(rb-mb)).sum()/(da*db))
 
 def ev(pred, y):
     return float(((pred-0.5)*(2*y-1)).mean())
@@ -90,59 +52,130 @@ def ev(pred, y):
 def sigmoid(z):
     return 1.0/(1.0+np.exp(-np.clip(z, -30, 30)))
 
-# ── E0-1 LogReg(λ=1e-3, 200 iters, full-batch) ──
-Xb = np.hstack([Xtr, np.ones((len(Xtr),1))])
-Xob = np.hstack([Xoo, np.ones((len(Xoo),1))])
-w = np.zeros(Xb.shape[1])
-for it in range(200):
-    p = sigmoid(Xb @ w)
-    g = Xb.T @ (p - Ytr)/len(Xtr) + 1e-3*w
-    w -= 0.1*g
-ptr = sigmoid(Xb @ w); po = sigmoid(Xob @ w)
-rho_1 = spearman(po, Yoo); ev_1 = ev(po, Yoo)
-print("\n[E0-1 LogReg]")
-print(f"  train ρ={spearman(ptr,Ytr):+.4f}  OOS ρ={rho_1:+.4f}  OOS EV={ev_1:+.4f}")
-print(f"  OOS base WR={Yoo.mean()*100:.1f}%")
+def run_view(F, name):
+    """時間序 split + LogReg + per-feature ρ — 返回 dict"""
+    samples = []
+    for r in rows:
+        vals = []
+        ok = True
+        for f in F:
+            v = r.get(f)
+            if not isinstance(v,(int,float)) or not math.isfinite(v):
+                ok = False; break
+            vals.append(float(v))
+        if not ok: continue
+        y = r.get('outcome')
+        if y not in ('win','loss'): continue
+        ts = r.get('resolvedAt')
+        if not isinstance(ts,(int,float)): ts = 0
+        samples.append((ts, vals, 1.0 if y=='win' else 0.0))
+    print(f"\n══════ View {name} ({len(F)} feats): 樣本={len(samples)} ══════")
+    if len(samples) < 200:
+        print("  樣本不足(<200)→ skip")
+        return None
+    samples.sort(key=lambda s: s[0])
+    split = int(len(samples)*0.7)
+    train, oos = samples[:split], samples[split:]
+    Xtr = np.array([s[1] for s in train], dtype=np.float64)
+    Ytr = np.array([s[2] for s in train])
+    Xoo = np.array([s[1] for s in oos], dtype=np.float64)
+    Yoo = np.array([s[2] for s in oos])
+    mu = Xtr.mean(axis=0); sd = Xtr.std(axis=0); sd[sd==0] = 1.0
+    Xtr = (Xtr - mu)/sd; Xoo = (Xoo - mu)/sd
+    Xb = np.hstack([Xtr, np.ones((len(Xtr),1))])
+    Xob = np.hstack([Xoo, np.ones((len(Xoo),1))])
+    w = np.zeros(Xb.shape[1])
+    for it in range(200):
+        p = sigmoid(Xb @ w)
+        w -= 0.1*(Xb.T @ (p - Ytr)/len(Xtr) + 1e-3*w)
+    ptr = sigmoid(Xb @ w); po = sigmoid(Xob @ w)
+    rho_oo = spearman(po, Yoo); ev_oo = ev(po, Yoo)
+    wr_oos = Yoo.mean()*100
+    feat_rho = {f: spearman(Xoo[:,j], Yoo) for j, f in enumerate(F)}
+    print(f"  LogReg OOS: ρ={rho_oo:+.4f}  EV={ev_oo:+.4f}  base WR={wr_oos:.1f}%")
+    top = sorted(feat_rho.items(), key=lambda x: -abs(x[1]))[:4]
+    for f, v in top:
+        print(f"     ρ[{f}] = {v:+.4f}")
+    return {'name': name, 'n': len(samples), 'rho': rho_oo, 'ev': ev_oo, 'feats': feat_rho}
 
-# ── E0-2 MLP(8→16→1, Adam-lite, 300 iters) ──
-rng = np.random.default_rng(42)
-D = Xtr.shape[1]; H = 16
-W1 = rng.normal(0, 0.3, (D, H)); b1 = np.zeros(H)
-W2 = rng.normal(0, 0.3, H); b2 = 0.0
-mW1 = np.zeros_like(W1); mW2 = np.zeros_like(W2); mb1 = np.zeros_like(b1)
-for it in range(300):
-    h = np.maximum(0, Xtr @ W1 + b1)
-    z = h @ W2 + b2
-    p = sigmoid(z)
-    dz = p - Ytr
-    gW2 = h.T @ dz/len(Xtr) + 1e-4*W2
-    gb2 = float(dz.mean())
-    dh = (dz[:,None] * W2[None,:]) * (h>0)
-    gW1 = Xtr.T @ dh/len(Xtr) + 1e-4*W1
-    gb1 = dh.mean(axis=0)
-    mW1 = 0.9*mW1 + 0.1*gW1; mW2 = 0.9*mW2 + 0.1*gW2; mb1 = 0.9*mb1 + 0.1*gb1
-    W1 -= 0.05*mW1; b1 -= 0.05*mb1; W2 -= 0.05*mW2; b2 -= 0.05*gb2
+print("== View A: 8 基本特徵（全樣本）==")
+A = run_view(F_BASE, 'A(8 basic)')
 
-def mlp_pred(X):
-    h = np.maximum(0, X @ W1 + b1)
-    return sigmoid(h @ W2 + b2)
-mtr = mlp_pred(Xtr); moo = mlp_pred(Xoo)
-rho_2 = spearman(moo, Yoo); ev_2 = ev(moo, Yoo)
-print("\n[E0-2 MLP(8→16→1)]")
-print(f"  train ρ={spearman(mtr,Ytr):+.4f}  OOS ρ={rho_2:+.4f}  OOS EV={ev_2:+.4f}")
+print("\n== View B: 8 基本 + 時間特徵 ==")
+F_FULL = F_BASE + active_time
+B = run_view(F_FULL, 'B(8+time)')
 
-# ── E0-3 per-feature ρ ──
-print("\n[E0-3 per-feature ρ(OOS)]")
-for j, f in enumerate(F):
-    xs = Xoo[:,j]
-    if len(set(xs.tolist())) < 2:
-        print(f"  {f:<28} 零變異"); continue
-    print(f"  {f:<28} ρ={spearman(xs, Yoo):+.4f}")
+# View C: 同一批樣本(B 嘅 3,256 有齊時間特徵)但只用 8 基本特徵——
+# 分離「時間特徵效果」同「樣本集差異」(主神「先驗證絕對成效」——唔可以靠唔同樣本比較)
+def run_view_same_set(F, name, samples):
+    print(f"\n══════ View {name} ({len(F)} feats, 同 B 樣本集): n={len(samples)} ══════")
+    if len(samples) < 200:
+        print("  樣本不足"); return None
+    samples = sorted(samples, key=lambda s: s[0])
+    split = int(len(samples)*0.7)
+    train, oos = samples[:split], samples[split:]
+    Xtr = np.array([s[1] for s in train], dtype=np.float64)
+    Ytr = np.array([s[2] for s in train])
+    Xoo = np.array([s[1] for s in oos], dtype=np.float64)
+    Yoo = np.array([s[2] for s in oos])
+    mu = Xtr.mean(axis=0); sd = Xtr.std(axis=0); sd[sd==0] = 1.0
+    Xtr = (Xtr - mu)/sd; Xoo = (Xoo - mu)/sd
+    Xb = np.hstack([Xtr, np.ones((len(Xtr),1))]); Xob = np.hstack([Xoo, np.ones((len(Xoo),1))])
+    w = np.zeros(Xb.shape[1])
+    for it in range(200):
+        p = sigmoid(Xb @ w)
+        w -= 0.1*(Xb.T @ (p - Ytr)/len(Xtr) + 1e-3*w)
+    po = sigmoid(Xob @ w)
+    return {'name': name, 'n': len(samples), 'rho': spearman(po, Yoo), 'ev': ev(po, Yoo)}
 
-log_pass = abs(rho_1) >= 0.05
-mlp_pass = abs(rho_2) >= 0.05
+# 收集「有齊全部 12 特徵」嘅樣本（即 View B 用嗰批）
+full_samples = []
+for r in rows:
+    vals = []
+    ok = True
+    for f in F_FULL:
+        v = r.get(f)
+        if not isinstance(v,(int,float)) or not math.isfinite(v): ok = False; break
+        vals.append(float(v))
+    if not ok: continue
+    y = r.get('outcome')
+    if y not in ('win','loss'): continue
+    ts = r.get('resolvedAt')
+    if not isinstance(ts,(int,float)): ts = 0
+    full_samples.append((ts, vals, 1.0 if y=='win' else 0.0))
+# 同一批樣本但只擷取 8 基本特徵
+base_only = [(s[0], [s[1][j] for j in range(len(F_BASE))], s[2]) for s in full_samples]
+C_full = run_view_same_set(F_FULL, 'C-full(12 feats, same set)', full_samples)
+C_base = run_view_same_set(F_BASE, 'C-base(8 feats, same set)', base_only)
+
+# 裁決
 print("\n════ 裁決 ════")
-print(f"E0-1 LogReg OOS |ρ|={abs(rho_1):.4f} {'✅ PASS(≥0.05)' if log_pass else '❌ FAIL'}")
-print(f"E0-2 MLP    OOS |ρ|={abs(rho_2):.4f} {'✅ PASS(≥0.05)' if mlp_pass else '❌ FAIL'}")
-print("誠實解讀: FAIL 唔代表方向唔可以 train,代表「現有 8 特徵快照空間」冇足夠資訊")
-print("→ 支持 E1: 需要時間結構/regime/位置特徵(由今日起記錄, 2-4 週後重驗)")
+if A and B:
+    d = B['rho'] - A['rho']
+    print(f"View A OOS ρ={A['rho']:+.4f} (n={A['n']})  vs  View B OOS ρ={B['rho']:+.4f} (n={B['n']})")
+    if d > 0.02:
+        print(f"✅ 時間特徵加值: +{d:.4f} ρ——B 優於 A")
+    elif d < -0.02:
+        print(f"❌ 時間特徵冇加值(甚至更差): {d:+.4f}——B 樣本少 + 特徵多 → overfit, 需更多樣本")
+    else:
+        print(f"⚪ 暫時無分別({d:+.4f})——時間特徵中性, 樣本繼續累積")
+    print(f"B 樣本 n={B['n']} 遠細過 A n={A['n']}——統計力差異要留意, 2-4 週後樣本充足再重驗")
+elif A:
+    print(f"View A ρ={A['rho']:+.4f} PASS——8 基本特徵可 train")
+elif B:
+    print(f"View B ρ={B['rho']:+.4f}——時間特徵樣本已夠, 但 A 樣本不足")
+else:
+    print("兩 view 樣本均不足——等數據累積")
+
+# View C 對照: 同批樣本 8 vs 12
+if C_full and C_base:
+    dc = C_full['rho'] - C_base['rho']
+    print(f"\n══ View C(同批樣本, 分離樣本集差異) ══")
+    print(f"  8 特徵 ρ={C_base['rho']:+.4f}  vs  12 特徵 ρ={C_full['rho']:+.4f}  → Δ={dc:+.4f}")
+    if dc > 0.02:
+        print(f"  ✅ 時間特徵喺同批樣本上有加值(+{dc:.4f})")
+    elif dc < -0.02:
+        print(f"  ❌ 時間特徵喺同批樣本上係負面({dc:+.4f})——過擬合/特徵噪聲")
+    else:
+        print("  ⚪ 時間特徵暫時中性——同批樣本 8 vs 12 無分別, 繼續累積")
+    print(f"  (注意: C 樣本 n={C_full['n']} 細——統計力有限, 2-4 週後重驗)")
