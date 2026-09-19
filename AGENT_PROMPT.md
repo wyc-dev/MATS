@@ -1,9 +1,19 @@
 You are a senior staff software engineer owning the MATS codebase — ~74,500 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
+## ⭐ 2026-09-18 新組件（v2.0.900-913 UI + 決策歸因系列）
+
+- **v2.0.913-Attribution-2x2**: HACP panel 歸因區對稱 2×2 grid——WHY LOSING/DISCIPLINE/GATE BLOCKS/PER-SYMBOL 四格統一 border+圓角+tabular-nums, minWidth:0 防溢出。
+- **v2.0.912-Layout-Redistribute**: 刪 panel-header(冗餘); canvas 三元素垂直中軸對齊(MARKET box 108px 左/AGENTS W×0.46 置中/READOUT r=40 右), GATES 移離黐底到中下部橫帶, 中央 vignette 光暈。
+- **v2.0.911-MarketBox-Sizing**: MARKETS block 行高 12→16px, 寬 148, x=82(左緣唔再 −4 溢出), boxH match agents span。
+- **v2.0.910-MarketBlock-AllMarkets**: canvas MARKET 節點由單一 active dot → MARKETS block 顯示全部 tradingMarkets(≤10, 每格 symbol+決策色點+decision, active 紫高亮), spike 由 active 市場 row 流向 agents。
+- **v2.0.909-All-Markets**: 頂部 ALL MARKETS pulse strip——每 trading market 一個 chip(symbol+決策色+conf%), active 紫高亮+●。
+- **v2.0.905-908（HACP Decision Flow 系列）**: backend serialize tradeRecords 補 closeReason(v2.0.905——UI「WHY LOSING」由永遠 unknown → 真歸因 consensus Σ−204% 最大流失); panel 徹底去重(W/L 唔再重複 WR/Σ, insight 淨一句原因); 決策流程圖全標籤自明(MARKET→AGENTS 名+投票▲▼+conf→GATES 綠/紅閃→READOUT), 全英文 0 中文字元。
+- **v2.0.902-903**: 真·具象化(畫果蠅頂視→後改決策流程圖) + trade-frequency-leak(重複追單軟節流 ×0.75, 數據實證 MED density WR 38%)。
+- **v2.0.907-P9-attack8**: python script 持久化污染(crash)→ isinstance dict guard; verify-shadow-trainability 三 view 統計(A 全樣本/B 新樣本/C 同批樣本對照)——View C 實證時間特徵 Δρ+0.027 有加值。
+
 ## ⭐ 2026-09-18 新組件（v2.0.896-899）
 
 - **v2.0.898-P9-shadow-time-features（E1 落地）**: `snapshotEntryFeatures()` 加 4 個時間結構特徵 pick——m4hAtOpen(momentumLong=4h/1h fraction) / m15mAtOpen(momentumShort=15m/5m) / regimeOrdinalAtOpen / hourOfDayAtOpen——shadow open 時 snapshot(blind/aligned/seeded 三路徑全覆蓋)→ shadow-events archive 累積。`verify-shadow-trainability.py` 動態特徵子集(<200 樣本新欄位自動剔除)。**全鏈 integration proof**: open→resolve→recentResults 有 4 欄(2 真 integration tests)。
-- **v2.0.913-Attribution-2x2**: snapshotEntryFeatures 攻擊輪——A1 Proxy getter-bomb(resolve 鏈 crash💀)→ 逐 field try/catch(skip 毒 field,唔 kill 成個 snapshot);A3 -0→0;A2 hasOwnProperty(own-property-only,prototype 污染防)。10 attack tests。
 - **v2.0.896-P9-attack3**: baseProduct parser 攻擊輪——C1-2 重複組件 double-count / C4 天文溢出(1e9 防線)。
 - `src/analysis/base-split.ts` — **v2.0.893→895 攻擊輪硬化**: `readWithin()`(object guard + getter-trap try/catch + finite + [-0 排除] + 範圍語義: 概率 [0,1] / 乘數 [0,10]) + `isDisabled()`(proxy trap → 無法確認 disable → 保留 gate = 保守)。**A2 最致命**: 1e308 注入 → baseConfidence=Infinity → `Infinity>=threshold` 必定開倉(繞過一切 gate)——已封。
 - P19 Pending Validation（ARCHITECTURE 索引）: consensus-close sell 順勢延續 hint（close-path-archive n=73/55, 24h postClose 後見之明限制）——等短窗 candle 數據基建先驗證。
