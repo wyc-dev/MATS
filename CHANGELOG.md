@@ -2,6 +2,24 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.903-P9-trade-frequency-leak（2026-09-18：重複追單蝕因修復——soft 節流）
+
+> 主神:「trade 得太密…你需要搞一搞佢」→ 數據實證 → 純函數 + soft 折讓落地。全量 4963 pass。
+
+### ① 數據實證（realTrades 304 單）
+- 「同 symbol 前 1h 重複開倉」= 蝕因: MED density WR 38% / avg −1.68% / payoff 0.43 vs LOW WR 58% / +0.92% / 1.13
+- **精修規則「density≥1 ∧ 前 1h 有蝕單」= 12 單 Σ −27.47%(全負), 零誤傷**（>3% 大贏單全部 prev_losing=False——bnb +5.25% 前單 +0.2% 安全）
+- V1 counterfactual 揭發: 純 confidence×mult 會誤殺大贏（大 winner 好多時低 consensus）→ 棄用, 改用「前一單蝕」條件（PLAN F2 fallback 即時執行）
+
+### ② 實裝（soft——唔 hard block）
+- 新 `src/analysis/trade-frequency-leak.ts` 純函數 `frequencyLeakMultiplier()`（sanitize + clamp + 零 look-ahead）
+- 接入 `applyEntryConvictionGates`: 同 symbol 前 1h 重複且前一單蝕 → conviction ×0.75（env `TRADE_FREQ_LEAK_MULT`）——折讓後唔夠 threshold 自然唔開, 大 winner 照可入
+- env 回滾: `TRADE_FREQ_LEAK_DISABLE=true` / `TRADE_FREQ_LEAK_MULT` / `TRADE_FREQ_LEAK_WINDOW_MS`(default 1h, clamp ≤24h)
+- tests 9 個（規則/誤傷防線 V3/窗口邊界/symbol 大小寫/NaN/垃圾/clamp/未來時間）
+- live 驗證: 而家時點 mock 開倉——SNDK 重複但前單贏 → 唔折讓（零誤殺）; 其餘中性——正常運作零干擾
+
+---
+
 ## v2.0.902-Fruit-Fly-Thought（2026-09-18：真·具象化——果蠅形態決策引擎圖）
 
 > 主神:「睇唔到佢點思考,亦唔知點解一直蝕」→ 新增 `ui/src/FlyThoughtPanel.tsx`——

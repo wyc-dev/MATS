@@ -95,6 +95,7 @@ import { shouldBlockChurn } from './lib/churn-guard.ts';
 import { shouldOlrHardBlock } from './lib/olr-hard-gate.ts';
 import { shouldExploreSell, shouldSuppressExploreBuy, resolveExplorationDirection } from './lib/exploration-direction.ts';
 import { buildCooldownEntry, shouldBlockReentry, updateCooldownOnClose, shouldBlockChaseCooldown, emptyCooldownStreakState, type CooldownStreakState, type ReentryCooldownState } from './lib/reentry-cooldown.ts';
+import { frequencyLeakMultiplier } from './analysis/trade-frequency-leak.ts';
 import { isLockProfitCloseReason } from './lib/close-reason-utils.ts';
 import { resolveReconcileFill } from './lib/reconcile-fill.ts';
 import { formatMomentumPromptBlock, momentumFeaturesFromSnapshot } from './analysis/momentum-trend.ts';
@@ -6098,6 +6099,27 @@ ${recentExamples}
             if (fwU.multiplier !== 1.0) confidence *= fwU.multiplier;
           }
         } catch { /* 非致命——四窗失敗唔 block */ }
+
+        // ═══ v2.0.903-P9-trade-frequency-leak（PLAN_trade-frequency-leak——主神 2026-09-18 批）═══
+        // 數據實證: 「同 symbol 前 1h 重複開倉 且 前一單蝕」= 蝕錢模式（WR 42% / Σ −27.47%,
+        // 零誤傷——>3% 大贏單全唔受影響）。soft 折讓（×0.75）唔 hard block——折讓後
+        // 唔夠 threshold 自然唔開, 大 winner 照可入。env 回滾:
+        //   TRADE_FREQ_LEAK_DISABLE=true / TRADE_FREQ_LEAK_MULT / TRADE_FREQ_LEAK_WINDOW_MS
+        if ((action === 'buy' || action === 'sell') && process.env['TRADE_FREQ_LEAK_DISABLE'] !== 'true') {
+          try {
+            const flNow = Date.now();
+            const flWindow = parseLockNumEnv(process.env['TRADE_FREQ_LEAK_WINDOW_MS'], 3_600_000);
+            const flMult = parseLockNumEnv(process.env['TRADE_FREQ_LEAK_MULT'], 0.75);
+            const flVerdict = frequencyLeakMultiplier(
+              this.portfolio?.getClosedRealTrades() ?? [],
+              sym, flNow, flWindow, flMult,
+            );
+            if (flVerdict.leak && flVerdict.priorLosing) {
+              confidence *= flVerdict.multiplier;
+              log.info(`🔻 [trade-frequency-leak] ${sym} ${action.toUpperCase()}: repeat-open in ${(flWindow / 60000).toFixed(0)}min & prior losing → conviction ×${flVerdict.multiplier} (soft, ${(confidence * 100).toFixed(0)}%)`);
+            }
+          } catch { /* 非致命——頻率節流失敗唔 block */ }
+        }
       }
       // v2.0.872-P8（主神指令 2026-08-27）: 5m 動量方向硬閘——鏡像對稱 + 波動率自適應。
       // 「5m 跌絕對唔開 BUY；5m 升絕對唔開 SELL」。DRAM 案例:4h -3.47% 跌市
