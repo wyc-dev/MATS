@@ -2,7 +2,7 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
-## v2.0.901-HACP-Decision-Intelligence（2026-09-18：專業虧損歸因面板——主神三點批評全修正）
+## v2.0.902-Fruit-Fly-Thought（2026-09-18：真·具象化——果蠅形態決策引擎圖）
 
 > 主神:「睇唔到佢點思考,亦唔知點解一直蝕」→ 新增 `ui/src/FlyThoughtPanel.tsx`——
 > HACP 辯論流程 ≡ 果蠅腦訊號流（connectome-inspired,純顯示層零決策）: 感官輸入 → 7 agent 神經元
