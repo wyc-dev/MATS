@@ -344,39 +344,27 @@ export default function FlyThoughtPanel({ data }: Props) {
         <canvas ref={canvasRef} width={640} height={320} style={{ width: '100%', display: 'block' }} />
       </div>
 
-      {/* attribution — single block, each metric once */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, padding: 12 }}>
-        <div>
-          <div className="stat-label" style={{ marginBottom: 6 }}>WHY LOSING — by close reason</div>
+      {/* attribution — symmetric 2x2 grid (Master Lord: balanced layout) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: 12 }}>
+        {/* cell 1 — WHY LOSING */}
+        <div style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 8, padding: '10px 12px', minWidth: 0 }}>
+          <div className="stat-label" style={{ marginBottom: 6 }}>WHY LOSING · close reason</div>
           {byReason.length === 0 && <div style={{ color: '#475569', fontSize: 11 }}>No closed trades yet.</div>}
           {byReason.filter((r) => r.n > 0).map((r) => (
-            <div key={r.reason} style={{ padding: '4px 0', borderBottom: '1px solid rgba(148,163,184,0.08)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-                <span style={{ color: r.total < 0 ? '#fca5a5' : '#94a3b8', textTransform: 'capitalize' }}>{r.reason}</span>
-                <span style={{ color: r.avg >= 0 ? '#4ade80' : '#f87171', fontWeight: 600 }}>{fmtPct(r.avg)}</span>
-              </div>
-              <div style={{ fontSize: 9, color: '#64748b' }}>{r.n} trades</div>
-            </div>
-          ))}
-
-          <div className="stat-label" style={{ marginTop: 10, marginBottom: 6 }}>GATE BLOCKS (red on diagram)</div>
-          {gateBlocks.length === 0 && <div style={{ color: '#475569', fontSize: 11 }}>None.</div>}
-          {gateBlocks.map(([gate, cnt]) => (
-            <div key={gate} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
-              <div style={{ flex: 1, fontSize: 10, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{gate}</div>
-              <div style={{ width: 64, height: 4, background: 'rgba(248,113,113,0.15)', borderRadius: 2 }}>
-                <div style={{ width: `${Math.min(100, cnt * 14)}%`, height: 4, background: '#f87171', borderRadius: 2 }} />
-              </div>
-              <span style={{ fontSize: 10, color: '#f87171', width: 16, textAlign: 'right' }}>{cnt}</span>
+            <div key={r.reason} style={{ padding: '4px 0', borderBottom: '1px solid rgba(148,163,184,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ color: r.total < 0 ? '#fca5a5' : '#94a3b8', textTransform: 'capitalize', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.reason}</span>
+              <span style={{ color: r.avg >= 0 ? '#4ade80' : '#f87171', fontWeight: 600, fontSize: 11, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtPct(r.avg)}</span>
+              <span style={{ color: '#64748b', fontSize: 9, flexShrink: 0, marginLeft: 6 }}>{r.n}×</span>
             </div>
           ))}
         </div>
 
-        <div>
-          <div className="stat-label" style={{ marginBottom: 6 }}>DISCIPLINE (last {stats.n} closed)</div>
+        {/* cell 2 — DISCIPLINE */}
+        <div style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 8, padding: '10px 12px', minWidth: 0 }}>
+          <div className="stat-label" style={{ marginBottom: 6 }}>DISCIPLINE · last {stats.n}</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
             {[
-              ['WIN RATE', `${Math.round(stats.winRate * 100)}%`, stats.winRate >= 0.5 ? '#4ade80' : '#f87171'],
+              ['WR', `${Math.round(stats.winRate * 100)}%`, stats.winRate >= 0.5 ? '#4ade80' : '#f87171'],
               ['AVG WIN', fmtPct(stats.avgWin), '#4ade80'],
               ['AVG LOSS', fmtPct(stats.avgLoss), '#f87171'],
               ['PAYOFF', stats.payoff.toFixed(2), stats.payoff >= 1.3 ? '#4ade80' : '#fbbf24'],
@@ -388,18 +376,36 @@ export default function FlyThoughtPanel({ data }: Props) {
                 return spanDays > 0 ? (ts.length / spanDays).toFixed(1) : '—'
               })(), '#94a3b8'],
             ].map(([label, val, col], i) => (
-              <div key={i} style={{ background: 'rgba(148,163,184,0.06)', borderRadius: 6, padding: '6px 8px' }}>
+              <div key={i} style={{ background: 'rgba(148,163,184,0.06)', borderRadius: 6, padding: '6px 8px', textAlign: 'center' }}>
                 <div style={{ fontSize: 8.5, color: '#64748b' }}>{label}</div>
-                <div style={{ fontSize: 14, fontWeight: 650, color: col as string }}>{val}</div>
+                <div style={{ fontSize: 14, fontWeight: 650, color: col as string, fontVariantNumeric: 'tabular-nums' }}>{val}</div>
               </div>
             ))}
           </div>
+        </div>
 
-          <div className="stat-label" style={{ marginTop: 10, marginBottom: 6 }}>PER-SYMBOL DRAG</div>
+        {/* cell 3 — GATE BLOCKS */}
+        <div style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 8, padding: '10px 12px', minWidth: 0 }}>
+          <div className="stat-label" style={{ marginBottom: 6 }}>GATE BLOCKS · red on diagram</div>
+          {gateBlocks.length === 0 && <div style={{ color: '#475569', fontSize: 11 }}>None.</div>}
+          {gateBlocks.map(([gate, cnt]) => (
+            <div key={gate} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+              <div style={{ flex: 1, fontSize: 10, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{gate}</div>
+              <div style={{ width: 70, height: 5, background: 'rgba(248,113,113,0.15)', borderRadius: 3, flexShrink: 0 }}>
+                <div style={{ width: `${Math.min(100, cnt * 14)}%`, height: 5, background: '#f87171', borderRadius: 3 }} />
+              </div>
+              <span style={{ fontSize: 10, color: '#f87171', width: 16, textAlign: 'right', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{cnt}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* cell 4 — PER-SYMBOL DRAG */}
+        <div style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 8, padding: '10px 12px', minWidth: 0 }}>
+          <div className="stat-label" style={{ marginBottom: 6 }}>PER-SYMBOL DRAG · last {stats.n}</div>
           {bySymbol.slice(0, 4).map(([sym, e]) => (
-            <div key={sym} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0', color: e.sumPct < 0 ? '#fca5a5' : '#4ade80' }}>
-              <span>{sym} <span style={{ color: '#64748b' }}>({e.n})</span></span>
-              <span style={{ fontWeight: 600 }}>{fmtPct(e.sumPct)}</span>
+            <div key={sym} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '3px 0', borderBottom: '1px solid rgba(148,163,184,0.08)', color: e.sumPct < 0 ? '#fca5a5' : '#4ade80' }}>
+              <span>{sym} <span style={{ color: '#64748b' }}>×{e.n}</span></span>
+              <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{fmtPct(e.sumPct)}</span>
             </div>
           ))}
         </div>

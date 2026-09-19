@@ -2,6 +2,19 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.913-Attribution-2x2（2026-09-18：歸因區對稱 2×2 排列）
+
+> Master Lord:「排列得整齊啲球平均啲」——歸因區之前兩欄高度唔平均(左短右長)。
+
+### 修正
+- 歸因區改為「對稱 2×2 grid」4 個獨立 cell, 每個有統一邊框+圓角+padding:
+  ├ WHY LOSING · close reason ── DISCIPLINE · last N
+  ├ GATE BLOCKS ────────────── PER-SYMBOL DRAG
+- 每格 (防長名字溢出) + tabular-nums(數字對齊) + 統一 8px 圓角邊框
+- WHY LOSING row: reason | avg% | n×(數字右對齊)
+- 全英文 0 中文字元; tsc clean + vite build OK
+
+---
 ## v2.0.912-Layout-Redistribute（2026-09-18：刪 header + 動畫畫面分布重排）
 
 > Master Lord:「HACP Decision Flow / REAL 可以 delete」+「動畫的畫面分布太差了」。
