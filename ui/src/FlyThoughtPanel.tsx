@@ -340,21 +340,19 @@ export default function FlyThoughtPanel({ data }: Props) {
         <canvas ref={canvasRef} width={620} height={340} style={{ width: '100%', display: 'block' }} />
       </div>
 
-      {/* attribution + discipline */}
+      {/* v2.0.905: single attribution block — each metric appears once */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, padding: 12 }}>
+        {/* left: loss by close reason */}
         <div>
           <div className="stat-label" style={{ marginBottom: 6 }}>WHY LOSING — by close reason</div>
           {byReason.length === 0 && <div style={{ color: '#475569', fontSize: 11 }}>No closed trades yet.</div>}
-          {byReason.map((r) => (
+          {byReason.filter((r) => r.n > 0).map((r) => (
             <div key={r.reason} style={{ padding: '4px 0', borderBottom: '1px solid rgba(148,163,184,0.08)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
                 <span style={{ color: r.total < 0 ? '#fca5a5' : '#94a3b8', textTransform: 'capitalize' }}>{r.reason}</span>
                 <span style={{ color: r.avg >= 0 ? '#4ade80' : '#f87171', fontWeight: 600 }}>{fmtPct(r.avg)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#64748b' }}>
-                <span>{r.n} trades · WR {Math.round(r.winRate * 100)}%</span>
-                <span>Σ {fmtPct(r.total)}</span>
-              </div>
+              <div style={{ fontSize: 9, color: '#64748b' }}>{r.n} trades</div>
             </div>
           ))}
 
@@ -371,6 +369,7 @@ export default function FlyThoughtPanel({ data }: Props) {
           ))}
         </div>
 
+        {/* right: discipline + per-symbol */}
         <div>
           <div className="stat-label" style={{ marginBottom: 6 }}>DISCIPLINE (last {stats.n} closed)</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
@@ -417,22 +416,15 @@ export default function FlyThoughtPanel({ data }: Props) {
             ? 'Awaiting first closed trade.'
             : stats.net < 0
               ? (() => {
-                  const parts: string[] = []
-                  if (byReason[0] && byReason[0].total < 0) parts.push(`leak: ${byReason[0].reason} (Σ ${fmtPct(byReason[0].total)})`)
-                  if (stats.payoff < 1.2) parts.push(`payoff ${stats.payoff.toFixed(2)}<1.2 (winners too small)`)
-                  if (gateBlocks[0]) parts.push(`path blocked ${gateBlocks[0][0]} ×${gateBlocks[0][1]}`)
-                  if (stats.winRate < 0.45) parts.push(`WR ${Math.round(stats.winRate * 100)}%`)
-                  return 'Persistent loss: ' + (parts.join(' · ') || 'see grid')
+                  const top = byReason[0]
+                  if (top && top.total < 0) return `Top loss driver: ${top.reason} (avg ${fmtPct(top.avg)} over ${top.n}) — details above`
+                  return 'Net negative — see attribution above'
                 })()
             : (() => {
-                const hints: string[] = []
-                if (stats.payoff < 1.2) hints.push(`payoff ${stats.payoff.toFixed(2)}<1.2 — winners too small vs losers (cutting wins?)`)
-                if (gateBlocks[0]) hints.push(`path blocked ${gateBlocks[0][0]} ×${gateBlocks[0][1]}`)
-                if (stats.winRate < 0.45) hints.push(`WR ${Math.round(stats.winRate * 100)}%`)
-                const top = byReason[0]
-                if (top && top.total < 0) hints.push(`top leak by reason: ${top.reason}`)
-                return hints.length ? `Watching for: ${hints.join(' · ')}` : 'Discipline looks healthy.'
-              })()}
+                  const top = byReason[0]
+                  if (top && top.total < 0) return `Watch: ${top.reason} is the largest outflow driver (see above)`
+                  return 'None of the close-reason buckets is structurally negative.'
+                })()}
         </div>
       </div>
     </div>

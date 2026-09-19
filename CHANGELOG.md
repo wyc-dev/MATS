@@ -2,6 +2,14 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.905-FlyPanel-closeReason（2026-09-18：WHY LOSING 真數據——backend closeReason 修復 + Panel 徹底去重）
+
+> Master Lord:「WHY LOSING 全部 unknown + 好多數據重複」——根因: backend serialize tradeRecords 漏咗 closeReason。
+> 修復: ①backend 補 closeReason(UI 而家顯示真歸因: consensus Σ−204% / sl_tp Σ−162% / exit_price_lock +393%)
+> ②Panel 去重: WHY LOSING 刪 WR/Σ(同 DISCIPLINE/頂部 NET 重複)→ 淨 reason+avg+n;
+>   Insight 改為淨一句 top driver(唔重複 payoff/path);全英文 0 中文字元。tsc clean + build OK。
+
+---
 ## v2.0.903-P9-trade-frequency-leak（2026-09-18：重複追單蝕因修復——soft 節流）
 
 > 主神:「trade 得太密…你需要搞一搞佢」→ 數據實證 → 純函數 + soft 折讓落地。全量 4963 pass。

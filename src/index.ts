@@ -18540,6 +18540,9 @@ const adjustedThreshold = Number.isFinite(effectiveThreshold)
             postReview: t.postReview,
             minValueReached: t.minValueReached,
             maxValueReached: t.maxValueReached,
+            // v2.0.905-fix: closeReason 漏咗 serialize → UI「WHY LOSING by close reason」永遠 unknown
+            //（Master Lord: 一堆重複數字 + unknown = 冇用）——補上, 損失歸因先有真數據
+            closeReason: t.closeReason ?? null,
             ...(() => {
               const bt = this.bStockTrades.get(normalizeSymbol(t.symbol));
               return bt ? { bStockSymbol: bt.bStockSymbol, bStockBuyPrice: bt.buyPrice, bStockSellPrice: bt.sellPrice } : {};
