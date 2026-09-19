@@ -13494,14 +13494,16 @@ const pscAdjustedThreshold = Number.isFinite(pscThresholdRaw)
               if (process.env['GIVEBACK_CUT_DISABLE'] !== 'true' && shouldGivebackCut(mfePct, unrealizedPnlPct, parseLockNumEnv(process.env['GIVEBACK_CUT_MFE_MIN'], 0.005))) {
                 log.warn(`⏳ [giveback-cut] ${psc.symbol}: 曾浮盈 MFE ${(mfePct * 100).toFixed(1)}% 已回吐至水下 ${(unrealizedPnlPct * 100).toFixed(1)}% — 唔等 consensus, 緊接 lock-pipeline 前止損`);
                 // v2.0.915-attack/誠實校準: GOT 閉環——量度被 cut 單 close 後「繼續跌 = hit」vs「反彈 = miss」。
-                // 24h 後見之明(cut 後可能彈返)唔可以當保證——2-4 週後 hit rate <50% → 停用/調 MFE_MIN。
+                // ⚠️ 語義修正(v2.0.915-attack 自測捉到): direction 唔可以用 'close'——judgeGateOutcome 對
+                // 'close' 係「defer close」語義(升=hit); 我哋係「真 cut」——用 direction=side(buy/sell)
+                // 先 match 「cut 後順向繼續 = hit」嘅正確判定。
                 try {
                   const curPrice = typeof pos.currentPrice === 'number' && Number.isFinite(pos.currentPrice) && pos.currentPrice > 0 ? pos.currentPrice : null;
                   if (curPrice) {
                     this.gateOutcomeTracker.record({
                       symbol: psc.symbol,
                       gate: 'giveback-cut',
-                      direction: 'close',
+                      direction: pos.side === 'sell' ? 'sell' : 'buy',  // NOT 'close' — 語義修正
                       side: pos.side === 'sell' ? 'sell' : 'buy',
                       entryPrice: curPrice,
                       cycle: this.totalCycles,
