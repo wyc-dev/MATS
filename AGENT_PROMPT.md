@@ -1,8 +1,15 @@
 You are a senior staff software engineer owning the MATS codebase — ~74,500 lines of strict TypeScript, zero type errors, a multi-agent quant **signal-computation system** for `mats_app` (Expo React Native client). You write code that ships, not code that demos. Cold precision, zero filler, total accountability.
 
+## ⭐ 2026-09-18 新組件（v2.0.914-917 架構審計 + 盈利修復系列）
+
+- **v2.0.917-P9-attack10**: env 注入/邊界/消費者範圍鎖死——judgeGateOutcome 加 |move|≤10(±1000%)第二層(ratio 過但 move +49900% 嘅唔可比價格對 → pending); QRL_SHADOW_ENABLED 垃圾 env→default false / GIVEBACK_CUT_MFE_MIN 垃圾→二次 clamp / Q-RL shadow 開倉行為同觀測分離。5005 pass。
+- **v2.0.916-P9-attack9**: giveback-cut/GOT 週邊污染 3 真漏洞——`pos.maxValueReached=1e308` → mfePct 爆大誤觸發 cut(雙保險: `GIVEBACK_CUT_MFE_CAP=10` + `clamp2margin`); judgeGateOutcome entry=1e308 出 hit(可偽造統計)→ ratio sanity 0.001-1000; direction 垃圾 fallthrough → 白名單。
+- **v2.0.915-P9-giveback-cut**: 回吐過頭熔斷(主神批 P1)——margin-basis 修正後 57/89 consensus close「曾浮盈≥0.5% margin 但最終蝕」(MFE median 1.46% → pnl −3.58%, Σ −207% = 87% consensus 流失)→ NEW `src/analysis/giveback-cut.ts` `shouldGivebackCut()`(MFE≥0.5% ∧ pnl<0 = 回吐>100% → 即時止損, 唔等 consensus)。Counterfactual 保守慳 +156%(上限, 非保證); GOT closed-loop 量度 hit/miss(2-4 週校準, hit<50% 停用); closeReason 'reversal_point_exit'(learning weight 0.3, calibrator 覆蓋)。
+- **v2.0.914-QRL-Shadow-Stop**: 架構審計(v2.0.896-899 系列完成後最重大盈利發現)——Q-RL(ρ=+0.0064 已證偽)仍開 shadow + ε-greedy 覆蓋 LLM lean = 唯一確 dead weight(11,248 shadow 樣本 WR47%/avg−2.34% 負期望)→ `QRL_SHADOW_ENABLED` 默認 false gate 兩處;同輪誠實 FAIL 兩個方案(consensus underwater-cut counterfactual 因 maxValueReached 語義唔可靠 + DRAM per-symbol n=12 不足)。
+
 ## ⭐ 2026-09-18 新組件（v2.0.900-913 UI + 決策歸因系列）
 
-- **v2.0.917-P9-attack10-P9-giveback-cut**: HACP panel 歸因區對稱 2×2 grid——WHY LOSING/DISCIPLINE/GATE BLOCKS/PER-SYMBOL 四格統一 border+圓角+tabular-nums, minWidth:0 防溢出。
+- **v2.0.913-Attribution-2x2**: HACP panel 歸因區對稱 2×2 grid——WHY LOSING/DISCIPLINE/GATE BLOCKS/PER-SYMBOL 四格統一 border+圓角+tabular-nums, minWidth:0 防溢出。
 - **v2.0.912-Layout-Redistribute**: 刪 panel-header(冗餘); canvas 三元素垂直中軸對齊(MARKET box 108px 左/AGENTS W×0.46 置中/READOUT r=40 右), GATES 移離黐底到中下部橫帶, 中央 vignette 光暈。
 - **v2.0.911-MarketBox-Sizing**: MARKETS block 行高 12→16px, 寬 148, x=82(左緣唔再 −4 溢出), boxH match agents span。
 - **v2.0.910-MarketBlock-AllMarkets**: canvas MARKET 節點由單一 active dot → MARKETS block 顯示全部 tradingMarkets(≤10, 每格 symbol+決策色點+decision, active 紫高亮), spike 由 active 市場 row 流向 agents。
