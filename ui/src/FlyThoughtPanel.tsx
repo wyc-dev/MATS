@@ -37,6 +37,8 @@ export default function FlyThoughtPanel({ data }: Props) {
   const statusColor = decision === 'buy' ? '#4ade80' : decision === 'sell' ? '#f87171' : '#94a3b8'
   const marketState = data?.marketState as any
   const activeSymbol = (data?.status as any)?.activeSymbol ?? (data?.tradingMarkets?.[0] ?? '—')
+  const tradingMarkets = (data?.tradingMarkets ?? []).filter((m: string) => typeof m === 'string' && m.length > 0)
+  const perSym = data?.consensus?.perSymbolConsensus ?? []
   const p = (data?.portfolio as any) ?? {}
 
   // ── closed trades for attribution ──
@@ -289,6 +291,30 @@ export default function FlyThoughtPanel({ data }: Props) {
       <div className="panel-header" style={{ background: 'linear-gradient(90deg, rgba(139,92,246,0.14), transparent)' }}>
         <span className="panel-title">🧠 HACP Decision Flow</span>
         <span className="panel-badge">{(data?.marketAgent?.config as any)?.tradeMode === 'real' ? 'REAL' : 'PAPER'}</span>
+      </div>
+
+      {/* v2.0.909: ALL trading markets — not just active symbol (Master Lord: why only BTC?) */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '8px 12px', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
+        {(tradingMarkets.length > 0 ? tradingMarkets : [activeSymbol]).map((sym: string) => {
+          const norm = String(sym).replace(/^xyz:/, '').toUpperCase()
+          const pc = perSym.find((c: any) => String(c.symbol).replace(/^xyz:/, '').toUpperCase() === norm)
+          const act = pc?.action ?? (activeSymbol === sym ? decision : '—')
+          const conf = typeof pc?.confidence === 'number' ? pc.confidence : (activeSymbol === sym ? (consensus?.confidence ?? 0) : 0)
+          const col = act === 'buy' ? '#4ade80' : act === 'sell' ? '#f87171' : '#64748b'
+          const isActive = activeSymbol === sym || (perSym.length === 0 && tradingMarkets.length === 1)
+          return (
+            <div key={String(sym)} style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 6,
+              background: isActive ? 'rgba(139,92,246,0.14)' : 'rgba(148,163,184,0.06)',
+              border: `1px solid ${isActive ? 'rgba(167,139,250,0.45)' : 'rgba(148,163,184,0.15)'}`,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: isActive ? '#c4b5fd' : '#94a3b8' }}>{norm}</span>
+              <span style={{ fontSize: 10, fontWeight: 650, color: col as string }}>{String(act ?? '—').toUpperCase()}</span>
+              <span style={{ fontSize: 9, color: '#64748b', fontVariantNumeric: 'tabular-nums' }}>{Math.round((conf ?? 0) * 100)}%</span>
+              {isActive && <span style={{ fontSize: 8, color: '#8b5cf6' }}>●</span>}
+            </div>
+          )
+        })}
       </div>
 
       <div style={{ borderBottom: '1px solid rgba(148,163,184,0.15)' }}>

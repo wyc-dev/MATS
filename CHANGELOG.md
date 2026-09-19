@@ -2,6 +2,18 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.909-All-Markets（2026-09-18：顯示全部交易市場——唔再淨係 active BTC）
+
+> Master Lord:「Why just BTC?」——panel MARKET 節點之前淨顯示 activeSymbol。修正: 頂部加「ALL MARKETS pulse strip」。
+
+### ① 修正
+- 新增 market pulse strip: 全部 tradingMarkets 每格顯示 symbol + 決策色(BUY/SELL/HOLD) + confidence, active market 紫色高亮+●
+- 數據源: data.tradingMarkets(全部) + perSymbolConsensus(每市場決策)——active 冇 per-sym 時 fallback 用 global consensus
+- realTrades 實證 10 個市場(BNB/BTC/CL/DRAM/GOLD/MU/SILVER/SKHX/SNDK/SP500)全顯示, 唔再淨係 BTC
+- canvas MARKET 節點保留 active(flow 係 active cycle 嘅決策); market strip 補齊全部
+- 全英文 0 中文字元; tsc clean + vite build OK
+
+---
 ## v2.0.908-HACP-Decision-Flow（2026-09-18：重畫決策流程圖——刪冗餘 strip + 全標籤自明圖）
 
 > Master Lord review 3: ① balance strip 同主 UI 重複 → 全刪 ② 果蠅解剖圖用戶睇唔明 → 重畫做「決策流程圖」, 每個元素有字。
