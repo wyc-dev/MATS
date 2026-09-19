@@ -353,7 +353,13 @@ export default function FlyThoughtPanel({ data }: Props) {
               ['AVG LOSS', fmtPct(stats.avgLoss), '#f87171'],
               ['PAYOFF', stats.payoff.toFixed(2), stats.payoff >= 1.3 ? '#4ade80' : '#fbbf24'],
               ['STREAK', `${stats.streak >= 0 ? '+' : ''}${stats.streak}`, stats.streak >= 0 ? '#4ade80' : '#f87171'],
-              ['FREQ/DAY', closed.length ? (closed.length / 30).toFixed(1) : '—', '#94a3b8'],
+              ['FREQ/DAY', (() => {
+                // real span of last-30 window (not hardcoded 30 days)
+                const ts = recent.map((t: any) => t.openedAt ?? t.closedAt ?? 0).filter((x: number) => x > 0)
+                if (ts.length < 2) return '—'
+                const spanDays = (Math.max(...ts) - Math.min(...ts)) / 86400_000
+                return spanDays > 0 ? (ts.length / spanDays).toFixed(1) : '—'
+              })(), '#94a3b8'],
             ].map(([label, val, col], i) => (
               <div key={i} style={{ background: 'rgba(148,163,184,0.06)', borderRadius: 6, padding: '6px 8px' }}>
                 <div style={{ fontSize: 8.5, color: '#64748b' }}>{label}</div>
