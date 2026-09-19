@@ -2,6 +2,19 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.906-P9-attack7（2026-09-18：第七輪——getter-bomb 元素 crash 修復 + closeReason 兜底）
+
+> 目標 = trade-frequency-leak / closeReason serialize / FlyThoughtPanel 數據路徑。新增 attack7 9 tests, 全量 4972 pass。
+
+### ① 真漏洞 1 個
+- **A1(getter-bomb 元素)**: closed 陣列含 Proxy(讀 openedAt throw)→ 舊代碼  直接讀 → throw kill 成個 gate → 逐元素 try/catch 讀 symbol/openedAt/pnlPct, 毒元素 skip(唔 crash, 唔影響其餘)——trade-frequency-leak 防禦層升級
+- A2 併發 5000 次 deterministic / A3-A6 now/symbol/pnl 垃圾 + JSON 輪迴 → 全部免疫(已測)
+
+### ② UI 兜底(attack7 觸發)
+- FlyThoughtPanel byReason:  → ——垃圾 closeReason(number/object)唔可以成 Map key(舊版 render 先兜太遲)
+- B1-B3 tradeRecords 污染歸因測試: number→'42' bucket / null-undefined→unknown / pnlPct 1e308-NaN-string→filter 後 finite——全部唔 crash
+
+---
 ## v2.0.905-FlyPanel-closeReason（2026-09-18：WHY LOSING 真數據——backend closeReason 修復 + Panel 徹底去重）
 
 > Master Lord:「WHY LOSING 全部 unknown + 好多數據重複」——根因: backend serialize tradeRecords 漏咗 closeReason。

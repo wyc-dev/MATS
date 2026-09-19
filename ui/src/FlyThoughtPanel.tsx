@@ -77,7 +77,7 @@ export default function FlyThoughtPanel({ data }: Props) {
   const byReason = useMemo(() => {
     const map = new Map<string, { n: number; wins: number; sumPct: number }>()
     for (const t of recent) {
-      const r = t.closeReason ?? 'unknown'
+      const r = String(t.closeReason ?? 'unknown') // v2.0.906-attack7: String() 兜底——垃圾 closeReason(number/object)唔可以成 Map key
       const e = map.get(r) ?? { n: 0, wins: 0, sumPct: 0 }
       e.n++; if (t.pnlPct > 0) e.wins++; e.sumPct += t.pnlPct
       map.set(r, e)

@@ -57,16 +57,24 @@ export function frequencyLeakMultiplier(
   let priorLosing = false;
   let anyPrior = false;
   for (const t of closed) {
-    if (!t || typeof t !== 'object') continue;
-    const tSym = typeof t.symbol === 'string' ? t.symbol.toLowerCase() : '';
-    if (tSym !== symNorm) continue;
-    const opened = finiteNum(t.openedAt);
-    if (opened === null) continue;
-    const ago = now - opened;
+    if (!t || typeof t !== 'object') continue
+    // v2.0.906-P9-attack7(A1): closed 元素可係 Proxy getter-bomb（持久化/API 污染）→
+    // 讀 field 時 throw 會 kill 成個 gate——逐元素 try/catch, 毒元素 skip（唔 crash, 唔影響其餘）。
+    let tSym: unknown, tOpened: unknown, tPnl: unknown
+    try {
+      tSym = (t as any).symbol
+      tOpened = (t as any).openedAt
+      tPnl = (t as any).pnlPct
+    } catch { continue } // getter-trap → skip 該元素
+    if (typeof tSym !== 'string') continue
+    if (tSym.toLowerCase() !== symNorm) continue
+    const opened = finiteNum(tOpened)
+    if (opened === null) continue
+    const ago = now - opened
     if (ago > 0 && ago <= safeWindow) {
-      anyPrior = true;
-      const p = finiteNum(t.pnlPct);
-      if (p !== null && p <= 0) { priorLosing = true; break; }
+      anyPrior = true
+      const p = finiteNum(tPnl)
+      if (p !== null && p <= 0) { priorLosing = true; break }
     }
   }
   if (anyPrior && priorLosing) {
