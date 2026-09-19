@@ -138,9 +138,9 @@ export default function FlyThoughtPanel({ data }: Props) {
     }
 
     // layout
-    const INPUT = { x: 82, y: H * 0.5, w: 148, h: 16 }
-    const READOUT = { x: W - 58, y: H * 0.42, r: 34 }
-    const agentX = W * 0.38
+    const INPUT = { x: 62, y: H * 0.5, w: 108, h: 16 }
+    const READOUT = { x: W - 56, y: H * 0.5, r: 40 }
+    const agentX = W * 0.46
 
     const draw = () => {
       const { votes, agents, decision, conf, gates, lastPnl, sym, trend, mkts: curMkts, perSym: perSymC } = cur()
@@ -156,6 +156,10 @@ export default function FlyThoughtPanel({ data }: Props) {
       ctx.strokeStyle = 'rgba(139,92,246,0.05)'
       for (let gx = 16; gx < W; gx += 32) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke() }
       for (let gy = 16; gy < H; gy += 32) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke() }
+      // center vignette (focus the flow)
+      const vg = ctx.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, W * 0.55)
+      vg.addColorStop(0, 'rgba(139,92,246,0.07)'); vg.addColorStop(1, 'rgba(0,0,0,0)')
+      ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H)
 
       ctx.font = '9px ui-monospace, monospace'
 
@@ -198,7 +202,7 @@ export default function FlyThoughtPanel({ data }: Props) {
         const role = String(a.agentRole ?? '?')
         const col = ROLE_COLORS[role] ?? '#94a3b8'
         const c = typeof a.confidence === 'number' && Number.isFinite(a.confidence) ? Math.max(0, Math.min(1, a.confidence)) : 0
-        const y = 30 + ((H - 60) * (i + 0.5)) / Math.max(1, agents.length)
+        const y = 40 + ((H - 80) * (i + 0.5)) / Math.max(1, agents.length)
         return { x: agentX, y, r: 10 + c * 8, col, rawRole: role, role: role.replace('meta-agent', 'META').slice(0, 8).toUpperCase(), conf: c, i }
       }).slice(0, 8)
 
@@ -248,8 +252,8 @@ export default function FlyThoughtPanel({ data }: Props) {
       ctx.textAlign = 'left'
 
       // ── GATE chain (bottom band, labelled) ──
-      const gy0 = H - 34
-      const gx0 = W * 0.30, gx1 = W - 84
+      const gy0 = H - 46
+      const gx0 = agentX + 20, gx1 = READOUT.x - READOUT.r - 18
       const segs = gatesArr.slice(0, 6)
       for (let i = 0; i < 6; i++) {
         const x = gx0 + ((gx1 - gx0) * i) / 5
@@ -271,7 +275,7 @@ export default function FlyThoughtPanel({ data }: Props) {
       }
       ctx.fillStyle = 'rgba(148,163,184,0.55)'; ctx.font = '8px ui-monospace, monospace'
       ctx.textAlign = 'left'
-      ctx.fillText('GATES', W * 0.30 - 34, gy0 + 10)
+      ctx.fillText('GATES', gx0 - 36, gy0 + 10)
 
       // ── READOUT ──
       ctx.strokeStyle = colorD; ctx.lineWidth = 2.6
@@ -312,11 +316,6 @@ export default function FlyThoughtPanel({ data }: Props) {
 
   return (
     <div className="panel panel-rgb-border" style={{ padding: 0, overflow: 'hidden' }}>
-      <div className="panel-header" style={{ background: 'linear-gradient(90deg, rgba(139,92,246,0.14), transparent)' }}>
-        <span className="panel-title">🧠 HACP Decision Flow</span>
-        <span className="panel-badge">{(data?.marketAgent?.config as any)?.tradeMode === 'real' ? 'REAL' : 'PAPER'}</span>
-      </div>
-
       {/* v2.0.909: ALL trading markets — not just active symbol (Master Lord: why only BTC?) */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '8px 12px', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
         {(tradingMarkets.length > 0 ? tradingMarkets : [activeSymbol]).map((sym: string) => {
@@ -342,7 +341,7 @@ export default function FlyThoughtPanel({ data }: Props) {
       </div>
 
       <div style={{ borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
-        <canvas ref={canvasRef} width={640} height={280} style={{ width: '100%', display: 'block' }} />
+        <canvas ref={canvasRef} width={640} height={320} style={{ width: '100%', display: 'block' }} />
       </div>
 
       {/* attribution — single block, each metric once */}

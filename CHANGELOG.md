@@ -2,6 +2,20 @@
 
 All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details.
 
+## v2.0.912-Layout-Redistribute（2026-09-18：刪 header + 動畫畫面分布重排）
+
+> Master Lord:「HACP Decision Flow / REAL 可以 delete」+「動畫的畫面分布太差了」。
+
+### ① 刪 header
+- 移除「🧠 HACP Decision Flow + REAL/PAPER」panel-header 行——主 UI 已有, 純冗餘; 市場 chips strip(v2.0.909)保留
+
+### ② 分布重排
+- canvas 高度 280 → 320; 三元素垂直中軸對齊(y=H/2): MARKET box(左, 收窄 108px) / AGENTS(置中 W×0.46, 垂直 span 40-280) / READOUT(右, 加大 r=40)
+- GATES 由「黐底」移到中下部(agentX+20 → READOUT 左側)——同 flow 主體連接, 唔再斷開
+- 加中央 vignette 光暈——集中視線喺決策 flow
+- 全英文 0 中文字元; tsc clean + vite build OK
+
+---
 ## v2.0.911-MarketBox-Sizing（2026-09-18：MARKETS block 尺寸校準）
 
 > Master Lord:「個框唔啱 size」——MARKETS block 每行 12px 太窄(10 市場 box 128px vs agents span 250px 唔對稱), 寬 120px 貼邊, x=70 令 box 左緣 −4 溢出 canvas。
