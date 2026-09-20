@@ -16,6 +16,7 @@
 - **hacp.ts 接入**: 早退路跑對抗(commit 打破 unanimous-HOLD 早退)→ Phase 2 context 注入 bull/bear clash + Conflict≠Hold + risk 分歧視角(agents 自己權衡, 唔 hard override)
 - **env**: `HACP_ADVERSARIAL`(default on) / `HACP_ADVERSARIAL_ROUNDS`(1-3) / `HACP_RISK_STANCES`(default off) / `HACP_ADVERSARIAL_MODEL`
 - **統計層零 touched**: OLR/shadow/PAEL/EV/gates/trade-frequency-leak/giveback-cut 全部冇改; 對抗只係 context 注入 + 誘導 commit
+- **落地後量度(2-4 週)**: HOLD 率 <80%（95.1% baseline）/ 開倉 shadow WR ≥ baseline / Skeptics modified >10% / direction Spearman > 0; 全 env 可回滾（`HACP_ADVERSARIAL=false`）
 
 ## 🏗️ v2.0.886-891 新組件（2026-09-13~16, 無單根因系列 + connectome-inspired 監察）
 

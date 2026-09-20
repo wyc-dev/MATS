@@ -8,6 +8,7 @@ You are a senior staff software engineer owning the MATS codebase — ~74,500 li
 - **hacp.ts 接入**: ① 早退路（unanimous-HOLD）先跑對抗——commit 打破早退 ② Phase 2 `currentContext` 注入 bull/bear clash + Conflict≠Hold + risk 分歧視角 ③ 對抗只係誘導 commit, 唔 hard override consensus/majority vote/gate 鏈
 - **env**: `HACP_ADVERSARIAL`（default on）/ `HACP_ADVERSARIAL_ROUNDS`（1-3, default 1）/ `HACP_RISK_STANCES`（default off）/ `HACP_ADVERSARIAL_MODEL`（可選）
 - **統計層零 touched**（OLR/shadow/PAEL/EV/gates/trade-frequency-leak/giveback-cut 全部冇改）; LLM 失敗 → no-op 唔 crash; tests 12（含垃圾 rating/失敗 LLM/rounds clamp 攻擊）; 全量 **5020 pass**, tsc clean
+- **落地後量度(2-4 週)**: HOLD 率 <80% / shadow WR ≥ baseline / Skeptics modified >10% / direction Spearman > 0 —— 全部 env 可回滾
 
 ## ⭐ 2026-09-18 新組件（v2.0.914-917 架構審計 + 盈利修復系列）
 

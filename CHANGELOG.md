@@ -22,6 +22,16 @@ All notable changes to MATS are documented in this. See [ARCHITECTURE.md](ARCHIT
 - 安全: 對抗只係 context 注入 + 誘導 commit — 唔 hard override consensus / majority vote / gate 鏈; LLM 失敗 → no-op 唔 crash
 - tests 12(對抗/5-tier/三 stance + 攻擊: 垃圾 rating/失敗 LLM/rounds clamp); 全量 **5020 pass**(+12), tsc clean
 
+### ③ 落地後量度（2-4 週 live 監控, 已設計回滾）
+| Metric | Target | 回滾條件 |
+|:--|:--|:--|
+| HOLD 率 | 95.1% → <80% | >90%（無改善）→ 回滾 |
+| 開倉 shadow WR | ≥ 現版 baseline | < baseline −5pp → 回滾 |
+| Skeptics modified 率 | 0 → >10% | 仍 0 → 對抗無效回滾 |
+| 對抗後 direction accuracy | live Spearman > 0 | ρ<0 → 回滾 |
+
+全部可 env 回滾（`HACP_ADVERSARIAL=false` / `HACP_RISK_STANCES=false`）
+
 ---
 
 ## v2.0.918-P9-giveback-deepen（2026-09-19：giveback-cut 回吐深度條件——主神首日觀察修正）
